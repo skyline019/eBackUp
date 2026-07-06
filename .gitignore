@@ -1,0 +1,17 @@
+# Build outputs
+build/
+out/
+*.user
+*.suo
+.vs/
+.vscode/
+
+# Test artifacts
+engine_cpp/test_output/
+**/test_output/
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+*.swp
+*~

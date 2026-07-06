@@ -1,0 +1,42 @@
+name: ebbackup
+
+on:
+  push:
+    paths:
+      - 'engine_cpp/**'
+      - 'CMakeLists.txt'
+      - 'gtest_capi/**'
+      - '.github/workflows/ebbackup.yml'
+  pull_request:
+    paths:
+      - 'engine_cpp/**'
+      - 'CMakeLists.txt'
+      - 'gtest_capi/**'
+      - '.github/workflows/ebbackup.yml'
+
+jobs:
+  test-windows:
+    runs-on: windows-latest
+    env:
+      EBTEST_CI: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DEBBACKUP_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  test-linux:
+    runs-on: ubuntu-latest
+    env:
+      EBTEST_CI: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DEBBACKUP_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build --config Release -j$(nproc)
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
