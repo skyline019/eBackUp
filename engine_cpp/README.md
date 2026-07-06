@@ -96,6 +96,8 @@ The built-in SHA256/HMAC/PBKDF2 stack uses project-specific golden vectors (not 
 
 Test temp files go to `engine_cpp/test_output/` (override with `EBTEST_TMPDIR`).
 
+CI and local `ctest` include **`ebbackup_bench_check`** — a hard performance gate (L1–L3) against [`bench/baselines/ci_floor.json`](bench/baselines/ci_floor.json). See [`docs/PERF_BASELINE.md`](docs/PERF_BASELINE.md).
+
 ```bash
 ctest --test-dir ../build -C Release
 # or run ebbackup_tests directly

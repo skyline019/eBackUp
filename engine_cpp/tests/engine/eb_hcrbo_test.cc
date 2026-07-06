@@ -11,6 +11,27 @@
 namespace ebbackup {
 namespace {
 
+bool ChunksEqual(const std::vector<ChunkDescriptor>& a,
+                 const std::vector<ChunkDescriptor>& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i].offset != b[i].offset || a[i].length != b[i].length ||
+        a[i].reused_from_cfi != b[i].reused_from_cfi ||
+        std::memcmp(a[i].hash, b[i].hash, 32) != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void PopulateRolling(const uint8_t* data, size_t len, CfiIndex* cfi) {
+  for (auto& a : cfi->anchors) {
+    if (a.offset + a.length <= len) {
+      a.rolling_checksum = RollingChecksum(data + a.offset, a.length);
+    }
+  }
+}
+
 TEST(EbHcrboTest, UnchangedFileFullReuse) {
   const std::string data = test::MakeSyntheticData(2 * 1024 * 1024, 5);
   EbHcrboChunker chunker;
@@ -189,6 +210,56 @@ TEST(EbHcrboTest, OffsetIndexLargeAnchorCount) {
           .ok());
   EXPECT_GE(incr_stats.chunks_reused_from_cfi, 4900u);
   EXPECT_LT(incr_stats.chunks_reused_from_cfi, kAnchors);
+}
+
+TEST(EbHcrboTest, RollingBatchSkipParity) {
+  std::string data = test::MakeSyntheticData(20 * 1024 * 1024, 17);
+  EbHcrboChunker chunker;
+  std::vector<ChunkDescriptor> full;
+  CfiIndex cfi;
+  ASSERT_TRUE(chunker.ChunkFull(reinterpret_cast<const uint8_t*>(data.data()),
+                                data.size(), &full, &cfi, nullptr)
+                  .ok());
+  PopulateRolling(reinterpret_cast<const uint8_t*>(data.data()), data.size(),
+                  &cfi);
+
+  data[5 * 1024 * 1024] ^= 0x42;
+  std::vector<ChunkDescriptor> incr;
+  CfiIndex cfi_out;
+  EbHcrboStats incr_stats{};
+  ASSERT_TRUE(
+      chunker
+          .ChunkIncremental(reinterpret_cast<const uint8_t*>(data.data()),
+                            data.size(), cfi, &incr, &cfi_out, &incr_stats)
+          .ok());
+
+  std::string baseline = test::MakeSyntheticData(20 * 1024 * 1024, 17);
+  baseline[5 * 1024 * 1024] ^= 0x42;
+  std::vector<ChunkDescriptor> incr_repeat;
+  CfiIndex cfi_out_repeat;
+  EbHcrboStats repeat_stats{};
+  ASSERT_TRUE(chunker
+                  .ChunkIncremental(reinterpret_cast<const uint8_t*>(baseline.data()),
+                                    baseline.size(), cfi, &incr_repeat,
+                                    &cfi_out_repeat, &repeat_stats)
+                  .ok());
+  EXPECT_TRUE(ChunksEqual(incr, incr_repeat));
+  EXPECT_EQ(incr_stats.chunks_reused_from_cfi,
+            repeat_stats.chunks_reused_from_cfi);
+  EXPECT_GE(incr_stats.cfi_rolling_skip_hits, 0u);
+
+  std::string unchanged = test::MakeSyntheticData(20 * 1024 * 1024, 17);
+  std::vector<ChunkDescriptor> incr_unchanged;
+  CfiIndex cfi_out_unchanged;
+  EbHcrboStats unchanged_stats{};
+  ASSERT_TRUE(chunker
+                  .ChunkIncremental(
+                      reinterpret_cast<const uint8_t*>(unchanged.data()),
+                      unchanged.size(), cfi, &incr_unchanged, &cfi_out_unchanged,
+                      &unchanged_stats)
+                  .ok());
+  EXPECT_EQ(incr_unchanged.size(), full.size());
+  EXPECT_EQ(unchanged_stats.chunks_reused_from_cfi, full.size());
 }
 
 }  // namespace

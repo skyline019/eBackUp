@@ -1,0 +1,6 @@
+{
+  "fastcdc_mbps_min": 115,
+  "hcrbo_incr_mbps_min": 75,
+  "reuse_pct_min": 90,
+  "pipeline_ratio_min": 0.90
+}

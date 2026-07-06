@@ -88,6 +88,16 @@ if(MSVC)
   target_link_options(ebbackup_pipeline_bench PRIVATE $<$<CONFIG:Release>:/LTCG>)
 endif()
 
+add_executable(ebbackup_bench_check tests/bench/bench_check.cc)
+target_link_libraries(ebbackup_bench_check PRIVATE ebbackup_core)
+target_include_directories(ebbackup_bench_check PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/helpers"
+)
+target_compile_definitions(ebbackup_bench_check PRIVATE ${EBTEST_COMPILE_DEFS})
+if(MSVC)
+  target_link_options(ebbackup_bench_check PRIVATE $<$<CONFIG:Release>:/LTCG>)
+endif()
+
 if(EBBACKUP_BUILD_TESTS)
   set(EBBACKUP_TEST_SOURCES
     tests/chunk/fast_cdc_test.cc

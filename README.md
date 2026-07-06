@@ -34,6 +34,7 @@ e:\recoveryProjects\build\engine_cpp\Release\ebbackup_tests.exe
 ## Documentation
 
 - Engine, CLI, filters, encryption: [`engine_cpp/README.md`](engine_cpp/README.md)
+- Performance baseline (L1–L3) and CI bench gate: [`engine_cpp/docs/PERF_BASELINE.md`](engine_cpp/docs/PERF_BASELINE.md)
 - Release / ABI notes: [`CHANGELOG.md`](CHANGELOG.md)
 
 ## Quick start

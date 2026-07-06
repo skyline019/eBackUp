@@ -1,6 +1,14 @@
 # Changelog
 
-## M9 (wrap-up) — unreleased
+## v0.1.0 — 2026-07-06
+
+### Added
+
+- **Performance baseline (L1–L3)** with `ebbackup_bench_check` ctest hard gate
+- [`engine_cpp/docs/PERF_BASELINE.md`](engine_cpp/docs/PERF_BASELINE.md) and [`engine_cpp/bench/baselines/ci_floor.json`](engine_cpp/bench/baselines/ci_floor.json)
+- **CFI rolling batch skip** — extend stale windows on rolling pre-check failure without changing chunk boundaries
+
+### Includes M9 (wrap-up)
 
 - Streaming `VerifyRestoredFileChunks` (chunk-sized reads, no full-file buffer)
 - Full restore opt-in content verification: CLI `--verify-content`, `RestoreOptions.verify_restored_content`

@@ -196,6 +196,7 @@ Status EbHcrboChunker::ChunkIncremental(const uint8_t* data, size_t len,
       return st;
     }
     bool hash_match = false;
+    bool rolling_mismatch = false;
     if (anchor.rolling_checksum != 0) {
       const uint32_t rc = RollingChecksum(data + anchor.offset, anchor.length);
       if (rc == anchor.rolling_checksum) {
@@ -203,10 +204,8 @@ Status EbHcrboChunker::ChunkIncremental(const uint8_t* data, size_t len,
         Sha256(data + anchor.offset, anchor.length, current_hash);
         hash_match = std::memcmp(current_hash, anchor.hash, 32) == 0;
       } else {
-        const auto it = index.by_rolling.find(anchor.rolling_checksum);
-        if (it != index.by_rolling.end()) {
-          index.rolling_skip_hits += it->second.size();
-        }
+        rolling_mismatch = true;
+        ++index.rolling_skip_hits;
       }
     } else {
       uint8_t current_hash[32];
@@ -227,15 +226,44 @@ Status EbHcrboChunker::ChunkIncremental(const uint8_t* data, size_t len,
       continue;
     }
 
-    const size_t change_end =
+    size_t change_end =
         (sorted_pos + 1 < index.by_offset.size())
             ? history.anchors[index.by_offset[sorted_pos + 1]].offset
             : len;
+    if (rolling_mismatch) {
+      size_t sp = sorted_pos;
+      while (sp + 1 < index.by_offset.size()) {
+        const size_t next_idx = index.by_offset[sp + 1];
+        const ChunkAnchor& next_anchor = history.anchors[next_idx];
+        if (next_anchor.offset >= len) {
+          change_end = len;
+          break;
+        }
+        if (next_anchor.rolling_checksum == 0 ||
+            next_anchor.offset + next_anchor.length > len) {
+          break;
+        }
+        const uint32_t next_rc =
+            RollingChecksum(data + next_anchor.offset, next_anchor.length);
+        if (next_rc == next_anchor.rolling_checksum) {
+          change_end = next_anchor.offset;
+          break;
+        }
+        ++index.rolling_skip_hits;
+        ++sp;
+        change_end = (sp + 1 < index.by_offset.size())
+                         ? history.anchors[index.by_offset[sp + 1]].offset
+                         : len;
+      }
+      sorted_pos = LowerBoundAnchorPos(index, history, change_end);
+    }
     const Status st = ChunkRegion(data, len, pos, change_end, false, out,
                                   cfi_out, stats);
     if (!st.ok()) return st;
     pos = change_end;
-    sorted_pos = LowerBoundAnchorPos(index, history, pos);
+    if (!rolling_mismatch) {
+      sorted_pos = LowerBoundAnchorPos(index, history, pos);
+    }
   }
   if (pos < len) {
     const Status st = ChunkRegion(data, len, pos, len, false, out, cfi_out, stats);

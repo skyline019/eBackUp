@@ -26,4 +26,8 @@ if(EBBACKUP_BUILD_TESTS)
   enable_testing()
   add_test(NAME ebbackup_tests COMMAND ebbackup_tests)
   add_test(NAME eb_run_tests_capi COMMAND eb_run_tests_capi "*")
+  add_test(NAME ebbackup_bench_check COMMAND ebbackup_bench_check)
+  set_tests_properties(ebbackup_bench_check PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  )
 endif()
