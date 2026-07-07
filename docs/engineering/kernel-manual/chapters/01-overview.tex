@@ -1,0 +1,274 @@
+\chapter{概述与设计目标}
+\label{ch:overview}
+
+\section{ebbackup 产品定位}
+
+ebbackup 是一个 \textbf{C++17 本地内容寻址备份内核}，面向桌面/服务器\textbf{单节点}数据保护。与通用对象存储或云同步产品不同，内核在架构上显式分层，并在 superblock feature flags 中持久化仓库能力契约：
+
+\begin{enumerate}
+  \item \textbf{分块层（FastCDC + HCRBO）}：Gear-hash 内容定义切块；增量路径通过 CFI 锚点 + Rabin 强锚实现 chunk reuse；
+  \item \textbf{摘要层（Digest）}：Content ID = \texttt{SHA256(明文 content)}；Legacy/Standard 双栈，x86\_64 可选 SHA-NI；
+  \item \textbf{压缩层（ContentClass）}：按路径/熵分类选择 LZ4/zstd/跳过，避免对不可压缩媒体浪费 CPU；
+  \item \textbf{存储层（ChunkStore + EbPack）}：legacy append-only 或默认 16-shard EbPack（\versiontag{0.6+}）；
+  \item \textbf{元数据（Manifest + SuperBlock）}：双槽 4096B superblock + manifest v4 二进制；
+  \item \textbf{时间旅行（Snapshot）}：GFS 分层保留 + \texttt{restore --at <txn>}；
+  \item \textbf{可验证性（RAR + Merkle）}：审计哈希链 + manifest Merkle 根；
+  \item \textbf{并发 Pipeline}：v4 全局 chunk 队列；v0.9 StreamingChunkCpuPipeline 单文件大路径。
+\end{enumerate}
+
+\begin{designbox}[产品边界]
+\textbf{内核提供：}\texttt{eb init/backup/restore/verify/compact/repo-stats/list-snapshots/prune}、daemon schedule/watch、稳定 C API（\filepath{include/ebbackup/eb\_backup.h}）。
+
+\textbf{内核不提供：}云同步协议、多租户远程仓库、GUI Workbench、分布式 chunk 路由。集成方通过 C API 或 CLI 嵌入自有调度/UI。
+\end{designbox}
+
+\section{里程碑时间线（M5--M9 与 Wave 演进）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.85cm,y=0.9cm]
+  \draw[thick,->] (0,0) -- (16,0) node[right,font=\small]{时间};
+  \foreach \x/\lab in {1/M5,3/M6,5/M7,7/M8,9/v0.1,11/v0.5,13/v0.7,15/v0.9.4} {
+    \draw (\x,0.1) -- (\x,-0.1);
+    \node[below,font=\scriptsize,align=center] at (\x,-0.35) {\lab};
+  }
+  \node[draw,fill=blue!8,minimum width=2.2cm,font=\scriptsize,align=center] at (1,1) {HCRBO\\四阶段 Pipeline};
+  \node[draw,fill=green!8,minimum width=2.2cm,font=\scriptsize,align=center] at (3,1) {AES-GCM\\RAR daemon};
+  \node[draw,fill=yellow!10,minimum width=2.2cm,font=\scriptsize,align=center] at (5,1) {Filter\\CFI index};
+  \node[draw,fill=orange!8,minimum width=2.2cm,font=\scriptsize,align=center] at (7,1) {Merkle\\verify-at};
+  \node[draw,fill=purple!8,minimum width=2cm,font=\scriptsize,align=center] at (9,1) {L1--L3\\bench};
+  \node[draw,fill=red!6,minimum width=2cm,font=\scriptsize,align=center] at (11,1) {\wave{2}\\EbPack};
+  \node[draw,fill=red!10,minimum width=2cm,font=\scriptsize,align=center] at (13,1) {\wave{3}\\SHA-NI};
+  \node[draw,fill=red!14,minimum width=2.2cm,font=\scriptsize,align=center] at (15,1) {\wave{5}\\Streaming};
+\end{tikzpicture}
+\caption{M5--M9 与 Wave 2--5 时间线（示意）}
+\label{fig:timeline}
+\end{figure}
+
+\section{版本演进详表（\versiontag{0.1.0}--\versiontag{0.9.4}）}
+
+\begin{longtable}{@{}llp{5.2cm}p{4.8cm}@{}}
+\toprule
+版本 & 日期 & 核心交付 & Bench / ABI \\
+\midrule
+\endhead
+M5--M6 & 2025 & HCRBO、四阶段 Pipeline、AES-GCM、RAR、daemon & 无 L 门禁 \\
+M7--M8 & 2025--26 & 选择性 restore filter、CFI offset index、内容 Merkle & ABI v7--v8 \\
+\versiontag{0.1.0} & 2026-07 & L1--L3 硬门禁、CFI rolling batch skip & reuse $\geq$90\% \\
+\versiontag{0.2.0} & 2026-07 & \texttt{init\_repo\_ex}、Legacy digest flag & ABI v9 \\
+\versiontag{0.3.0} & 2026-07 & zstd、持久化索引、manifest v4、compact & ABI v10 \\
+\versiontag{0.4.0} & 2026-07 & Snapshot 时间旅行、GFS 保留 & ABI v11 \\
+\versiontag{0.4.6} & 2026-07 & DurabilityMode balanced 语义澄清 & — \\
+\versiontag{0.5.0} & 2026-07 & \wave{2}：DigestPool、EbPack、Coalesced meta & L4 ampl \\
+\versiontag{0.6.0} & 2026-07 & 默认 EbPack、Pipeline v2 双 Store worker & ABI v12 \\
+\versiontag{0.7.0} & 2026-07 & \wave{3}：16-shard EbPack、SHA-NI、Pipeline v3、流式 CDC & L6 2GB \\
+\versiontag{0.8.0} & 2026-07 & \wave{4}：Pipeline v4、L7 multi-file、phase profiling & floors $\sim$70\% \\
+\versiontag{0.9.0} & 2026-07 & \wave{5}：ChunkStore 并发修复、Stage 3.1/3.2 & L3a/L3b split \\
+\versiontag{0.9.1} & 2026-07 & L3a/L3b 拆分、\texttt{profile\_pct} & Stage 3.1 floors \\
+\versiontag{0.9.2} & 2026-07 & StreamingChunkCpuPipeline、carry ring & L5 $\sim$154 MB/s \\
+\versiontag{0.9.3} & 2026-07 & \texttt{digest\_base} 批处理、DigestPool sharding & L5 $\sim$161 MB/s \\
+\versiontag{0.9.4} & 2026-07 & CDC Phase B seg1 bulk、FastCdcSlice opt-in & L5 $\sim$171 MB/s \\
+\bottomrule
+\caption{版本里程碑与 bench/ABI 对照}
+\end{longtable}
+
+\textbf{当前交付指标}（Release Windows，\versiontag{0.9.4}）：C API ABI \textbf{v12}；ctest \textbf{232} gtest；L5 $\sim$170--172\,MB/s；L6 $\sim$186\,MB/s；L7 multi $\sim$646--658\,MB/s。
+
+\section{仓库根目录布局}
+
+\begin{table}[htbp]
+\centering
+\caption{\filepath{recoveryProjects/} 顶层目录}
+\begin{tabular}{@{}llp{8.5cm}@{}}
+\toprule
+路径 & 规模 & 职责 \\
+\midrule
+\filepath{engine\_cpp/} & 内核 & BackupEngine、CLI（\texttt{eb}）、gtest、bench、产品 README \\
+\filepath{docs/} & 归档 & 版本史、架构摘要、PERF\_BASELINE、本手册 \\
+\filepath{gtest\_capi/} & 第三方 & 捆绑 GoogleTest（CI/本地构建） \\
+\filepath{.github/workflows/} & CI & \filepath{ebbackup.yml}：Windows + Linux + ASan \\
+\filepath{CMakeLists.txt} & 构建 & 顶层 CMake，\texttt{DEBBACKUP\_BUILD\_TESTS} \\
+\filepath{CHANGELOG.md} & 发布 & 逐版本变更与 bench 实测表 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{\filepath{engine\_cpp/} 完整目录表}
+
+\begin{longtable}{@{}llp{7.8cm}@{}}
+\toprule
+路径 & 规模/文件数 & 职责 \\
+\midrule
+\endhead
+\filepath{include/ebbackup/engine/} & 4 头文件 & \texttt{BackupEngine}、\texttt{RestoreEngine}、manifest \\
+\filepath{include/ebbackup/pipeline/} & 3 & \texttt{RunBackupPipeline}、\texttt{FileScheduler}、phase stats \\
+\filepath{include/ebbackup/chunk/} & 12 & FastCDC、HCRBO、CFI、streaming、carry buffer \\
+\filepath{include/ebbackup/store/} & 8 & \texttt{ChunkStore}、EbPack、snapshot、compact、GC \\
+\filepath{include/ebbackup/common/} & 8 & digest、DigestPool、SHA-NI、fsync、status \\
+\filepath{include/ebbackup/codec/} & 4 & ContentClass、LZ4/zstd \\
+\filepath{include/ebbackup/crypto/} & 3 & AES-256-GCM、PBKDF2 \\
+\filepath{include/ebbackup/audit/} & 4 & RAR chain、Merkle、CARL anchor \\
+\filepath{include/ebbackup/daemon/} & 1 & schedule、watch \\
+\filepath{include/ebbackup/scan/} & 3 & backup filter、scan entry \\
+\filepath{include/ebbackup/state/} & 3 & superblock、phase FSM、sync executor \\
+\filepath{include/ebbackup/io/} & 3 & mmap reader、fs\_watch、file\_meta \\
+\filepath{include/ebbackup/bench/} & 1 & \texttt{throughput.h} SI MB/s 换算 \\
+\filepath{include/ebbackup/eb\_backup.h} & 1 & 稳定 C API 公开面 \\
+\filepath{src/engine/} & 4 \texttt{.cc} & BackupEngine、Restore、manifest、C API \\
+\filepath{src/pipeline/} & 2 & \texttt{backup\_pipeline.cc}（$\sim$1300 行）、scheduler \\
+\filepath{src/chunk/} & 8 & FastCDC slice/stream/SIMD、HCRBO、CFI \\
+\filepath{src/store/} & 9 & ChunkStore、EbPack、index、compact、GC \\
+\filepath{src/common/} & 6 & digest 三栈、DigestPool、fsync \\
+\filepath{src/codec/} & 3 & ContentClass、LZ4、zstd \\
+\filepath{src/crypto/} & 3 & AES-GCM portable + block \\
+\filepath{src/audit/} & 4 & RAR、Merkle、sign \\
+\filepath{src/daemon/} & 1 & \texttt{backup\_daemon.cc} \\
+\filepath{src/state/} & 2 & superblock、sync\_executor \\
+\filepath{cli/eb\_main.cc} & 1 & \texttt{eb} 命令入口 \\
+\filepath{tests/} & 76 \texttt{*\_test.cc} & 232 \texttt{TEST()}、fixture、powerfail \\
+\filepath{bench/baselines/} & JSON & \texttt{ci\_floor.json}、stage32、probe \\
+\filepath{third\_party/} & — & LZ4、zstd 等 vendored \\
+\bottomrule
+\caption{\filepath{engine\_cpp/} 目录与职责（20+ 行）}
+\end{longtable}
+
+\section{备份仓库磁盘布局}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  dir/.style={rectangle, draw, minimum width=4.2cm, minimum height=0.75cm, align=left, font=\small},
+  file/.style={rectangle, draw, dashed, minimum width=3.8cm, minimum height=0.65cm, align=left, font=\scriptsize},
+  node distance=0.25cm
+]
+  \node[dir, fill=blue!6] (root) {\filepath{repo/}};
+  \node[file, below=of root] (sb) {\filepath{superblock.bin} — 双 4KB slot};
+  \node[file, below=of sb] (man) {\filepath{manifest} — 当前 txn（v4 二进制）};
+  \node[dir, below=of man, fill=green!6] (snap) {\filepath{snapshots/}};
+  \node[file, below=0.15cm of snap] (snapf) {\filepath{<txn>.manifest} + \filepath{index}};
+  \node[dir, below=of snapf, fill=yellow!8] (data) {\filepath{data/}};
+  \node[file, below=0.15cm of data] (idx) {\filepath{chunk.idx} — EBCHIDX1 / HXID v2};
+  \node[file, below=of idx] (pack) {\filepath{packs/*.ebpack} — 16-shard};
+  \node[file, below=of pack] (leg) {\filepath{chunks/} — legacy（\texttt{--legacy-init}）};
+  \node[dir, below=of leg, fill=orange!6] (audit) {\filepath{audit/}};
+  \node[file, below=0.15cm of audit] (rar) {\filepath{rar.chain}};
+  \node[file, below=of rar] (salt) {\filepath{../crypto.salt}（加密仓库）};
+  \draw[arrow] (root) -- (sb);
+  \draw[arrow] (root) -- (man);
+  \draw[arrow] (root) -- (snap);
+  \draw[arrow] (root) -- (data);
+  \draw[arrow] (root) -- (audit);
+\end{tikzpicture}
+\caption{备份仓库磁盘布局（v0.6+ 默认 EbPack）}
+\label{fig:repo-layout}
+\end{figure}
+
+\begin{longtable}{@{}llp{8cm}@{}}
+\toprule
+路径 & 引入版本 & 内容与说明 \\
+\midrule
+\filepath{superblock.bin} & M5 & 8192B = 2$\times$4096B slot；CRC 选举；FSM phase \\
+\filepath{manifest} & M5 & 当前 txn manifest；v4 为 \texttt{EBMANIFEST4} + 二进制 body + CRC \\
+\filepath{snapshots/} & \versiontag{0.4} & 每 txn 归档 manifest + 可选 index \\
+\filepath{data/packs/*.ebpack} & \versiontag{0.5} & EBPACK1；8MB pack blob；\texttt{pack-*-s\{shard\}} \\
+\filepath{data/chunk.idx} & \versiontag{0.3} & 持久化索引 magic \texttt{HXID} v2；97B/entry \\
+\filepath{data/chunks/} & M5 & Legacy append-only chunk 文件 \\
+\filepath{audit/rar.chain} & M6 & Recoverable Audit Record 哈希链 \\
+\filepath{crypto.salt} & M6 & AES-GCM 仓库盐（启用加密时） \\
+\bottomrule
+\end{longtable}
+
+\section{Feature Flags 完整索引}
+
+Feature flags 持久化于 \texttt{BackupSuperBlockExtension::backup\_features}（\texttt{uint32\_t}，自 \versiontag{0.6} 起）。定义见 \filepath{include/ebbackup/engine/manifest.h}。
+
+\begin{longtable}{@{}clrp{7.5cm}@{}}
+\toprule
+常量 & 值 & 默认（\texttt{init\_repo\_ex} 无 \texttt{LEGACY}） & 含义 \\
+\midrule
+\texttt{kBackupFeatureMeta} & 0x01 & CLI \texttt{--meta} & 扩展文件元数据（mode/uid/gid/time） \\
+\texttt{kBackupFeatureSpecialFiles} & 0x02 & \texttt{--special-files} & 符号链接、FIFO、device 节点 \\
+\texttt{kBackupFeatureEncrypted} & 0x04 & \texttt{--encrypt} & AES-256-GCM 内容加密 \\
+\texttt{kBackupFeatureDigestStandard} & 0x08 & 默认开（非 LEGACY\_DIGEST） & NIST/RFC SHA256 栈 \\
+\texttt{kBackupFeaturePersistentIndex} & 0x10 & 默认开 & \filepath{data/chunk.idx} \\
+\texttt{kBackupFeatureManifestBinary} & 0x20 & 默认开 & Manifest v4 二进制 \\
+\texttt{kBackupFeatureBalancedDurability} & 0x40 & \texttt{BALANCED} flag & balanced 耐久性（更大 spill 阈值） \\
+\texttt{kBackupFeatureSnapshots} & 0x80 & 默认开 & 时间旅行 snapshot \\
+\texttt{kBackupFeatureEbPack} & 0x100 & 默认开（\versiontag{0.6+}） & Pack 存储 \\
+\texttt{kBackupFeatureCoalescedMeta} & 0x200 & 默认开（\versiontag{0.5+}） & 备份中合并 superblock 写入 \\
+\bottomrule
+\end{longtable}
+
+\section{Wave 2--5 性能演进摘要}
+
+\begin{table}[htbp]
+\centering
+\caption{Performance Wave 主题对照}
+\small
+\begin{tabular}{@{}llp{6.5cm}@{}}
+\toprule
+Wave & 版本 & 主题与代表变更 \\
+\midrule
+\wave{2} & \versiontag{0.5.0} & DigestPool 并行 SHA256；EbPack append-only；Coalesced meta；CFI Bloom \\
+\wave{3} & \versiontag{0.7.0} & 16-shard EbPack；SHA-NI；Pipeline v3 + FileScheduler；FastCdcStreamFeed；L6 \\
+\wave{4} & \versiontag{0.8.0} & Pipeline v4 全局队列；L7 multi-file；\texttt{PipelinePhaseStats}；ExistsMany 批 dedup \\
+\wave{5} & \versiontag{0.9.0}--\versiontag{0.9.4} & ChunkStore shard 锁修复；StreamingChunkCpuPipeline；Stage 3.1/3.2；CDC Sprint 4 \\
+Sprint 4 & \versiontag{0.9.4} & Phase B seg1 bulk scan；Phase A \texttt{FastCdcSlice::ChunkCuts} opt-in \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{核心类关系（逻辑视图）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=\flowdistance and 1.8cm]
+  \node[flowstep] (cli) {CLI \texttt{eb}\\C API \texttt{eb\_backup\_*}};
+  \node[flowstep, below=of cli] (eng) {BackupEngine\\FSM + txn + sync};
+  \node[flowdata, below left=1.2cm and 0.5cm of eng] (pipe) {BackupPipeline\\v4 / Streaming};
+  \node[flowdata, below=of eng] (store) {ChunkStore\\+ EbPackShardSet};
+  \node[flowdata, below right=1.2cm and 0.5cm of eng] (meta) {Manifest v4\\+ SnapshotStore};
+  \node[flowdata, below=1.4cm of pipe] (chunk) {FastCDC / HCRBO\\DigestPool};
+  \node[flowdata, below=1.4cm of store] (idx) {chunk.idx\\HXID v2};
+  \node[flowdata, below=1.4cm of meta] (sb) {SuperBlockStore\\双槽 4096B};
+  \node[flowdata, right=2.2cm of eng] (rest) {RestoreEngine\\filter + Merkle};
+  \node[flowdata, below=of rest] (audit) {RAR + Merkle};
+
+  \draw[arrow] (cli) -- (eng);
+  \draw[arrow] (eng) -- (pipe);
+  \draw[arrow] (eng) -- (store);
+  \draw[arrow] (eng) -- (meta);
+  \draw[arrow] (eng) -- (rest);
+  \draw[arrow] (pipe) -- (chunk);
+  \draw[arrow] (store) -- (idx);
+  \draw[arrow] (meta) -- (sb);
+  \draw[arrow] (eng) -- (audit);
+  \draw[arrow, dashed] (rest) -- (store);
+\end{tikzpicture}
+\caption{BackupEngine 与主要子系统}
+\label{fig:engine-components}
+\end{figure}
+
+\texttt{BackupEngine} 持有 \texttt{BackupSyncExecutor}，在每次 FSM 事件（\texttt{kScanFile}、\texttt{kChunkFile} 等）时分发 phase 转移；\texttt{ChunkStore} 与 \texttt{BackupSuperBlockStore} 构成耐久双锚。
+
+\section{相关文档索引}
+
+\begin{longtable}{@{}lp{9.5cm}@{}}
+\toprule
+文档 & 说明 \\
+\midrule
+\filepath{engine\_cpp/README.md} & CLI 速查、filter、加密、schedule \\
+\filepath{docs/README.md} & 技术归档入口 \\
+\filepath{docs/VERSION\_HISTORY.md} & v0.1--v0.9.4 时间线 \\
+\filepath{docs/reference/PERF\_BASELINE.md} & L1--L7 详表、Stage 3.1/3.2、实测 \\
+\filepath{docs/technical/ARCHITECTURE.md} & 架构摘要 \\
+\filepath{CHANGELOG.md} & 逐版本变更 \\
+\filepath{engine\_cpp/bench/baselines/ci\_floor.json} & CI blocking floors \\
+本手册 Part I 第 4--16 章 & 各子系统深度章节 \\
+本手册 Part II & bench、C API、compact、测试 \\
+\bottomrule
+\end{longtable}
+
+\section{本章小结}
+
+ebbackup 以 \textbf{BackupEngine} 为调度中心，通过 FSM phase 与 superblock 双槽提交保证可恢复性。Content ID 与 commit-point 不变量（I-B1/I-B2）贯穿所有 Wave 优化。后续章节按数据平面展开：架构边界 $\rightarrow$ 不变量 $\rightarrow$ 分块 $\rightarrow$ 存储 $\rightarrow$ Pipeline $\rightarrow$ 运维门禁。

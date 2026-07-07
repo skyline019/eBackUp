@@ -1,0 +1,314 @@
+\chapter{Manifest v1--v4 格式规范}
+\label{ch:manifest-format}
+
+Manifest 是 backup 事务的文件级元数据快照：相对路径、大小、chunk hash 链、可选 POSIX meta 与 CFI 锚点。本章给出 v1--v4 全面对比、v4 二进制布局、\texttt{WriteManifestAuto} 选型逻辑与 CRC32 footer 校验。
+
+\section{逻辑文档模型}
+
+\begin{structbox}[ManifestDocument / ManifestFileEntry]
+\begin{itemize}[nosep]
+  \item \texttt{ManifestDocument::txn\_id}：与 superblock 一致的事务 ID；
+  \item \texttt{files[]}：每文件 \texttt{relative\_path}、\texttt{size}、\texttt{chunk\_hashes\_hex}、\texttt{cfi.anchors}；
+  \item 扩展 meta：\texttt{file\_type}、\texttt{mode/uid/gid}、\texttt{mtime/atime}、\texttt{symlink\_target}、\texttt{device\_major/minor}。
+\end{itemize}
+\end{structbox}
+
+所有版本读入后统一为 \texttt{ManifestDocument}；写入时由 \texttt{WriteManifestAuto} 或显式 \texttt{WriteManifestV*} 选择线格式。
+
+\section{版本全面对比}
+
+\begin{longtable}{@{}p{1.2cm}p{2.2cm}p{2.5cm}p{2.5cm}p{4.5cm}@{}}
+\caption{Manifest v1/v2/v3/v4 特性对比} \\
+\toprule
+版本 & 头 & 编码 & txn\_id & 特性 \\
+\midrule
+\endfirsthead
+\multicolumn{5}{c}{\tablename\ \thetable{} — 续} \\
+\toprule
+版本 & 头 & 编码 & txn\_id & 特性 \\
+\midrule
+\endhead
+v1 & \texttt{EBMANIFEST1} & 文本行 & 无（读入为 0） & \texttt{F path size nchunks} / \texttt{C hash} \\
+v2 & \texttt{EBMANIFEST2} & 文本 body + footer & body 内 & chunk 链 + CFI anchor 行 \\
+v3 & \texttt{EBMANIFEST3} & 同 v2 body & 同 v2 & 写入选型：含 special/meta 文件 \\
+v4 & \texttt{EBMANIFEST4} & 二进制 body + 4B CRC & body 内 & meta flags、二进制 hash/anchor \\
+\bottomrule
+\end{longtable}
+
+\begin{table}[htbp]
+\centering
+\caption{各版本能力矩阵}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+能力 & v1 & v2 & v3 & v4 \\
+\midrule
+Regular 文件 + chunk 链 & \checkmark & \checkmark & \checkmark & \checkmark \\
+CFI anchor & — & \checkmark & \checkmark & \checkmark \\
+POSIX meta 行 & — & \checkmark & \checkmark & flags \\
+Symlink / device & — & \checkmark & \checkmark & flags \\
+Special file types & — & — & \checkmark & \checkmark \\
+二进制 chunk hash & — & — & — & 32B raw \\
+Feature \texttt{0x20} binary & — & — & — & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{v1 文本格式（遗留）}
+
+\begin{lstlisting}[caption={v1 行格式（\texttt{ReadManifestAuto}）},label={lst:manifest-v1}]
+F <relative_path> <size> <chunk_count>
+C <hex_sha256>
+...
+\end{lstlisting}
+
+无 \texttt{txn\_id} 行；无 footer CRC。仅用于迁移测试与 \texttt{EBMANIFEST1} 兼容读。
+
+\section{v2/v3 文本 body}
+
+\subsection{公共 body 结构}
+
+v2 与 v3 共用 \texttt{BuildBodyV2} / \texttt{ParseBodyV2}：
+
+\begin{lstlisting}[caption={v2 body 片段},label={lst:manifest-v2-body}]
+txn_id=<uint64>
+file\t<path_len>\t<size>\t<chunk_count>
+<relative_path>
+meta\tfile_type=...\tmode=...\tuid=...\tgid=...\tmtime=...\tatime=...
+symlink_target\t<len>
+<target bytes>
+device\t<major>\t<minor>
+chunk\t<hex_hash>
+anchor\t<offset>\t<length>\t<strength>\t<hex_hash>
+footer\t<8-hex-crc32>
+\end{lstlisting}
+
+文件格式：
+\begin{itemize}[nosep]
+  \item 首行之后为 body；末行 \texttt{footer\t<CRC32hex>} 不含于 CRC 计算；
+  \item CRC32 覆盖 body 字符串（含换行），算法 \texttt{Crc32}（\filepath{crc32.cc}）。
+\end{itemize}
+
+\subsection{v3 选型条件}
+
+\texttt{DocumentUsesV3(doc)} 为 true 当任一文件满足：
+非 \texttt{kRegular}、\texttt{has\_extended\_meta()}、非空 symlink、非零 device。
+
+此时 \texttt{WriteManifestAuto(prefer\_binary=false)} 选择 \texttt{WriteManifestV3}；否则 \texttt{WriteManifestV2}。
+
+\section{v4 二进制格式}
+
+\subsection{文件级布局}
+
+\begin{longtable}{@{}rrlp{7cm}@{}}
+\caption{EBMANIFEST4 物理文件结构} \\
+\toprule
+偏移 & 长度 & 内容 & 说明 \\
+\midrule
+0 & 变长 & 文本行 \texttt{EBMANIFEST4}+LF & ASCII header + 换行 \\
+$H$ & $B$ & binary body & \texttt{BuildBodyV4} 输出 \\
+$H+B$ & 4 & CRC32 LE & 覆盖 entire binary body \\
+\bottomrule
+\end{longtable}
+
+读路径：读尽 header 后加载剩余字节；末 4B 为 expected CRC；前面为 body；校验 \texttt{ComputeManifestV4BodyCrc32}。
+
+\subsection{Body 前缀}
+
+\begin{longtable}{@{}rrll@{}}
+\caption{v4 binary body 全局头} \\
+\toprule
+偏移（相对 body） & 长度 & 字段 & 值/说明 \\
+\midrule
+0 & 4 & inner magic & \texttt{0xEB4F0001} \\
+4 & 8 & \texttt{txn\_id} & uint64 LE \\
+12 & 4 & \texttt{file\_count} & uint32 LE \\
+\bottomrule
+\end{longtable}
+
+\subsection{Per-file record 布局}
+
+对每个文件依次序列化：
+
+\begin{enumerate}
+  \item \texttt{path\_len}（u32 LE）+ \texttt{relative\_path}（UTF-8 字节）；
+  \item \texttt{file\_type}（u8）；
+  \item \texttt{meta\_flags}（u32 LE）；
+  \item \texttt{size}（u64 LE）；
+  \item 条件字段（按 flags 位出现，顺序固定）；
+  \item \texttt{chunk\_count}（u32）+ \texttt{chunk\_count} $\times$ 32B raw hash；
+  \item \texttt{anchor\_count}（u32）+ 每条 anchor 固定布局。
+\end{enumerate}
+
+\section{Meta flags（v4）}
+
+\begin{lstlisting}[caption={ManifestV4MetaFlags},label={lst:v4-meta-flags}]
+enum ManifestV4MetaFlags : uint32_t {
+  kMetaMode    = 0x01u,  // u32 mode
+  kMetaUidGid  = 0x02u,  // u32 uid, u32 gid
+  kMetaTimes   = 0x04u,  // u64 mtime, u64 atime
+  kMetaSymlink = 0x08u,  // u32 len + bytes
+  kMetaDevice  = 0x10u,  // u32 major, u32 minor
+};
+\end{lstlisting}
+
+\texttt{BuildV4MetaFlags} 规则：
+\begin{itemize}[nosep]
+  \item \texttt{mode != 0} $\rightarrow$ \texttt{kMetaMode}；
+  \item \texttt{uid != 0xFFFFFFFF} 或 \texttt{gid != 0xFFFFFFFF} $\rightarrow$ \texttt{kMetaUidGid}；
+  \item 非零 mtime/atime $\rightarrow$ \texttt{kMetaTimes}；
+  \item 非空 symlink $\rightarrow$ \texttt{kMetaSymlink}；
+  \item 非零 device $\rightarrow$ \texttt{kMetaDevice}。
+\end{itemize}
+
+未置 flag 的字段在 v4 中\textbf{不占用}字节，实现稀疏 meta。
+
+\section{CFI anchor 编码（v4）}
+
+每条 anchor 在 chunk hash 数组之后：
+
+\begin{longtable}{@{}rrlp{5cm}@{}}
+\caption{v4 CFI anchor 二进制布局（每条 48B + 4B = 52B）} \\
+\toprule
+偏移 & 长度 & 字段 & 说明 \\
+\midrule
+0 & 8 & \texttt{offset} & 文件内锚点偏移 \\
+8 & 4 & \texttt{length} & 锚点覆盖长度 \\
+12 & 4 & strength + pad & \texttt{strength}（u8）+ 3B 零填充 \\
+16 & 32 & \texttt{hash[32]} & chunk Content ID \\
+48 & 4 & \texttt{rolling\_checksum} & CFI rolling 预检值 \\
+\bottomrule
+\end{longtable}
+
+v2/v3 文本格式对应行：
+\texttt{anchor\t<offset>\t<length>\t<strength>\t<hex\_hash>}（无 rolling\_checksum 字段；rolling 仅 v4 二进制携带）。
+
+HCRBO 增量备份读取 prior manifest anchor 链以 reuse chunk（见 \cref{ch:chunk-fastcdc}）。
+
+\section{WriteManifestAuto 选型逻辑}
+
+\begin{lstlisting}[caption={WriteManifestAuto},label={lst:write-manifest-auto}]
+Status WriteManifestAuto(const std::string& path, const ManifestDocument& doc,
+                         bool prefer_binary) {
+  if (prefer_binary) {
+    return WriteManifestV4(path, doc);
+  }
+  if (DocumentUsesV3(doc)) {
+    return WriteManifestV3(path, doc);
+  }
+  return WriteManifestV2(path, doc);
+}
+\end{lstlisting}
+
+\begin{table}[htbp]
+\centering
+\caption{写入路径触发条件}
+\begin{tabular}{@{}ll@{}}
+\toprule
+调用条件 & 输出 \\
+\midrule
+\texttt{prefer\_binary == true} & v4（\texttt{kBackupFeatureManifestBinary} 仓库） \\
+含 special/meta/symlink/device & v3 文本 \\
+仅 regular + chunk + anchor & v2 文本 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{BackupEngine} commit 时若 \texttt{RepoUsesManifestBinary(sb)} 则 \texttt{prefer\_binary=true}。Snapshot 归档复制已 commit 的 manifest 文件，保留原格式。
+
+\section{CRC32 footer 校验}
+
+\subsection{v2/v3 文本 footer}
+
+\begin{enumerate}[nosep]
+  \item \texttt{ComputeManifestBodyCrc32(body, \&crc)} — body 为 header 之后、footer 之前的全部文本；
+  \item 写入 \texttt{footer\t\%08x\textbackslash n}（小写 hex）；
+  \item 读时重建 body 字符串，比较 stored vs actual，不匹配 \texttt{Corrupt("manifest crc mismatch")}。
+\end{enumerate}
+
+\subsection{v4 二进制 trailer}
+
+\begin{enumerate}[nosep]
+  \item \texttt{ComputeManifestV4BodyCrc32(body\_vector, \&crc)} — 标准 CRC32，多项式同 \filepath{crc32.cc}；
+  \item 追加 4B little-endian CRC 至文件尾；
+  \item 读时分离 body 与 trailer，校验后 \texttt{ParseBodyV4}。
+\end{enumerate}
+
+\begin{invariantbox}[I-M1：Manifest 自描述完整性]
+Commit 前 manifest 必须完整写入并 fsync；CRC 覆盖 body 全部字节（v4 不含 ASCII header 行）。Restore/verify 通过 \texttt{ReadManifestAuto} 统一解析，自动识别 v1--v4。
+\end{invariantbox}
+
+\section{ReadManifestAuto 识别顺序}
+
+\begin{enumerate}[nosep]
+  \item \texttt{EBMANIFEST1} $\rightarrow$ v1 行解析；
+  \item \texttt{EBMANIFEST4} $\rightarrow$ 二进制 + CRC；
+  \item \texttt{EBMANIFEST2/3} $\rightarrow$ body + footer；
+  \item 其他 $\rightarrow$ \texttt{Corrupt("unknown manifest header")}。
+\end{enumerate}
+
+\section{与 superblock / snapshot 的关系}
+
+\begin{itemize}
+  \item 活跃 manifest 路径：\filepath{<repo>/manifest}；superblock \texttt{manifest\_offset} 指向 commit 点；
+  \item Snapshot 复制为 \filepath{snapshots/<txn>.manifest}（见 \cref{ch:snapshot-retention}）；
+  \item Verify 比较 manifest chunk 引用与 \texttt{ChunkStore} live set；
+  \item GC \texttt{CollectReferencedHashesRetained} 合并 latest manifest 与\textbf{全部} snapshot manifest 的 hash 并集。
+\end{itemize}
+
+\section{示例：v4 单文件 hex 结构（概念）}
+
+\begin{designbox}[调试提示]
+使用 \texttt{xxd manifest} 时：首行可见 \texttt{45424d414e494645535434}（\texttt{EBMANIFEST4}）；随后 \texttt{01 00 4f eb} 为 inner magic \texttt{0xEB4F0001} LE；末 4 字节为 body CRC。\\
+\texttt{manifest\_v4\_test.cc} 含 round-trip 与 corrupt CRC 用例。
+\end{designbox}
+
+\section{v2/v3 文本 anchor 行详解}
+
+文本 manifest 中 CFI anchor 行格式：
+\begin{verbatim}
+anchor\t<offset>\t<length>\t<strength>\t<hex_hash_64>
+\end{verbatim}
+
+\texttt{strength} 为整数枚举 \texttt{AnchorStrength}（\filepath{cfi\_index.h}）。解析时 \texttt{HexToBytes} 将 64 字符 hex 转为 32B hash 写入 \texttt{ChunkAnchor}。v4 二进制 additionally 持久化 \texttt{rolling\_checksum}（u32），供 HCRBO rolling 预检直接加载，无需重算。
+
+\section{ManifestFileEntry 辅助逻辑}
+
+\texttt{has\_extended\_meta()} 判定是否需 v3/v4 meta 扩展：非 regular type、非零 mode/mtime/atime、非默认 uid/gid 任一成立即 true。\texttt{needs\_chunking()} 仅 \texttt{kRegular} 为 true——目录/symlink 等 special file 无 chunk 链，\texttt{chunk\_count=0}。
+
+\texttt{ManifestEntryFromScanMeta} 在 scan 阶段构造 entry 骨架，chunk 链由后续 chunking 阶段填充。
+
+\section{WriteManifestWithHeader 与 fsync}
+
+v2/v3 写入路径 \texttt{WriteManifestWithHeader}：
+\begin{enumerate}[nosep]
+  \item 计算 body CRC32；
+  \item 写 header 行 + body + footer；
+  \item \texttt{flush}、关闭、\texttt{FsyncPath(path)}。
+\end{enumerate}
+
+v4 \texttt{WriteManifestV4} 使用 binary \texttt{trunc} 模式，无文本 footer 行；CRC 为 4B 二进制 trailer。
+
+\section{ReadManifestAuto 错误路径}
+
+\begin{itemize}[nosep]
+  \item v2/v3：缺少 \texttt{footer\t} 行 $\rightarrow$ \texttt{Corrupt("manifest footer missing")}；
+  \item v4：文件 $<$ 4B $\rightarrow$ \texttt{Corrupt("manifest v4 too short")}；CRC 不等 $\rightarrow$ \texttt{manifest v4 crc mismatch}；
+  \item body 解析：path\_len 越界、chunk 区不足 $32\times count$ 字节 $\rightarrow$ 细分 Corrupt 消息（便于定位损坏偏移）。
+\end{itemize}
+
+\section{Feature kBackupFeatureManifestBinary}
+
+Superblock \texttt{backup\_features} bit \texttt{0x20}：commit 时 \texttt{WriteManifestAuto(..., prefer\_binary=true)}。读路径\textbf{无需} feature——\texttt{ReadManifestAuto} 按 header 自动识别。旧仓库升级 feature 后下一次 backup 写入 v4；历史 v2 snapshot 仍可读。
+
+\section{txn\_id 一致性}
+
+\texttt{ManifestDocument::txn\_id} 必须等于 superblock \texttt{txn\_id} 与 snapshot \texttt{SnapshotEntry::txn\_id}。Verify 可选检查此项；restore 不修改 txn\_id，仅作诊断。
+
+\section{与 MergeMetaManifestEntries 的关系}
+
+v0.9.0 \texttt{BackupEngine} 在 commit 前可 \texttt{std::async} 执行 \texttt{MergeMetaManifestEntries}，与 \texttt{ChunkStore::Flush} 重叠，但仍在 superblock commit 前 join。Manifest body 构建 CPU 与 IO flush 并行，不改变 on-disk 格式。
+
+\section{本章小结}
+
+Manifest 从 v1 纯文本演进至 v4 紧凑二进制：v4 以 meta flags 稀疏编码 POSIX 字段，以 32B raw hash 与 52B anchor 记录表达 CFI。\\
+\texttt{WriteManifestAuto} 在新仓库默认 v4（binary feature），旧内容或纯 regular 仓库仍可用 v2/v3 文本。下一章 \cref{ch:snapshot-retention} 描述 snapshot 索引与 GFS 保留策略。

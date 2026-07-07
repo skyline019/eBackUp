@@ -1,0 +1,241 @@
+\chapter{总体架构与模块边界}
+\label{ch:architecture}
+
+\section{五层逻辑架构}
+
+内核在逻辑上分为五层，自顶向下依赖单向流动：API 层调用编排层；编排层驱动 Pipeline 数据平面；数据平面操作概念层抽象；概念层通过 OS 抽象访问文件系统。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  layer/.style={rectangle, draw, minimum width=11.5cm, minimum height=1.15cm, align=center},
+  node distance=0.38cm
+]
+  \node[layer, fill=blue!8] (api) {L1 对外 API：\texttt{eb backup/restore/verify}、\texttt{eb\_backup\_run}（\filepath{cli/eb\_main.cc}、\filepath{eb\_backup.h}）};
+  \node[layer, fill=green!8, below=of api] (orch) {L2 编排层：\texttt{BackupEngine}、\texttt{RestoreEngine}、\texttt{BackupSyncExecutor}、daemon schedule/watch};
+  \node[layer, fill=yellow!10, below=of orch] (pipe) {L3 数据平面：\texttt{RunBackupPipeline}、StreamingChunkCpuPipeline、\texttt{FileScheduler}、\texttt{DigestPool}};
+  \node[layer, fill=orange!8, below=of pipe] (concept) {L4 概念层：FastCDC/HCRBO、ChunkStore/EbPack、Manifest v4、Snapshot、RAR/Merkle、ContentClass};
+  \node[layer, fill=gray!10, below=of concept] (os) {L5 OS 抽象：mmap（\texttt{MmapReader}）、\texttt{FsyncPath}、fstream、subprocess 测试 harness};
+  \draw[arrow] (api) -- (orch);
+  \draw[arrow] (orch) -- (pipe);
+  \draw[arrow] (pipe) -- (concept);
+  \draw[arrow] (concept) -- (os);
+\end{tikzpicture}
+\caption{ebbackup 五层架构}
+\label{fig:layered-arch}
+\end{figure}
+
+\section{BackupEngine：备份 FSM 中心}
+
+\texttt{BackupEngine}（\filepath{include/ebbackup/engine/backup\_engine.h}）持有仓库路径、\texttt{BackupSuperBlock}、manifest 读写、\texttt{ChunkStore} 实例，驱动一次 backup/verify/recover/compact 事务。
+
+\begin{designbox}[设计要点]
+\begin{itemize}[nosep]
+  \item 每次 backup 分配单调递增 \texttt{txn\_id}（自 \texttt{ext.next\_txn\_id}）；
+  \item phase 写入 superblock critical 区（512B），crash 后 \texttt{Open()} $\rightarrow$ \texttt{StartupSelfCheck()} 可检测并标记 \texttt{kAborted}；
+  \item \texttt{ResolveBackupOptions} 根据 repo feature flags 自动启用 pipeline、EbPack、compress-auto；
+  \item Coalesced meta 仓库在 backup 进行中延迟 superblock 落盘，complete/abort 时提交；
+  \item 所有 phase 转移经 \texttt{BackupSyncExecutor::Dispatch}，便于测试注入与审计。
+\end{itemize}
+\end{designbox}
+
+\subsection{公开操作分类}
+
+\begin{longtable}{@{}llp{7.5cm}@{}}
+\toprule
+类别 & 入口 & 行为摘要 \\
+\midrule
+全量/增量备份 & \texttt{RunBackup} & scan $\rightarrow$ chunk $\rightarrow$ store $\rightarrow$ Flush $\rightarrow$ manifest $\rightarrow$ superblock \\
+验证 & \texttt{Verify} / \texttt{VerifyAt(txn)} & manifest 与 chunk 引用一致性；可选 Merkle \\
+恢复 & \texttt{RestoreEngine} & 选择性 filter；可选内容 Merkle 校验 \\
+Recover & \texttt{Recover()} & 显式 abort 当前 txn；phase $\rightarrow$ \texttt{kAborted} \\
+运维 & \texttt{Compact}、\texttt{GcOrphans}、\texttt{GetRepoStats}、\texttt{PruneSnapshots} & 见 Part II \\
+\bottomrule
+\end{longtable}
+
+\section{BackupSyncExecutor 与规则注册}
+
+\texttt{BackupSyncExecutor}（\filepath{include/ebbackup/state/sync\_executor.h}）实现\textbf{同步事件分发器}：将 \texttt{BackupEvent} 映射到 handler，更新 \texttt{BackupContext::phase}。
+
+\subsection{RegisterBackupSyncRules 注册表}
+
+\texttt{RegisterBackupSyncRules}（\filepath{src/engine/backup\_engine.cc}）在 \texttt{BackupEngine} 构造时调用，注册以下规则：
+
+\begin{longtable}{@{}llp{7cm}@{}}
+\toprule
+事件 & Handler 行为 & phase 结果 \\
+\midrule
+\texttt{kOpen} & 从 engine 读取当前 phase 填入 ctx & 不变 \\
+\texttt{kScanFile} & \texttt{NextPhase(..., kScanFile)} & \texttt{kScanning} \\
+\texttt{kChunkFile} & \texttt{NextPhase(..., kChunkFile)} & \texttt{kChunking} \\
+\texttt{kStoreChunk} & \texttt{NextPhase(..., kStoreChunk)} & \texttt{kStoring} \\
+\texttt{kCommitManifest} & \texttt{NextPhase(..., kCommitManifest)} & \texttt{kCommittingMeta} \\
+\texttt{kAppendAudit} & \texttt{NextPhase(..., kAppendAudit)} & \texttt{kAuditing} \\
+\texttt{kComplete} & \texttt{NextPhase(..., kComplete)} & \texttt{kIdle} \\
+\texttt{kVerify} & 仅允许 idle/complete/aborted；临时 auditing $\rightarrow$ idle & \texttt{kIdle} \\
+\texttt{kRecover} & 强制 & \texttt{kAborted} \\
+\texttt{kGcOrphans} & 冲突检测（busy phase） & 视状态 \\
+\bottomrule
+\end{longtable}
+
+非法转移（\texttt{NextPhase} 返回 \texttt{kAborted}）在 \texttt{DispatchTransition} 中计 \texttt{unexpected\_transitions} 并返回 \texttt{Internal}。
+
+\section{模块边界与依赖表}
+
+\begin{table}[htbp]
+\centering
+\caption{模块边界（谁可以调用谁）}
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+模块 & 上游调用方 & 下游依赖 & 禁止 \\
+\midrule
+CLI / C API & 用户/FFI & BackupEngine & 直接写 chunk 文件 \\
+BackupEngine & CLI/C API/daemon & Pipeline, Store, Manifest & 绕过 Flush 写 manifest \\
+RunBackupPipeline & BackupEngine & FastCDC, ChunkStore, DigestPool & 改变 Content ID \\
+ChunkStore & Pipeline, Engine & EbPack, chunk.idx, fsync & 无锁跨 shard rehash（v0.9 前 bug） \\
+RestoreEngine & BackupEngine & ChunkStore, filter & 修改 repo \\
+BackupSuperBlockStore & BackupEngine & fsync & 单 slot 覆盖写 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{BackupPhase 状态机}
+
+\begin{lstlisting}[caption={BackupPhase 与 BackupEvent（\filepath{backup\_phase.h}）},label={lst:backup-phase}]
+enum class BackupPhase : uint8_t {
+  kIdle = 0, kScanning = 1, kChunking = 2, kStoring = 3,
+  kCommittingMeta = 4, kAuditing = 5, kComplete = 6,
+  kAborted = 0xFF,
+};
+enum class BackupEvent {
+  kOpen, kScanFile, kChunkFile, kStoreChunk, kCommitManifest,
+  kAppendAudit, kVerify, kRecover, kGcOrphans, kComplete,
+};
+\end{lstlisting}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=\flowdistance]
+  \node[flowstep] (idle) {kIdle / kAborted};
+  \node[flowstep, below=of idle] (scan) {kScanning};
+  \node[flowstep, below=of scan] (chunk) {kChunking};
+  \node[flowstep, below=of chunk] (store) {kStoring};
+  \node[flowstep, below=of store] (commit) {kCommittingMeta};
+  \node[flowstep, below=of commit] (audit) {kAuditing};
+  \node[flowdata, right=3cm of chunk] (abort) {非法 event\\$\rightarrow$ kAborted};
+
+  \draw[arrow] (idle) -- node[right,font=\scriptsize]{kScanFile} (scan);
+  \draw[arrow] (scan) -- node[right,font=\scriptsize]{kChunkFile} (chunk);
+  \draw[arrow] (chunk) -- node[right,font=\scriptsize]{kStoreChunk} (store);
+  \draw[arrow] (store) -- node[right,font=\scriptsize]{kCommitManifest} (commit);
+  \draw[arrow] (commit) -- node[right,font=\scriptsize]{kAppendAudit} (audit);
+  \draw[arrow] (audit) -- node[right,font=\scriptsize]{kComplete} (idle);
+  \draw[arrow, dashed, red] (scan.east) -- (abort.west);
+  \draw[arrow, dashed, red] (chunk.east) -- (abort.west);
+  \draw[arrow, dashed, red] (store.east) -- (abort.west);
+\end{tikzpicture}
+\caption{正常备份 phase 链；非法转移 $\rightarrow$ \texttt{kAborted}}
+\label{fig:fsm-phases}
+\end{figure}
+
+Powerfail 测试通过 \texttt{EBTEST\_ABORT\_AFTER=<phase\_enum>} 在指定 phase 注入 abort（见 \cref{ch:test-ci}）。
+
+\section{Pipeline 路由（\versiontag{0.9.4}）}
+
+\texttt{RunBackupPipeline}（\filepath{src/pipeline/backup\_pipeline.cc}）根据文件数量、大小、\texttt{worker\_count} 与环境变量选择拓扑：
+
+\begin{table}[htbp]
+\centering
+\caption{单文件 full backup 路由（\texttt{worker\_count==0}）}
+\begin{tabular}{@{}llp{6.2cm}@{}}
+\toprule
+条件 & 路径 & 实现 \\
+\midrule
+$\leq$32\,MB & L3a sequential & \texttt{RunSingleFileInlinePipeline} / \texttt{ChunkPendingFiles} \\
+$>$32\,MB 默认 & Streaming & \texttt{RunSingleFileStreamingChunkPipeline}（32MB feed + 2 encode + 1 store） \\
+$>$32\,MB + opt-in & Fast slice & \texttt{ChunkFileStreamingFastSlice}（\texttt{EBBACKUP\_CDC\_FAST\_SLICE=1}） \\
+多文件 / \texttt{workers$>$0} & Pipeline v4 & 全局 \texttt{ChunkTask}/\texttt{EncodedChunkTask} 队列 \\
+增量 backup & Pipeline v4 & HCRBO 路径 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+环境变量 \texttt{EBBACKUP\_FORCE\_STREAM\_CDC=1} 禁用 FastCdcSlice 路由，强制 stream-feed CDC（parity 回归用）。
+
+\section{BackupPipelineOptions 完整字段表}
+
+定义见 \filepath{include/ebbackup/pipeline/backup\_pipeline.h}。
+
+\begin{longtable}{@{}llp{7.5cm}@{}}
+\toprule
+字段 & 类型/默认 & 语义 \\
+\midrule
+\texttt{use\_lz4} & \texttt{bool}, false & 兼容字段；优先用 \texttt{compress\_mode} \\
+\texttt{use\_encryption} & \texttt{bool}, false & AES-GCM 写入 \\
+\texttt{content\_key} & \texttt{const uint8\_t*}, null & 32B 内容密钥 \\
+\texttt{use\_mmap} & \texttt{bool}, true & Reader 零拷贝 \texttt{MmapReader}；多 worker 大文件可能 false \\
+\texttt{queue\_depth} & \texttt{size\_t}, 32 & chunk/encoded 队列深度（v0.6+） \\
+\texttt{worker\_count} & \texttt{size\_t}, 0 & 0=引擎自适应；$>$0 强制 threaded v4 \\
+\texttt{store\_shard\_count} & \texttt{size\_t}, 16 & Store worker 数，对齐 EbPack shard \\
+\texttt{digest\_algo} & \texttt{DigestAlgo}, Legacy & 由 repo \texttt{kBackupFeatureDigestStandard} 决定 \\
+\texttt{compress\_mode} & \texttt{CompressMode}, Off & off/lz4/zstd/auto \\
+\texttt{cpu\_budget\_permille} & \texttt{uint32\_t}, 1000 & ContentClass CPU 预算 \\
+\texttt{chunk\_profile} & \texttt{ChunkProfileMode}, Auto & 分块参数自动/固定 \\
+\texttt{durability} & \texttt{DurabilityMode}, Strict & strict/balanced spill 阈值 \\
+\texttt{content\_stats} & 指针, null & 输出 ContentClass 计数 \\
+\texttt{phase\_stats} & 指针, null & 非空时收集 \texttt{PipelinePhaseStats}（L5 profile） \\
+\bottomrule
+\caption{BackupPipelineOptions 全字段}
+\end{longtable}
+
+\section{Init 默认特性对照（v0.3 / v0.4 / v0.6）}
+
+测试 helper 与 C API \texttt{init\_repo\_ex} 定义了三代默认仓库（\filepath{tests/helpers/test\_util.h}）：
+
+\begin{table}[htbp]
+\centering
+\caption{仓库 Init 默认 feature 对照}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+特性 & v0.3 (\texttt{InitV03Repo}) & v0.4 & v0.6 (\texttt{InitDefaultRepo}) \\
+\midrule
+Standard digest & \checkmark & \checkmark & \checkmark \\
+Persistent index & \checkmark & \checkmark & \checkmark \\
+Manifest v4 binary & \checkmark & \checkmark & \checkmark \\
+Snapshots & \checkmark & \checkmark & \checkmark \\
+EbPack & $\times$ & $\times$ & \checkmark \\
+Coalesced meta & $\times$ & $\times$ & \checkmark \\
+Legacy \texttt{data/chunks/} & 是 & 是 & 否（packs 为主） \\
+C API \texttt{init\_repo()} 无 flag & Legacy digest & — & 同左；需 \texttt{init\_repo\_ex(0)} 得现代默认 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{eb init} CLI 默认调用 \texttt{InitRepoEx} 现代特性集（等同 \texttt{InitV05Repo}）。\texttt{EB\_BACKUP\_INIT\_LEGACY} 仅保留最简 M5 布局。
+
+\section{CLI / C API / Daemon 边界}
+
+\begin{longtable}{@{}llp{7.5cm}@{}}
+\toprule
+面 & 实现 & 职责边界 \\
+\midrule
+\textbf{CLI} & \filepath{cli/eb\_main.cc} & init、backup、restore、verify、compact、repo-stats、list/prune-snapshots、bench；解析 argv；人类可读错误 \\
+\textbf{C API} & \filepath{src/engine/eb\_backup\_capi.cc} & 稳定 ABI v12；\texttt{EbStatus} 错误码；供 FFI/嵌入；无 JSON \\
+\textbf{Daemon} & \filepath{src/daemon/backup\_daemon.cc} & JSON schedule 文件；watch 目录；单 repo \texttt{current} 增量链；不暴露网络 RPC \\
+\textbf{BackupEngine} & 内核 & 三入口最终汇聚；持有 repo 锁语义（compact busy 检测） \\
+\bottomrule
+\end{longtable}
+
+\begin{designbox}[集成建议]
+\begin{itemize}[nosep]
+  \item \textbf{嵌入式/语言绑定}：仅依赖 \filepath{eb\_backup.h}，通过 \texttt{eb\_backup\_abi\_version()} 校验；
+  \item \textbf{脚本/运维}：优先 \texttt{eb} CLI；powerfail 测试复用 CLI 子进程；
+  \item \textbf{定时备份}：daemon 或外部 cron 调用 \texttt{eb backup}；daemon 适合 watch + auto\_prune 组合。
+\end{itemize}
+\end{designbox}
+
+\section{本章小结}
+
+ebbackup 架构以 \textbf{BackupEngine FSM} + \textbf{BackupSyncExecutor} + \textbf{双槽 superblock} 为控制平面锚点；Pipeline 层负责吞吐优化且不得改变 Content ID 语义。下一章形式化不变量与 commit-point 耐久语义。

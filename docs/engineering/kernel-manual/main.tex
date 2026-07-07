@@ -1,0 +1,50 @@
+% !TEX program = xelatex
+\documentclass[12pt,a4paper,openany]{ctexbook}
+
+\input{preamble.tex}
+
+\title{ebbackup 工程技术文档\\[0.4em]\large 内容寻址备份内核与运维闭环}
+\author{ebbackup Project\\\filepath{engine\_cpp/} 内核 + \filepath{docs/} 归档}
+\date{2026-07-07\\{\small 基于 commit \texttt{4a7ac94}（\versiontag{0.9.4}）· 完整扩写 v1.1}}
+
+\begin{document}
+
+\frontmatter
+\maketitle
+\input{chapters/00-frontmatter.tex}
+\tableofcontents
+\listoffigures
+\listoftables
+\lstlistoflistings
+
+\mainmatter
+% --- Part I: 备份内核 ---
+\input{chapters/01-overview.tex}
+\input{chapters/02-architecture.tex}
+\input{chapters/03-invariants-durability.tex}
+\input{chapters/04-backup-engine.tex}
+\input{chapters/05-chunk-fastcdc.tex}
+\input{chapters/06-chunk-hcrbo.tex}
+\input{chapters/07-digest-crypto.tex}
+\input{chapters/08-chunk-store.tex}
+\input{chapters/09-ebpack-index.tex}
+\input{chapters/10-manifest-format.tex}
+\input{chapters/11-snapshot-retention.tex}
+\input{chapters/12-pipeline-v4.tex}
+\input{chapters/13-streaming-cdc.tex}
+\input{chapters/14-restore-verify.tex}
+\input{chapters/15-audit-rar-merkle.tex}
+\input{chapters/16-daemon-cli.tex}
+
+\input{chapters/part2-ops.tex}
+
+\input{chapters/17-bench-gates.tex}
+\input{chapters/18-c-api.tex}
+\input{chapters/19-compact-gc.tex}
+\input{chapters/20-test-ci.tex}
+
+\appendix
+\input{chapters/99-appendix.tex}
+
+\backmatter
+\end{document}

@@ -1,0 +1,557 @@
+\chapter{BackupEngine 与备份 FSM}
+\label{ch:backup-engine}
+
+\section{章节定位}
+
+\texttt{BackupEngine} 是 ebbackup 内核的\textbf{编排中枢}：它持有仓库路径、SuperBlock、\texttt{ChunkStore} 实例与一次 backup 事务的全部中间状态，通过确定性有限状态机（FSM）驱动 scan $\rightarrow$ chunk $\rightarrow$ store $\rightarrow$ manifest commit $\rightarrow$ audit 的完整写路径。Pipeline 拓扑（见 \cref{ch:pipeline-v4}）、FastCDC/HCRBO 分块（见 \cref{ch:chunk-fastcdc,ch:chunk-hcrbo}）与 ChunkStore 持久化（见 \cref{ch:chunk-store}）均作为\textbf{被调用子系统}挂接在引擎之下。
+
+\begin{designbox}[设计原则]
+\begin{itemize}[nosep]
+  \item \textbf{单调 txn\_id}：每次 \texttt{RunBackup} 自 \texttt{GetNextTxnId} 分配新事务号，写入 SuperBlock critical 区；
+  \item \textbf{Phase 可恢复}：critical 区 \texttt{phase} 字段记录当前 FSM 位置，crash 后 \texttt{Open()} 可判定 abort 或 manifest-ahead 恢复；
+  \item \textbf{Commit-point 唯一}：manifest 原子 rename 之前，所有新 chunk 必须经 \texttt{ChunkStore::Flush()} 落盘（I-B2，\cref{ch:invariants}）；
+  \item \textbf{选项解析集中}：\texttt{ResolveBackupOptions} 根据 repo feature flags 自动启用 EbPack pipeline、压缩 auto 等，避免 CLI/daemon/C API 重复逻辑。
+\end{itemize}
+\end{designbox}
+
+\textbf{实现位置}：
+\begin{itemize}[nosep]
+  \item 头文件：\filepath{engine\_cpp/include/ebbackup/engine/backup\_engine.h}
+  \item 源文件：\filepath{engine\_cpp/src/engine/backup\_engine.cc}（约 1170 行）
+  \item FSM 定义：\filepath{engine\_cpp/include/ebbackup/state/backup\_phase.h}
+  \item 事件分发：\filepath{engine\_cpp/include/ebbackup/state/sync\_executor.h}
+\end{itemize}
+
+%--------------------------------------------------------------------
+\section{BackupEngine 类结构}
+\label{sec:be-class}
+
+\subsection{公开 API 概览}
+
+\texttt{BackupEngine} 对外暴露仓库生命周期、备份/验证/恢复、运维四类接口：
+
+\begin{longtable}{@{}p{3.6cm}p{9.8cm}@{}}
+\toprule
+\textbf{方法} & \textbf{语义} \\
+\midrule
+\endhead
+\texttt{InitRepo} / \texttt{InitRepoEx} &
+  静态方法；创建 \filepath{data/}、\filepath{audit/} 目录，写入初始 SuperBlock（\texttt{kIdle}，\texttt{next\_txn\_id=1}），按 \texttt{RepoInitOptions} 设置 feature flags。 \\
+\texttt{Open} &
+  加载 SuperBlock 双槽、打开 \texttt{ChunkStore}，执行 \texttt{StartupSelfCheck}，注册 FSM handler，派发 \texttt{kOpen} 事件。 \\
+\texttt{Recover} &
+  强制 \texttt{SetPhase(kAborted)} 并 \texttt{Commit} SuperBlock；用于人工或测试 harness 标记中断事务。 \\
+\texttt{RunBackup} &
+  一次完整 backup 事务的主入口（本章核心）。 \\
+\texttt{Verify} &
+  深度校验 manifest 与 chunk 引用、Merkle root、RAR chain；可选 CARL anchor 强制校验。 \\
+\texttt{Restore} &
+  委托 \texttt{RestoreEngine}（见 \cref{ch:restore-verify-v4}）。 \\
+\texttt{Compact} / \texttt{GcOrphans} / \texttt{GetRepoStats} / \texttt{ListSnapshots} / \texttt{PruneSnapshots} &
+  运维与 retention 接口；\texttt{GcOrphans} 通过 FSM \texttt{kGcOrphans} 事件做 phase 门禁。 \\
+\texttt{SetProgressCallback} &
+  注册 \texttt{ProgressCallback}，permille 映射见 \cref{sec:be-progress}。 \\
+\bottomrule
+\caption{BackupEngine 公开 API}
+\label{tab:be-api}
+\end{longtable}
+
+\subsection{私有成员与 pending 缓冲}
+
+引擎在单次 backup 过程中维护以下\textbf{事务内}状态（\texttt{RunBackup} 入口清零）：
+
+\begin{structbox}[BackupEngine 事务缓冲]
+\begin{itemize}[nosep]
+  \item \texttt{pending\_scan\_entries\_}：\texttt{ScanDirectory} 输出的 \texttt{ScanEntry} 列表；
+  \item \texttt{pending\_files\_}：需分块的常规文件绝对路径；
+  \item \texttt{pending\_file\_bytes\_}：sequential 路径下读入内存的文件内容；
+  \item \texttt{pending\_chunks\_}：每文件 \texttt{ChunkDescriptor} 向量；
+  \item \texttt{pending\_cfi\_}：每文件 \texttt{CfiIndex}（HCRBO 锚点，供 manifest 序列化）；
+  \item \texttt{pending\_manifest\_}：待提交的 \texttt{ManifestFileEntry} 列表；
+  \item \texttt{pending\_meta\_entries\_}：符号链接/目录等非分块条目的 manifest skeleton；
+  \item \texttt{source\_root\_}：本次 backup 源根路径；
+  \item \texttt{last\_manifest\_crc32\_}、\texttt{last\_merkle\_root\_}：commit 后缓存，写入 SuperBlock extension。
+\end{itemize}
+\end{structbox}
+
+\texttt{chunk\_store\_} 与 \texttt{superblock\_store\_} 为 \texttt{unique\_ptr}，在 \texttt{Open()} 时构造；\texttt{sync\_} 为 \texttt{BackupSyncExecutor}，在 \texttt{RegisterBackupSyncRules} 中绑定各 \texttt{BackupEvent} handler。
+
+%--------------------------------------------------------------------
+\section{BackupOptions 与 RepoInitOptions}
+\label{sec:be-options}
+
+\subsection{BackupOptions 字段详解}
+
+\texttt{BackupOptions} 控制单次 \texttt{RunBackup} 的行为；默认值偏向「最小 surprise」的 sequential 路径，repo feature 可在 \texttt{ResolveBackupOptions} 中覆盖。
+
+\begin{longtable}{@{}p{3.8cm}cp{7.8cm}@{}}
+\toprule
+\textbf{字段} & \textbf{默认} & \textbf{说明} \\
+\midrule
+\endhead
+\texttt{use\_pipeline} & \texttt{false} &
+  启用 \texttt{RunPipelineBackup}；EbPack repo 在 \texttt{ResolveBackupOptions} 中自动置 \texttt{true}（除非 \texttt{disable\_pipeline}）。 \\
+\texttt{disable\_pipeline} & \texttt{false} &
+  显式禁用 pipeline，用于 \texttt{--no-pipeline} 与 L3a ratio 测试。 \\
+\texttt{use\_lz4} / \texttt{compress\_mode} &
+  off &
+  压缩策略；\texttt{use\_lz4=true} 等价于 \texttt{CompressMode::kLz4}。\texttt{kAuto} 时 CPU budget 默认 600‰。 \\
+\texttt{require\_anchor} & \texttt{false} &
+  \texttt{Verify} 时强制 CARL anchor 校验（与 \texttt{EBBACKUP\_AUDIT\_KEY} 等效）。 \\
+\texttt{use\_encryption} / \texttt{encryption\_password} &
+  off / empty &
+  AES-256-GCM 内容加密；Content ID 仍为明文 SHA256（I-B1）。 \\
+\texttt{filter} & default &
+  \texttt{BackupFilterOptions}：include/exclude glob、max depth 等。 \\
+\texttt{cpu\_budget\_permille} & 1000 &
+  压缩 auto 模式的 CPU 预算（‰）。 \\
+\texttt{durability} & \texttt{kStrict} &
+  \texttt{ChunkStore} spill/fsync 频率；\texttt{kBalanced} 降低写放大（\cref{ch:invariants}）。 \\
+\texttt{chunk\_profile} & \texttt{kAuto} &
+  FastCDC/HCRBO 参数档位；见 \cref{ch:chunk-fastcdc}。 \\
+\texttt{snapshot\_txn\_id} & 0 &
+  \texttt{Verify} 时指定历史 snapshot txn。 \\
+\texttt{gc\_latest\_manifest\_only} & \texttt{false} &
+  \texttt{GcOrphans} 仅引用 latest manifest（非 snapshot retention 模式）。 \\
+\texttt{worker\_count} & 0 &
+  Pipeline worker 数；0 表示引擎自适应；$>$1 时禁用 mmap reader。 \\
+\texttt{store\_shard\_count} & 16 &
+  Store worker 分片数，对齐 EbPack shard。 \\
+\bottomrule
+\caption{BackupOptions 字段}
+\label{tab:backup-options}
+\end{longtable}
+
+\subsection{RepoInitOptions 与 feature flags}
+
+\texttt{InitRepoEx} 通过 \texttt{RepoInitOptions} 在仓库创建时固化能力位，写入 \texttt{sb.ext.backup\_features}：
+
+\begin{table}[htbp]
+\centering
+\caption{RepoInitOptions 与 \texttt{backup\_features} 映射}
+\label{tab:repo-init-features}
+\begin{tabular}{@{}lll@{}}
+\toprule
+选项 & Feature 常量 & 值 \\
+\midrule
+\texttt{standard\_digest} & \texttt{kBackupFeatureDigestStandard} & 0x001 \\
+\texttt{persistent\_index} & \texttt{kBackupFeaturePersistentIndex} & 0x002 \\
+\texttt{manifest\_binary} & \texttt{kBackupFeatureManifestBinary} & 0x004 \\
+\texttt{snapshots} & \texttt{kBackupFeatureSnapshots} & 0x008 \\
+\texttt{ebpack} & \texttt{kBackupFeatureEbPack} & 0x010 \\
+\texttt{coalesced\_meta} & \texttt{kBackupFeatureCoalescedMeta} & \textbf{0x200} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{ResolveBackupOptions} 在每次 backup 开始时\textbf{重建} \texttt{backup\_features}（保留 digest/index/binary/snapshot/ebpack/coalesced 位，并按运行时选项追加 encrypted、meta、balanced durability 等），确保 SuperBlock 反映本次事务实际启用的能力。
+
+%--------------------------------------------------------------------
+\section{BackupStats 统计字段}
+\label{sec:be-stats}
+
+\texttt{BackupStats} 在 \texttt{RunBackup} 入口清零，由各子阶段累加；可通过 \texttt{engine.stats()} 只读访问，亦被 Pipeline 与 bench 消费。
+
+\begin{longtable}{@{}p{4.2cm}p{9.2cm}@{}}
+\toprule
+\textbf{字段} & \textbf{累加来源} \\
+\midrule
+\endhead
+\texttt{files\_processed} & \texttt{StorePendingChunks} 每文件 +1；Pipeline 路径由 \texttt{RunBackupPipeline} 更新。 \\
+\texttt{chunks\_written} & \texttt{PutKnownHash} 返回 \texttt{newly\_written=true} 时 +1。 \\
+\texttt{chunks\_reused} & Store 阶段跳过已存在 hash（dedup hit 或 CFI reuse 且 \texttt{Exists}）。 \\
+\texttt{chunks\_reused\_from\_cfi} & HCRBO \texttt{ChunkIncremental} 标记 \texttt{reused\_from\_cfi} 的 chunk 数（分块阶段统计）。 \\
+\texttt{bytes\_processed} & Store 阶段按文件原始字节累加。 \\
+\texttt{unexpected\_transitions} & \texttt{DispatchTransition} 若 FSM 落入 \texttt{kAborted} 则 +1 并返回错误。 \\
+\texttt{orphan\_chunks\_hint} & \texttt{Open}/\texttt{StartupSelfCheck} 从中断 txn 的 \texttt{chunks\_written} 推断 orphan 提示。 \\
+\texttt{content\_class} & \texttt{ContentClassStats}：auto 压缩路径下各内容类别的 encode 决策计数。 \\
+\bottomrule
+\caption{BackupStats 字段语义}
+\label{tab:backup-stats}
+\end{longtable}
+
+\begin{invariantbox}[Stats 与 SuperBlock 同步]
+\texttt{PersistSuperBlock} 将 \texttt{stats\_.chunks\_written} 与 \texttt{stats\_.bytes\_processed} 镜像至 \texttt{sb\_.critical}，供 crash 后 orphan GC 提示与审计对账。Coalesced meta 模式下，backup 进行中该镜像仅驻内存（见 \cref{sec:be-coalesced}）。
+\end{invariantbox}
+
+%--------------------------------------------------------------------
+\section{备份 FSM：Phase、Event 与 NextPhase}
+\label{sec:be-fsm}
+
+\subsection{Phase 枚举}
+
+\begin{lstlisting}[caption={BackupPhase 与 BackupEvent（\filepath{backup\_phase.h}）},label={lst:backup-phase-full}]
+enum class BackupPhase : uint8_t {
+  kIdle = 0,
+  kScanning = 1,
+  kChunking = 2,
+  kStoring = 3,
+  kCommittingMeta = 4,
+  kAuditing = 5,
+  kComplete = 6,      // 保留值；正常完成落 kIdle
+  kAborted = 0xFF,
+};
+
+enum class BackupEvent {
+  kOpen, kScanFile, kChunkFile, kStoreChunk,
+  kCommitManifest, kAppendAudit, kVerify,
+  kRecover, kGcOrphans, kComplete,
+};
+\end{lstlisting}
+
+\subsection{NextPhase 转移表}
+
+\texttt{NextPhase(current, event)} 为\textbf{纯函数}，无隐式副作用；非法组合返回 \texttt{kAborted}。
+
+\begin{table}[htbp]
+\centering
+\caption{NextPhase 合法转移（正常 backup 链）}
+\label{tab:next-phase}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+当前 Phase & Event & 下一 Phase \\
+\midrule
+\texttt{kIdle} / \texttt{kAborted} & \texttt{kScanFile} & \texttt{kScanning} \\
+\texttt{kScanning} & \texttt{kChunkFile} & \texttt{kChunking} \\
+\texttt{kChunking} & \texttt{kStoreChunk} & \texttt{kStoring} \\
+\texttt{kStoring} & \texttt{kCommitManifest} & \texttt{kCommittingMeta} \\
+\texttt{kCommittingMeta} & \texttt{kAppendAudit} & \texttt{kAuditing} \\
+\texttt{kCommittingMeta} & \texttt{kComplete} & \texttt{kIdle} \\
+\texttt{kAuditing} & \texttt{kComplete} & \texttt{kIdle} \\
+（任意非法组合） & --- & \texttt{kAborted} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{BackupSyncExecutor 与 RegisterBackupSyncRules}
+
+\texttt{BackupSyncExecutor} 维护 \texttt{(BackupEvent, BackupHandler)} 规则向量。\texttt{Dispatch} 线性查找 handler 并调用；handler 通过修改 \texttt{BackupContext::phase} 完成转移。
+
+\begin{designbox}[特殊 Event 语义]
+\begin{itemize}[nosep]
+  \item \texttt{kVerify}：仅允许 \texttt{kIdle}/\texttt{kComplete}/\texttt{kAborted}；短暂进入 \texttt{kAuditing} 后立即回到 \texttt{kIdle}（无 SuperBlock 持久化）。
+  \item \texttt{kRecover}：无条件 \texttt{kAborted}。
+  \item \texttt{kGcOrphans}：backup 进行中（非 idle/aborted）返回 \texttt{Conflict}。
+  \item \texttt{kOpen}：同步 \texttt{ctx->phase = engine->phase()}，不改变 phase。
+\end{itemize}
+\end{designbox}
+
+\texttt{DispatchTransition} 包装 \texttt{sync\_.Dispatch}：若结果 phase 为 \texttt{kAborted} 且先前非 aborted，递增 \texttt{unexpected\_transitions} 并返回 \texttt{Internal("invalid state transition")}。
+
+%--------------------------------------------------------------------
+\section{PersistSuperBlock 与 Phase 持久化策略}
+\label{sec:be-persist-sb}
+
+\begin{lstlisting}[caption={PersistSuperBlock 核心逻辑},label={lst:persist-sb}]
+Status BackupEngine::PersistSuperBlock(BackupPhase phase) {
+  SetPhase(&sb_, phase);
+  phase_ = phase;
+  sb_.critical.chunks_written = stats_.chunks_written;
+  sb_.critical.bytes_processed = stats_.bytes_processed;
+  sb_.ext.last_manifest_crc32 = last_manifest_crc32_;
+  std::memcpy(sb_.ext.merkle_root, last_merkle_root_, 32);
+  if (RepoUsesCoalescedMeta(sb_) && phase != BackupPhase::kAborted &&
+      phase != BackupPhase::kIdle) {
+    return Status::Ok();   // 跳过磁盘 Commit
+  }
+  return superblock_store_->Commit(sb_);
+}
+\end{lstlisting}
+
+\begin{longtable}{@{}cp{4.2cm}p{7.8cm}@{}}
+\toprule
+\textbf{Step} & \textbf{Phase} & \textbf{PersistSuperBlock 行为} \\
+\midrule
+\endhead
+1--7 & （预备） & 尚未进入 FSM；SuperBlock 仅内存更新 feature/txn \\
+8 & \texttt{kScanning} & 正常 Commit；coalesced 时\textbf{跳过} \\
+9 & abort 注入 & \texttt{kAborted}：\textbf{总是 Commit} \\
+12 & \texttt{kChunking} & coalesced 跳过 \\
+16 & \texttt{kStoring} & coalesced 跳过 \\
+20 & \texttt{kCommittingMeta} & coalesced 跳过 \\
+24 & \texttt{kAuditing} & coalesced 跳过 \\
+29 & \texttt{kIdle} & \textbf{总是 Commit}（含 \texttt{SetNextTxnId} 后） \\
+\bottomrule
+\caption{RunBackup 各 PersistSuperBlock 调用点}
+\label{tab:persist-at-steps}
+\end{longtable}
+
+%--------------------------------------------------------------------
+\section{Coalesced Meta（Feature 0x200）}
+\label{sec:be-coalesced}
+
+v0.5 \wave{2} 引入、v0.6 起为默认测试 repo 配置：\texttt{kBackupFeatureCoalescedMeta = 0x200} 表示 backup \textbf{进行中} SuperBlock 不落盘，仅在 \texttt{kIdle}（成功完成）或 \texttt{kAborted}（失败/中断）时 \texttt{Commit}。
+
+\begin{invariantbox}[与 I-B2 正交]
+Coalesced meta \textbf{仅合并 SuperBlock 写}；chunk 数据仍按 \texttt{DurabilityMode} 在 \texttt{Flush()} 时 fsync。Manifest 仍通过 \texttt{manifest.new} $\rightarrow$ \texttt{rename} $\rightarrow$ \texttt{FsyncPath} 原子提交。因此 commit-point 语义不变（\cref{ch:invariants}）。
+\end{invariantbox}
+
+\subsection{StartupSelfCheck：manifest-ahead 恢复}
+
+\texttt{Open()} 在 phase 非 terminal 或 coalesced idle 时调用 \texttt{StartupSelfCheck}：
+
+\begin{enumerate}[nosep]
+  \item 删除残留 \filepath{manifest.new}（crash 于 rename 前）；
+  \item 若 phase $\in$ \{\texttt{kScanning..kAuditing}\}（in\_progress）：
+  \begin{itemize}[nosep]
+    \item 读取 \filepath{manifest}；若 \texttt{manifest.txn\_id > sb.critical.txn\_id}，判定为 \textbf{manifest-ahead}（SuperBlock 因 coalesced 滞后）：
+    \begin{itemize}[nosep]
+      \item 对齐 \texttt{sb.critical.txn\_id = manifest.txn\_id}；
+      \item \texttt{SetNextTxnId(manifest.txn\_id + 1)}；
+      \item \texttt{SetPhase(kIdle)}，清零 critical 计数，\textbf{Commit SuperBlock}；
+    \end{itemize}
+    \item 否则：标记 \texttt{kAborted}，设置 \texttt{orphan\_chunks\_hint}，Commit。
+  \end{itemize}
+  \item Coalesced + \texttt{kIdle} + 无 manifest 但存在 \filepath{.ebpack}：视为异常中断，\texttt{kAborted}。
+\end{enumerate}
+
+测试覆盖：\filepath{tests/engine/coalesced\_meta\_test.cc} 中 \texttt{RecoverManifestAheadOfSuperBlock} 模拟 SuperBlock 滞后在 \texttt{kStoring}、manifest 已 commit 的场景，验证 \texttt{Open()} 自动对齐 txn 并 \texttt{Verify} 通过。
+
+%--------------------------------------------------------------------
+\section{RunBackup 逐步执行}
+\label{sec:be-runbackup}
+
+\subsection{完整步骤表（约 20+ 步）}
+
+下表对应 \filepath{backup\_engine.cc} 中 \texttt{RunBackup} 的\textbf{线性控制流}；错误路径统一 \texttt{PersistSuperBlock(kAborted)} 后返回（coalesced 下 abort 仍落盘）。
+
+\begin{longtable}{@{}cp{2.8cm}p{9.2cm}@{}}
+\toprule
+\textbf{\#} & \textbf{Phase/Event} & \textbf{操作} \\
+\midrule
+\endhead
+1 & 前置 & 校验 \texttt{source\_path} 存在；增量模式预检 prior manifest。 \\
+2 & 重置 & \texttt{stats\_ = \{\}}；清空全部 pending 向量；记录 \texttt{source\_root\_}。 \\
+3 & txn & \texttt{sb\_.critical.txn\_id = GetNextTxnId(sb\_)}；\texttt{chunk\_store\_->SetTxnId(...)}。 \\
+4 & 选项 & \texttt{ResolveBackupOptions}：pipeline、压缩、EbPack 等。 \\
+5 & features & 按 repo 能力重建 \texttt{sb\_.ext.backup\_features}；配置 \texttt{ChunkStore} durability/EbPack/defer index。 \\
+6 & 加密 & \texttt{SetupEncryption}：PBKDF2 派生 content key，设置 \texttt{ChunkStore} key。 \\
+7 & FSM & \texttt{DispatchTransition(kScanFile)} $\rightarrow$ \texttt{PersistSuperBlock(kScanning)}。 \\
+8 & 测试 & \texttt{MaybeTestAbortAfter(kScanning)}（\texttt{EBTEST\_ABORT\_AFTER}）。 \\
+9 & Scan & \texttt{ScanFiles}：目录遍历、filter、分离 chunking 文件与 meta skeleton；\texttt{EmitProgress(50)}。 \\
+10 & flags & 按 scan 结果设置 encrypted/special\_files/meta feature 位。 \\
+11 & FSM & \texttt{DispatchTransition(kChunkFile)} $\rightarrow$ \texttt{PersistSuperBlock(kChunking)}。 \\
+12 & 测试 & \texttt{MaybeTestAbortAfter(kChunking)}。 \\
+13 & Session & \texttt{chunk\_store\_->BeginAppendSession()}。 \\
+14 & Chunk &
+  \texttt{use\_pipeline} ? \texttt{RunPipelineBackup} : \texttt{ChunkPendingFiles}（见 \cref{sec:be-chunk-store}）。 \\
+15 & FSM & \texttt{DispatchTransition(kStoreChunk)} $\rightarrow$ \texttt{PersistSuperBlock(kStoring)}。 \\
+16 & 测试 & \texttt{MaybeTestAbortAfter(kStoring)}。 \\
+17 & Store & 非 pipeline：\texttt{StorePendingChunks}；pipeline 已在阶段 14 内完成 store。 \\
+18 & Flush &
+  \texttt{std::async(MergeMetaManifestEntries)} 与 \texttt{chunk\_store\_->Flush()} 并行；随后 \texttt{EndAppendSession}；join merge。 \\
+19 & FSM & \texttt{DispatchTransition(kCommitManifest)} $\rightarrow$ \texttt{PersistSuperBlock(kCommittingMeta)}。 \\
+20 & 测试 & \texttt{MaybeTestAbortAfter(kCommittingMeta)}。 \\
+21 & Manifest & \texttt{CommitManifestFile}：\texttt{manifest.new} 写入、rename、fsync、CRC/Merkle 计算。 \\
+22 & FSM & \texttt{DispatchTransition(kAppendAudit)} $\rightarrow$ \texttt{PersistSuperBlock(kAuditing)}。 \\
+23 & Audit & \texttt{AppendAuditEntry}：RAR chain + 可选 CARL anchor publish。 \\
+24 & FSM & \texttt{DispatchTransition(kComplete)}。 \\
+25 & Index & 若 persistent index：\texttt{SavePersistentIndex}；\texttt{SetDeferPersistentIndexSave(false)}。 \\
+26 & 完成 & \texttt{SetNextTxnId(txn\_id + 1)}；可选打印 \texttt{PipelinePhaseStats}；\texttt{PersistSuperBlock(kIdle)}。 \\
+\bottomrule
+\caption{RunBackup 逐步控制流}
+\label{tab:runbackup-steps}
+\end{longtable}
+
+\subsection{RunBackup 流程 TikZ 图}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=\flowdistance,
+  scale=0.92, transform shape
+]
+  \node[flowstep] (init) {Init txn \& options};
+  \node[flowstep, below=of init] (enc) {SetupEncryption};
+  \node[flowstep, below=of enc] (scan) {kScanning\\ScanFiles};
+  \node[flowstep, below=of scan] (chunk) {kChunking\\Chunk / Pipeline};
+  \node[flowstep, below=of chunk] (store) {kStoring\\StorePendingChunks};
+  \node[flowstep, below=of store] (flush) {Flush + MergeMeta};
+  \node[flowstep, below=of flush] (commit) {kCommittingMeta\\CommitManifestFile};
+  \node[flowstep, below=of commit] (audit) {kAuditing\\AppendAuditEntry};
+  \node[flowstep, below=of audit] (idle) {kIdle\\PersistSuperBlock};
+
+  \node[flowdata, right=3.2cm of chunk] (pipe) {RunPipelineBackup};
+  \node[flowdata, right=3.2cm of store] (seq) {ChunkPendingFiles\\StorePendingChunks};
+
+  \node[flowdec, left=2.8cm of scan] (abort) {失败?};
+  \node[flowstep, below=of abort, fill=red!8] (aborted) {kAborted\\PersistSB};
+
+  \draw[arrow] (init)--(enc)--(scan)--(chunk)--(store)--(flush)--(commit)--(audit)--(idle);
+  \draw[arrow, dashed] (chunk.east)--(pipe.west);
+  \draw[arrow, dashed] (store.east)--(seq.west);
+  \draw[arrow, red, dashed] (scan.west)--(abort.east);
+  \draw[arrow, red, dashed] (chunk.west)-|(abort.east);
+  \draw[arrow, red, dashed] (store.west)-|(abort.east);
+  \draw[arrow, red] (abort.south)--(aborted.north);
+\end{tikzpicture}
+\caption{RunBackup 主路径与 abort 汇聚点}
+\label{fig:runbackup-flow}
+\end{figure}
+
+%--------------------------------------------------------------------
+\section{ChunkPendingFiles 与 StorePendingChunks}
+\label{sec:be-chunk-store}
+
+\subsection{ChunkPendingFiles（sequential 分块）}
+
+当 \texttt{use\_pipeline=false} 或 pipeline 内联 L3a 路径委托时，引擎 sequential 执行：
+
+\begin{enumerate}[nosep]
+  \item 增量模式 \texttt{LoadPriorManifest}；
+  \item 对每个 \texttt{pending\_files\_[i]}：
+  \begin{itemize}[nosep]
+    \item \texttt{ReadFileBytes}（优先 mmap）；
+    \item \texttt{EbHcrboConfigForFileSize} 解析 profile；
+    \item 全量：\texttt{ChunkFull}；增量：\texttt{FindPriorCfi} + \texttt{ChunkIncremental}；
+    \item \texttt{PopulateAnchorChecksums} 填充 rolling checksum 供下次增量；
+    \item 构造 \texttt{ManifestFileEntry}（path、size、cfi、mode/mtime 等）；
+    \item 进度：\texttt{50 + (i+1)*350/file\_count} ‰。
+  \end{itemize}
+\end{enumerate}
+
+\subsection{StorePendingChunks（sequential 存储）}
+
+\begin{enumerate}[nosep]
+  \item 设置 \texttt{ChunkStore} durability 与 content key；
+  \item 对每个文件的每个 \texttt{ChunkDescriptor}：
+  \begin{itemize}[nosep]
+    \item 若 \texttt{reused\_from\_cfi \&\& Exists(hash)}：仅 \texttt{chunks\_reused++}，跳过 Put；
+    \item 否则 \texttt{PutKnownHash(ptr, len, hash)}；区分 newly\_written 与 dedup hit；
+    \item 填充 \texttt{entry.chunk\_hashes\_hex}。
+  \end{itemize}
+  \item 累加 \texttt{bytes\_processed}、\texttt{files\_processed}；
+  \item 进度：\texttt{400 + (fi+1)*550/file\_count} ‰。
+\end{enumerate}
+
+\begin{invariantbox}[CFI reuse 与 Store 分工]
+\texttt{reused\_from\_cfi} chunk 在 Store 阶段\textbf{可能}跳过物理读/写，但 manifest 仍记录 hash 链；Verify 通过 \texttt{chunk\_store\_->Get} 验证引用存在（I-B1 Content ID 不变）。
+\end{invariantbox}
+
+%--------------------------------------------------------------------
+\section{RunPipelineBackup 路由}
+\label{sec:be-pipeline-route}
+
+\texttt{RunPipelineBackup} 是 sequential 路径的\textbf{高吞吐替代}：
+
+\begin{designbox}[路由规则]
+\begin{itemize}[nosep]
+  \item \textbf{L3a 内联}：\texttt{worker\_count==0} 且单文件且 $\leq$32\,MB $\rightarrow$ 委托 \texttt{ChunkPendingFiles} + \texttt{StorePendingChunks}（与 \texttt{--no-pipeline} 相同代码，保证 pipeline ratio $\geq$0.90）；
+  \item \textbf{否则}：构造 \texttt{BackupPipelineOptions}，调用 \texttt{RunBackupPipeline}，manifest 由 \texttt{pipe\_result.manifest\_files} 回填。
+\end{itemize}
+\end{designbox}
+
+Pipeline 路径在 chunk+store 阶段\textbf{合并}，故 \texttt{RunBackup} 步骤 17 对 pipeline 为空操作；步骤 15 的 \texttt{kStoring} phase 仍通过 FSM 事件标记，以满足 powerfail 测试对 phase 注入点的期望。
+
+%--------------------------------------------------------------------
+\section{CommitManifestFile 与 AppendAuditEntry}
+\label{sec:be-commit-audit}
+
+\subsection{原子 manifest 提交}
+
+\begin{lstlisting}[caption={CommitManifestFile 原子写路径},label={lst:commit-manifest}]
+Status BackupEngine::CommitManifestFile() {
+  ManifestDocument doc;
+  doc.txn_id = sb_.critical.txn_id;
+  doc.files = pending_manifest_;
+  const std::string temp = RepoJoin(repo_path_, "manifest.new");
+  WriteManifestAuto(temp, doc, RepoUsesManifestBinary(sb_));
+  std::filesystem::rename(temp, manifest_path);  // 原子替换
+  FsyncPath(manifest_path);
+  ReadManifestBodyCrc32FromFile(manifest_path, &last_manifest_crc32_);
+  audit::ComputeMerkleRoot(doc, last_merkle_root_, digest_algo_);
+  EmitProgress(960);
+  // 可选 ArchiveSnapshot ...
+}
+\end{lstlisting}
+
+\textbf{Crash 语义}：若进程在 \texttt{rename} 前终止，\texttt{StartupSelfCheck} 删除 \filepath{manifest.new}，旧 manifest 仍有效；若在 \texttt{rename} 后、SuperBlock commit 前终止，coalesced 模式下 \texttt{Open()} 走 manifest-ahead 对齐。
+
+\subsection{RAR 审计链与 CARL Anchor}
+
+\texttt{AppendAuditEntry}：
+\begin{enumerate}[nosep]
+  \item 构造 \texttt{RarChainEntry}（sequence、txn\_id、prev\_sha256、manifest\_crc32、merkle\_root、body\_json）；
+  \item \texttt{AppendRarChainEntry} 追加至 \filepath{audit/rar.chain}；
+  \item 可选 \texttt{PublishCarlAnchor} 至默认 anchor 目录；
+  \item \texttt{EmitProgress(1000)}。
+\end{enumerate}
+
+%--------------------------------------------------------------------
+\section{进度回调 permille 映射}
+\label{sec:be-progress}
+
+\texttt{ProgressCallback} 签名为 \texttt{void(uint64\_t pct\_permille, void* user\_data)}，取值范围 \textbf{0--1000}（0.1\% 粒度）。
+
+\begin{table}[htbp]
+\centering
+\caption{Sequential 路径 permille 映射}
+\label{tab:progress-permille}
+\begin{tabular}{@{}llp{6.5cm}@{}}
+\toprule
+阶段 & permille & 公式/常数 \\
+\midrule
+Scan 完成 & 50 & 固定 \\
+Chunk 进度 & 50--400 & $50 + (i+1) \times 350 / \text{file\_count}$ \\
+Store 进度 & 400--950 & $400 + (fi+1) \times 550 / \text{file\_count}$ \\
+Manifest commit & 960 & 固定 \\
+Audit 完成 & 1000 & 固定 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Pipeline 路径由 \texttt{RunBackupPipeline} 内部回调驱动，但保证最终 \texttt{1000}（\filepath{progress\_test.cc} 验证单调递增）。
+
+%--------------------------------------------------------------------
+\section{测试与环境变量}
+\label{sec:be-test-env}
+
+\subsection{环境变量}
+
+\begin{longtable}{@{}p{4.5cm}p{9.5cm}@{}}
+\toprule
+\textbf{变量} & \textbf{作用} \\
+\midrule
+\endhead
+\texttt{EBTEST\_ABORT\_AFTER} &
+  整数值 = \texttt{BackupPhase} 枚举；运行至该 phase 持久化后返回 \texttt{Internal("test abort after phase")}，模拟 powerfail 注入点。 \\
+\texttt{EBBACKUP\_AUDIT\_KEY} &
+  非空时 \texttt{Verify} 强制 \texttt{VerifyCarlAnchorRequired}（与 \texttt{require\_anchor=true} 等效）。 \\
+\texttt{EBBACKUP\_PIPELINE\_PROFILE} &
+  非零时收集并打印 \texttt{PipelinePhaseStats}（与 \texttt{RunBackup} 内 \texttt{PipelineProfileEnabled()} 联动）。 \\
+\bottomrule
+\caption{BackupEngine 相关环境变量}
+\label{tab:be-env}
+\end{longtable}
+
+\subsection{关键测试文件}
+
+\begin{table}[htbp]
+\centering
+\caption{BackupEngine 测试覆盖}
+\label{tab:be-tests}
+\begin{tabular}{@{}llp{6.8cm}@{}}
+\toprule
+测试文件 & 用例 & 验证点 \\
+\midrule
+\filepath{backup\_engine\_test.cc} &
+  EndToEnd、BadFooter、TxnMismatch &
+  完整 backup+verify；manifest 篡改检测 \\
+\filepath{coalesced\_meta\_test.cc} &
+  RecoverManifestAhead &
+  coalesced manifest-ahead 自愈 \\
+\filepath{powerfail\_test.cc} &
+  DualSlot、InterruptedPhase、SubprocessKill &
+  SuperBlock 双槽、phase 中断、子进程 kill \\
+\filepath{progress\_test.cc} &
+  IncreasingProgress &
+  permille 单调至 1000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%--------------------------------------------------------------------
+\section{本章小结}
+
+\texttt{BackupEngine} 将备份写路径收敛为\textbf{可测试的 FSM}：\texttt{NextPhase} 保证转移确定性，\texttt{PersistSuperBlock} 在 coalesced meta 下合并 SuperBlock 写但不削弱 manifest/chunk commit-point。\texttt{ChunkPendingFiles}/\texttt{StorePendingChunks} 构成 sequential 基线，\texttt{RunPipelineBackup} 在同语义下扩展吞吐。后续 \cref{ch:chunk-fastcdc,ch:chunk-hcrbo} 详述分块算法，\cref{ch:pipeline-v4} 详述 Pipeline 拓扑。

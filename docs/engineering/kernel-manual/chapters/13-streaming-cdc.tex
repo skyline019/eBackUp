@@ -1,0 +1,339 @@
+\chapter{StreamingChunkCpuPipeline 与 Sprint 4 CDC}
+\label{ch:streaming-cdc-v4}
+
+\section{设计动机与定位}
+
+单文件对象 $>$32\,MB 若强行进入完整 Pipeline v4，per-file 队列创建、线程 join 与全局队列争用在 L5（256\,MB 单文件）场景下开销显著。v0.9.2 引入 \textbf{StreamingChunkCpuPipeline}：
+\begin{itemize}[nosep]
+  \item \textbf{主线程}：mmap 文件 + \texttt{FastCdcStreamFeed} 按 32\,MB feed 增量 CDC + digest；
+  \item \textbf{2 个} CompressorWorker + \textbf{1 个} StoreWorker；
+  \item feed 级 CDC/digest 与 encode/store \textbf{overlap}；
+  \item 默认路由：\texttt{RunSingleFileStreamingChunkPipeline}（\filepath{backup\_pipeline.cc}）。
+\end{itemize}
+
+Sprint 4（v0.9.4）在流式 CDC 内核中引入 \textbf{Phase B seg1 bulk scan} 与可选 \textbf{Phase A FastCdcSlice 整文件路由}，在保持 cut-point parity 的前提下降低 carry 虚拟段扫描开销。
+
+\textbf{核心实现}：
+\begin{itemize}[nosep]
+  \item \filepath{src/pipeline/backup\_pipeline.cc}：\texttt{RunSingleFileStreamingChunkPipeline}、\texttt{ChunkFileStreaming}、\texttt{ChunkFileStreamingFastSlice}；
+  \item \filepath{src/chunk/fast\_cdc\_streaming.cc}：\texttt{FastCdcStreamFeed}、\texttt{ChunkCarryPrefixVirtual}；
+  \item \filepath{include/ebbackup/chunk/fast\_cdc\_carry\_buffer.h}：\texttt{StreamSegmentView}。
+\end{itemize}
+
+\section{RunSingleFileStreamingChunkPipeline}
+
+\subsection{线程模型}
+
+\begin{structbox}[Streaming 固定 worker 配置]
+\begin{itemize}[nosep]
+  \item \texttt{kEncodeWorkers = 2}
+  \item \texttt{kStoreWorkers = 1}
+  \item \texttt{kQueueDepth = 1024}
+  \item 主线程兼任 Chunker（无独立 Chunker 线程）
+\end{itemize}
+\end{structbox}
+
+执行流程：
+\begin{enumerate}
+  \item \texttt{ReadOneFileData}：mmap/ifstream 读入 \texttt{FileData}，计时 \texttt{read\_ns}；
+  \item 启动 2 encode + 1 store 线程，绑定全局 \texttt{chunk\_q}/\texttt{encoded\_q}；
+  \item 主线程调用 \texttt{ChunkFileStreaming}，按 feed 推送 \texttt{ChunkTask}；
+  \item chunker 完成后 \texttt{chunk\_q->Close()}，join workers；
+  \item 检查 \texttt{PipelineShared::CurrentError()}。
+\end{enumerate}
+
+与 v4 的区别：无 ReaderStage/FileScheduler；encode/store worker 数\textbf{固定}而非 \texttt{ResolvePipelineWorkerCount}；队列深度 1024 以减少主线程 Push 阻塞。
+
+\section{FastCdcStreamState 与 StreamSegmentView}
+
+\subsection{FastCdcStreamState}
+
+\begin{structbox}[FastCdcStreamState 字段]
+\begin{itemize}[nosep]
+  \item \texttt{config}：\texttt{FastCdcConfig}（min/avg/max/window/digest\_algo）；
+  \item \texttt{gear[256]}：gear hash 表，\texttt{FastCdcStreamInit} 初始化；
+  \item \texttt{carry}：跨 feed 的 tail 字节（bounded by max\_size parity 测试）；
+  \item \texttt{logical\_base}：已提交 chunk 的逻辑文件偏移累计；
+  \item \texttt{stream\_offset}：已 feed 的原始字节累计；
+  \item \texttt{gear\_ready}：lazy init 标志；
+  \item \texttt{digest\_base}：\textbf{文件 mmap 基址}（file-absolute），供 \texttt{DigestPool::HashRegions}；
+  \item \texttt{profile}：\texttt{FastCdcStreamProfile} 子计时。
+\end{itemize}
+\end{structbox}
+
+\subsection{StreamSegmentView 虚拟段}
+
+\texttt{StreamSegmentView} 描述\textbf{两段式}虚拟连续缓冲区，避免 carry+feed 的 vector insert/head-erase：
+
+\begin{lstlisting}[caption={StreamSegmentView 核心 API},label={lst:stream-segment-view}]
+struct StreamSegmentView {
+  const uint8_t* seg0;  size_t len0;  // carry tail
+  const uint8_t* seg1;  size_t len1;  // 新 feed 数据
+  size_t size() const { return len0 + len1; }
+  uint8_t at(size_t index) const;           // 跨段随机访问
+  void copy_range(size_t off, size_t len, uint8_t* out);
+  bool region_in_seg1(size_t offset, size_t length) const;
+  const uint8_t* seg1_ptr(size_t offset) const;
+};
+\end{lstlisting}
+
+\textbf{语义}：索引 $[0, len0)$ 映射 carry；$[len0, len0+len1)$ 映射当前 feed。CDC gear 扫描通过 \texttt{at(i)} 或 seg1-only 快路径访问，digest 优先 \texttt{digest\_base + logical\_base + offset} 零拷贝。
+
+\section{FastCdcStreamFeed 与 defer min\_size}
+
+\texttt{FastCdcStreamFeed(state, data, len, is\_last, out\_chunks)} 构造：
+\begin{lstlisting}[caption={Feed 入口},label={lst:stream-feed}]
+view.seg0 = state->carry.empty() ? nullptr : state->carry.data();
+view.len0 = state->carry.size();
+view.seg1 = data;
+view.len1 = len;
+state->stream_offset += len;
+
+size_t proc_len = view.size();
+if (!is_last) {
+  if (proc_len <= state->config.min_size) return Ok();  // defer
+  proc_len -= state->config.min_size;  // 保留 min_size 进 carry
+}
+return ChunkCarryPrefixVirtual(state, view, proc_len, is_last, out_chunks);
+\end{lstlisting}
+
+\textbf{defer 语义}：非最后 feed 时，若虚拟段总长 $\leq$ \texttt{min\_size}，\textbf{不产生 chunk} 也不更新 carry——等待更多数据。否则从总长中减去 \texttt{min\_size} 作为可扫描前缀，剩余 tail 由 \texttt{SetCarryTail} 写回 \texttt{state->carry}，保证跨 feed cut-point 与 \texttt{FastCdcSlice} 一致。
+
+最后 feed（\texttt{is\_last=true}）处理全部 \texttt{proc\_len = view.size()}，包括不足 \texttt{min\_size} 的尾部。
+
+\section{ChunkCarryPrefixVirtual 完整算法}
+
+\textbf{函数}：\texttt{ChunkCarryPrefixVirtual(state, view, proc\_len, is\_last, out\_chunks)}
+
+输入 \texttt{proc\_len} 为本次可扫描的虚拟前缀长度（逻辑偏移从 0 开始于当前 view，输出 chunk offset 会加上 \texttt{logical\_base}）。
+
+\subsection{分支 A：proc\_len $\leq$ min\_size}
+
+\begin{itemize}[nosep]
+  \item 若非 \texttt{is\_last}：直接返回，不产出 chunk；
+  \item 若 \texttt{is\_last}：整段作为单 chunk，\texttt{HashVirtualRegions} 后更新 \texttt{logical\_base} 与 carry。
+\end{itemize}
+
+\subsection{分支 B：主循环（CDC 切分）}
+
+维护 \texttt{pos} 从 0 扫描至 \texttt{proc\_len}。对每个 chunk 候选：
+\begin{enumerate}
+  \item 若剩余 $\leq$ \texttt{min\_size}：仅当 \texttt{is\_last} 时产出尾 chunk；否则 \textbf{break}（defer 到下次 feed）；
+  \item \texttt{scan\_start = pos + min\_size}，\texttt{cut = min(pos + max\_size, proc\_len)}；
+  \item 在 $[scan\_start, cut)$ 内 gear 扫描寻找 mask 命中 cut 点。
+\end{enumerate}
+
+\subsection{Phase B：seg1-only bulk scan（pos $\geq$ len0）}
+
+当 carry 已消耗完毕（\texttt{view.len0 > 0 \&\& pos >= view.len0}），进入\textbf{独立 seg1 循环}（Sprint 4 核心优化）：
+
+\begin{designbox}[Phase B 要点]
+\begin{enumerate}[nosep]
+  \item 不再走 \texttt{ScanGearCutVirtual} 统一循环；
+  \item 当 \texttt{scan\_start >= view.len0} 且 cut 落在 seg1 内，直接 \texttt{fastcdc\_internal::ScanGearCut(view.seg1, ...)}；
+  \item 与 unified loop 的 seg1 分支 \textbf{bit-identical}；
+  \item \textbf{错误做法}：使用 \texttt{boundary\_limit = view.len0 + w} 简化边界会导致 parity 失败（已回退）。
+\end{enumerate}
+\end{designbox}
+
+此分支消除 carry 边界附近重复的虚拟 gear 状态维护，L5 profile 中 \texttt{stream\_cdc\_ns} 占比显著下降。
+
+\subsection{分支 C：虚拟段扫描（pos $<$ len0 或跨段 cut）}
+
+\begin{itemize}[nosep]
+  \item \texttt{len0==0}：纯 seg1，\texttt{ScanGearCut(view.seg1, ...)}；
+  \item \texttt{scan\_start >= len0} 且 cut 完全在 seg1：rel\_offset 扫描；
+  \item 否则：\texttt{ScanGearCutVirtual(view, scan\_start, cut, ...)} 跨 carry/feed 边界。
+\end{itemize}
+
+\subsection{cut 未找到时的处理}
+
+\begin{itemize}[nosep]
+  \item 剩余 $>$ \texttt{max\_size}：强制 \texttt{cut = pos + max\_size}；
+  \item \texttt{is\_last}：\texttt{cut = proc\_len}（吞掉尾部）；
+  \item 否则：\textbf{break}，保留 tail 到 carry（defer min\_size）。
+\end{itemize}
+
+\subsection{digest 与 carry 更新}
+
+收集 \texttt{offsets[]}/\texttt{lengths[]} 后调用 \texttt{HashVirtualRegions}，追加到 \texttt{out\_chunks}（offset 加 \texttt{logical\_base}）。更新 \texttt{logical\_base += pos}，\texttt{SetCarryTail(state, view, pos)} 拷贝未消费 tail 到 \texttt{state->carry}。
+
+\section{digest\_base 与 HashVirtualRegions}
+
+v0.9.3 起 \texttt{ChunkFileStreaming} 设置 \texttt{stream\_state.digest\_base = bytes}（mmap 基址）。
+
+\texttt{HashVirtualRegions} 策略：
+\begin{enumerate}
+  \item 若 \texttt{digest\_base != nullptr} 且 batch 满足 \texttt{count >= 2}、总字节 $\geq$ 1\,MB：构造 \texttt{DigestSpan}（offset = \texttt{logical\_base + chunk\_offset}），\texttt{DigestPool::HashRegions} 并行 hash；
+  \item 否则若全 chunk 在 seg1：对 \texttt{view.seg1} 批处理；
+  \item 否则 per-chunk \texttt{HashVirtualRegion}（carry 跨段时可能拷贝到临时 buffer，计时 \texttt{carry\_copy\_ns}）。
+\end{enumerate}
+
+\textbf{修复}：v0.9.2 在 \texttt{view.len0 > 0} 时错误 fallback 到 per-chunk 串行 hash，导致 digest 占 $\sim$38\%；批处理修复后降至 $\sim$16\%。
+
+\section{UseCdcFastPath 与 ChunkFileStreamingFastSlice（Phase A）}
+
+\subsection{启用条件 UseCdcFastPath}
+
+\begin{lstlisting}[caption={Fast path 门控},label={lst:use-cdc-fast}]
+bool UseCdcFastPath(...) {
+  if (!CdcFastSliceEnabled()) return false;      // EBBACKUP_CDC_FAST_SLICE=1
+  if (ForceStreamCdc()) return false;            // EBBACKUP_FORCE_STREAM_CDC=1
+  if (shared->mode != BackupMode::kFull) return false;
+  if (byte_len <= kStreamFeedBytes) return false;
+  return true;
+}
+\end{lstlisting}
+
+\subsection{ChunkFileStreamingFastSlice 流程}
+
+\begin{enumerate}
+  \item \texttt{FastCdcSlice::ChunkCuts()} 一次得全文件 cut 点；
+  \item 按 $\sim$32\,MB（\texttt{kStreamFeedBytes}）batch 聚合 offsets/lengths；
+  \item \texttt{DigestPool} 或串行 \texttt{ContentHash} 填充 \texttt{ChunkDescriptor}；
+  \item 逐 batch \texttt{Push} \texttt{ChunkTask} 到 encode 队列（与 stream feed 相同的 worker）。
+\end{enumerate}
+
+\textbf{性能权衡（Phase A vs Phase B）}：
+
+\begin{table}[htbp]
+\centering
+\caption{Sprint 4 CDC 路径性能（256\,MB L5，典型桌面 CPU）}
+\begin{tabular}{@{}lll@{}}
+\toprule
+路径 & 吞吐 & 原因 \\
+\midrule
+Phase B Stream（默认） & $\sim$172\,MB/s & feed/encode overlap \\
+Phase A FastSlice（opt-in） & $\sim$105\,MB/s & 主线程先完成全文件 CDC，丢失 overlap \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Phase A 保留用于 parity/regression 与未来 Sprint 5 hybrid（ChunkCuts + feed-timed replay）。
+
+Opt-out 强制 stream：\texttt{EBBACKUP\_FORCE\_STREAM\_CDC=1}。
+
+\section{ChunkFileStreaming 主循环（Phase B 默认）}
+
+\begin{enumerate}
+  \item 创建 \texttt{FilePipelineState}，初始化 \texttt{FastCdcStreamState}，设 \texttt{digest\_base}；
+  \item \texttt{off = 0}，while \texttt{off < byte\_len}：
+  \begin{itemize}[nosep]
+    \item \texttt{n = min(StreamFeedBytesForFile(byte\_len), byte\_len - off)}；
+    \item \texttt{FastCdcStreamFeed(\&stream\_state, bytes+off, n, last, \&batch)}；
+    \item 非空 batch：更新 CFI anchors、预分配 hash 槽、\texttt{FillStoreExists}、Push \texttt{ChunkTask}；
+  \end{itemize}
+  \item \texttt{chunking\_complete = true}，\texttt{TryFinalizeFile}；
+  \item \texttt{MergeStreamProfileToPhaseStats} 累加 stream 子计时到 \texttt{PipelinePhaseStats}。
+\end{enumerate}
+
+\section{stream\_sub 子计时字段}
+
+\texttt{FastCdcStreamProfile} 三字段：
+\begin{itemize}[nosep]
+  \item \texttt{cdc\_scan\_ns} $\rightarrow$ \texttt{PipelinePhaseStats::stream\_cdc\_ns}
+  \item \texttt{digest\_ns} $\rightarrow$ \texttt{stream\_digest\_ns}
+  \item \texttt{carry\_copy\_ns} $\rightarrow$ \texttt{stream\_carry\_ns}
+\end{itemize}
+
+L5 256\,MB 典型占比（v0.9.4）：
+
+\begin{table}[htbp]
+\centering
+\caption{Phase 与 stream\_sub 占比}
+\begin{tabular}{@{}lr@{}}
+\toprule
+Phase & 占比 \\
+\midrule
+chunk（CDC+digest 合计） & $\sim$82\% \\
+\quad stream: cdc & $\sim$82\% of chunk \\
+\quad stream: digest & $\sim$16\% of chunk \\
+\quad stream: carry & $\sim$1.7\% of chunk \\
+encode & $\sim$16\% \\
+store & $\sim$1\% \\
+read & $\sim$0.5\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+bench 打印函数 \texttt{PrintStreamSubPct}（\filepath{tests/bench/bench\_check.cc}）对 \texttt{stream\_*} 做归一化百分比。
+
+\section{CDC 路由决策树}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=\flowdistance]
+  \node[flowdec] (entry) {RunBackupPipeline};
+  \node[flowdec, below=of entry] (multi) {多文件或\\增量或\\显式 workers?};
+  \node[flowstep, right=3.2cm of entry] (v4) {Pipeline v4};
+  \node[flowdec, below=of multi] (size) {单文件\\size $\leq$ 32MB?};
+  \node[flowstep, left=1.4cm of size] (inline) {Inline\\L3a};
+  \node[flowdec, below=of size] (full) {full backup\\worker=0\\无 PIPELINE\_WORKERS?};
+  \node[flowstep, left=1.4cm of full] (streampipe) {StreamingChunkCpu\\2 enc + 1 store};
+  \node[flowdec, below=of full] (fastenv) {CDC\_FAST\_SLICE=1\\且非 FORCE\_STREAM?};
+  \node[flowstep, left=1.4cm of fastenv] (fastslice) {ChunkFileStreaming\\FastSlice};
+  \node[flowstep, right=1.4cm of fastenv] (streamcdc) {ChunkFileStreaming\\FastCdcStreamFeed};
+
+  \draw[arrow] (entry) -- (multi);
+  \draw[arrow] (multi) -- node[above,font=\scriptsize]{是} (v4);
+  \draw[arrow] (multi) -- node[left,font=\scriptsize]{否} (size);
+  \draw[arrow] (size) -- node[above,font=\scriptsize]{是} (inline);
+  \draw[arrow] (size) -- node[left,font=\scriptsize]{否} (full);
+  \draw[arrow] (full) -- node[above,font=\scriptsize]{是} (streampipe);
+  \draw[arrow] (full) -- node[left,font=\scriptsize]{否} (v4);
+  \draw[arrow] (streampipe.south) ++(0,-0.5) -| (fastenv.north);
+  \draw[arrow] (fastenv) -- node[above,font=\scriptsize]{是} (fastslice);
+  \draw[arrow] (fastenv) -- node[above,font=\scriptsize]{否} (streamcdc);
+\end{tikzpicture}
+\caption{CDC / Pipeline 路由决策树（v0.9.4）}
+\label{fig:cdc-router-v4}
+\end{figure}
+
+\textbf{注意}：FastSlice 路由发生在 \texttt{ChunkFileStreaming} \textbf{内部}，仅 Streaming 主路径上的 further branch；若已走 v4 多线程 ChunkerStage，大文件同样调用 \texttt{ChunkFileStreaming}，故 FastSlice 对 v4 亦生效（当环境变量开启）。
+
+\section{Parity 与 Deferred 工作}
+
+\subsection{Parity 测试矩阵}
+
+\begin{table}[htbp]
+\centering
+\caption{Streaming / CDC parity 测试}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+测试 & 断言 \\
+\midrule
+\texttt{fast\_cdc\_streaming\_test.cc} & StreamFeed vs FastCdcSlice cuts \\
+\texttt{streaming\_chunk\_pipeline\_test.cc} & 256MB manifest hash parity \\
+\texttt{CdcFastPathMatchesStreamFeedManifest} & FastSlice vs Stream \\
+\texttt{CarryBufferNeverExceedsMaxSize} & carry 上界 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Deferred（Sprint 5 候选）}
+
+\begin{itemize}[nosep]
+  \item CDC carry-boundary \textbf{contiguous scan}（gear state handoff）：parity 失败已回退；
+  \item hybrid：\texttt{ChunkCuts} 预计算 + feed-timed replay，恢复 Phase A 确定性同时保留 encode overlap。
+\end{itemize}
+
+\section{环境变量汇总}
+
+\begin{table}[htbp]
+\centering
+\caption{Streaming CDC 环境变量}
+\begin{tabular}{@{}llp{6.5cm}@{}}
+\toprule
+变量 & 默认 & 作用 \\
+\midrule
+\texttt{EBBACKUP\_CDC\_FAST\_SLICE} & 0 & 1 启用 Phase A FastCdcSlice \\
+\texttt{EBBACKUP\_FORCE\_STREAM\_CDC} & 0 & 1 禁用 FastSlice，强制 StreamFeed \\
+\texttt{EBBACKUP\_PIPELINE\_PROFILE} & 0 & 打印 stream\_sub 子计时 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{本章小结}
+
+StreamingChunkCpuPipeline 以\textbf{主线程 feed + 2 encode + 1 store} 的轻量拓扑服务 L5 单文件大对象备份。Sprint 4 Phase B 在 \texttt{ChunkCarryPrefixVirtual} 中对 \texttt{pos >= len0} 切换 seg1-only bulk CDC，配合 \texttt{digest\_base} 批处理，将 digest 占比从 $\sim$38\% 降至 $\sim$16\%，整体吞吐约 172\,MB/s。Phase A FastSlice 默认关闭以避免丢失 feed/encode overlap。Pipeline v4 多文件拓扑见 \cref{ch:pipeline-v4}。

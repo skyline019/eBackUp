@@ -1,0 +1,337 @@
+\chapter{ChunkStore 核心语义}
+\label{ch:chunk-store}
+
+\texttt{ChunkStore}（\filepath{include/ebbackup/store/chunk\_store.h}）是 chunk 读写的唯一入口，向上屏蔽 legacy 单文件 append 与 EbPack 分片 pack 的差异。本章详述 Open/LoadIndex、Put 族 API、16-shard 内存索引、append session、耐久 spill 阈值，以及 v0.9.0 \wave{5} 并发修复。
+
+\section{职责边界}
+
+\begin{structbox}[ChunkStore 公开能力（节选）]
+\begin{itemize}[nosep]
+  \item \textbf{写入}：\texttt{Put}、\texttt{PutKnownHash}、\texttt{PutPrecompressed}；
+  \item \textbf{查重}：\texttt{Exists}、\texttt{ExistsMany}（v0.8 batch dedup）；
+  \item \textbf{会话}：\texttt{BeginAppendSession}、\texttt{Flush}、\texttt{EndAppendSession}；
+  \item \textbf{迭代}：\texttt{ForEachRecord}（compact/GC 遍历 live record）；
+  \item \textbf{生命周期}：\texttt{TombstoneHash}、\texttt{SavePersistentIndex}；
+  \item \textbf{配置}：\texttt{SetDigestAlgo}、\texttt{SetDurabilityMode}、\texttt{SetUseEbPack}、\texttt{SetDeferPersistentIndexSave}。
+\end{itemize}
+\end{structbox}
+
+数据路径：\filepath{data/chunks}（legacy 单文件）或 \filepath{data/packs/*.ebpack}（EbPack，v0.6+ 默认）。持久化索引 \filepath{chunk.idx} 见 \cref{ch:ebpack-index}。
+
+\section{Open 与 LoadIndex}
+
+\subsection{Open() 探测顺序}
+
+\texttt{ChunkStore::Open()}（\filepath{chunk\_store.cc}）按以下步骤初始化：
+
+\begin{enumerate}
+  \item 若 \filepath{chunk.idx} 存在，设 \texttt{use\_persistent\_index\_ = true}；
+  \item 调用 \texttt{LoadIndex()} 填充 \texttt{shard\_index\_[16]}；
+  \item 若 index 条目含 \texttt{kChunkStorageEbPack}，或 \filepath{data/packs/} 下存在 \texttt{*.ebpack}，启用 \texttt{use\_ebpack\_}；
+  \item \texttt{LoadTombstones()} 加载 \filepath{chunks.tombstones} 十六进制 hash 列表。
+\end{enumerate}
+
+\subsection{LoadIndex() 三路加载}
+
+\begin{table}[htbp]
+\centering
+\caption{LoadIndex 策略分支}
+\begin{tabular}{@{}llp{6.5cm}@{}}
+\toprule
+条件 & 路径 & 行为 \\
+\midrule
+persistent index 存在且 Load 成功 & HXID 索引 & 直接构建 shard map + pack 路径 \\
+persistent + ebpack 但 index 损坏 & 失败 & 返回 \texttt{Corrupt}，不 silent fallback \\
+persistent 关闭或 index 缺失 & legacy scan & 顺序读 \filepath{chunks}，v1/v2 header 探测 \\
+ebpack 无 index & 空 index & 依赖运行时 append 填充（Open 不扫 pack 内容） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Legacy 扫描循环 \texttt{ReadParsedHeaderAt}；遇 corrupt tail 且 \texttt{offset > 0} 时 \texttt{resize\_file} 截断至最后有效 record（与 \texttt{ChunkIndexFile::RebuildFromScan} 一致），保证 crash 后 Open 可恢复。
+
+\begin{designbox}[Open 不阻塞 pack 全量扫描]
+EbPack 模式下 index 为权威来源；若无 persistent index 且 \texttt{use\_ebpack\_}，\texttt{LoadIndex} 返回空 map 而非遍历所有 \texttt{.ebpack}。运维重建索引使用专用工具/\texttt{RebuildFromScan}（legacy 路径）。
+\end{designbox}
+
+\section{Put 族 API}
+
+\subsection{Put 与 PutKnownHash}
+
+\texttt{Put} 先 \texttt{ContentHash(digest\_algo\_, data, len, hash\_out)}，再委托 \texttt{PutKnownHash}。
+
+\texttt{PutKnownHash} 流程：
+\begin{enumerate}[nosep]
+  \item \texttt{Exists(hash)} — 命中则 \texttt{newly\_written=false}，立即返回；
+  \item \texttt{ContentClassEncode}（按 \texttt{ChunkStorePutOptions} 的 compress\_mode / cpu\_budget / path\_hint）；
+  \item 可选 \texttt{Aes256GcmEncrypt}；
+  \item \texttt{AppendRecord} $\rightarrow$ 更新 shard index + \texttt{TrackIndexEntry}。
+\end{enumerate}
+
+\subsection{PutPrecompressed}
+
+Pipeline v4 \textbf{dedup-before-encode} 路径在 worker 侧已完成 hash 与压缩，调用 \texttt{PutPrecompressed}：
+
+\begin{itemize}
+  \item 默认先 \texttt{Exists}（除非 \texttt{skip\_exists\_check} 或 \texttt{pipeline\_dedup\_trust\_}）；
+  \item 信任 encoder 输出的 \texttt{payload}、\texttt{stored\_len}、\texttt{uncompressed\_len}、\texttt{codec}，避免二次压缩；
+  \item 直接 \texttt{AppendRecord}，不经过 \texttt{ContentClassEncode}。
+\end{itemize}
+
+\subsection{ExistsMany}
+
+v0.8 引入批量查重：对 \texttt{count} 个 hash 指针，输出 \texttt{out\_exists[i]}。实现逐 hash 查 shard（未做 cross-shard 批量锁优化），但减少 Pipeline 侧 syscall/API 往返。每个 hash 检查顺序：\textbf{tombstones} $\rightarrow$ \textbf{shard\_index}。
+
+\section{shard\_index\_[16] 与 ChunkLocation}
+
+\subsection{分片规则}
+
+\begin{lstlisting}[caption={Index shard 选择},label={lst:index-shard}]
+static constexpr size_t kIndexShardCount = 16;
+static size_t IndexShardForHash(const uint8_t hash[32]) {
+  return static_cast<size_t>(hash[0] & 0x0F);
+}
+\end{lstlisting}
+
+与 EbPack \texttt{EbPackShardSet::ShardForHash} 使用相同 4-bit 规则，使 store worker 与 pack writer 对齐，减少跨 shard 锁竞争。
+
+\subsection{ChunkLocation 字段}
+
+\begin{longtable}{@{}llp{8cm}@{}}
+\caption{ChunkLocation 内存索引条目} \\
+\toprule
+字段 & 类型 & 含义 \\
+\midrule
+\endfirsthead
+\multicolumn{3}{c}{\tablename\ \thetable{} — 续} \\
+\toprule
+字段 & 类型 & 含义 \\
+\midrule
+\endhead
+\texttt{offset} & \texttt{uint64\_t} & record 在 chunk 文件或 ebpack 内的字节偏移 \\
+\texttt{pack\_path} & \texttt{string} & 非空表示 EbPack 路径；legacy 为空 \\
+\texttt{stored\_len} & \texttt{uint32\_t} & 存储 payload 长度 \\
+\texttt{uncompressed\_len} & \texttt{uint32\_t} & 逻辑明文长度 \\
+\texttt{codec} & \texttt{uint8\_t} & 编解码/加密标记 \\
+\bottomrule
+\end{longtable}
+
+Map key 为 32B raw hash string（\texttt{HashKey}），非 hex。
+
+\subsection{锁顺序（v0.9.0 \wave{5}）}
+
+\begin{invariantbox}[I-CS1：Tombstone 锁优先]
+凡同时需要 tombstone 与 shard index 的路径，\textbf{必须先}获取 \texttt{tombstones\_mu\_}，再获取 \texttt{shard\_index\_mu\_[shard]}。\\
+\texttt{Exists} / \texttt{ExistsMany}：先 tombstone 再 shard。\\
+\texttt{ForEachRecord}：先 snapshot 各 shard，再持 tombstone 锁过滤，最后在锁外 callback。\\
+\texttt{TombstoneHash}：先 shard 验证存在，再 tombstone 插入（避免 tombstone 不存在的 hash）。
+\end{invariantbox}
+
+独立 mutex 数组 \texttt{shard\_index\_mu\_[16]} 替代 v0.8 全局 index 锁，避免 rehash 与并发读写的数据竞争。
+
+\section{v0.9.0 并发修复要点}
+
+\begin{table}[htbp]
+\centering
+\caption{\wave{5} ChunkStore 并发变更}
+\begin{tabular}{@{}lp{9cm}@{}}
+\toprule
+变更 & 说明 \\
+\midrule
+\texttt{shard\_index\_[16]} & 每 shard 独立 \texttt{unordered\_map}，append 只锁单 shard \\
+\texttt{ForEachRecord} snapshot & 锁内拷贝 \texttt{RecordRef} 向量，锁外 \texttt{callback}（compact 可重入） \\
+锁序 tombstones $\rightarrow$ shard & 消除 Exists vs Tombstone 死锁 \\
+Pipeline \texttt{finalized} & 改 \texttt{std::atomic<bool>} \\
+\texttt{RecordStoredChunkHash} & under \texttt{finalize\_mu} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Append Session 与 Flush}
+
+\subsection{BeginAppendSession / EndAppendSession}
+
+\begin{itemize}
+  \item \textbf{EbPack}：创建 \texttt{EbPackShardSet(packs\_dir, txn\_id, PackFlushBytes(), PackFlushRecords())}；
+  \item \textbf{Legacy}：\texttt{EnsureAppendSession} 打开 \texttt{O\_APPEND} fd，缓冲写入 \texttt{write\_buffer\_}；
+  \item \texttt{EndAppendSession}：销毁 shard set / 关闭 append fd，不 implicit flush（需显式 \texttt{Flush}）。
+\end{itemize}
+
+\subsection{Flush 与 commit-point}
+
+\texttt{Flush()} 是备份提交点（I-B2）的关键步骤：
+
+\begin{enumerate}[nosep]
+  \item EbPack：\texttt{FlushAllOpenPacks(true)} + \texttt{FsyncAll()}；
+  \item Legacy：\texttt{WriteBufferToSession(true)}（含 fd fsync）；
+  \item 若 \texttt{!defer\_persistent\_index\_save\_}，\texttt{SavePersistentIndex()}。
+\end{enumerate}
+
+\texttt{defer\_persistent\_index\_save} 在 \texttt{BackupEngine::RunBackup} 开始时与 persistent index feature 一并启用，backup 完成后再 \texttt{SetDeferPersistentIndexSave(false)} 并保存 index（降低写放大，见 \cref{ch:ebpack-index}）。
+
+\section{DurabilityMode 与 spill 阈值}
+
+\begin{longtable}{@{}llll@{}}
+\caption{strict vs balanced 的 pack/chunk 缓冲 spill 阈值} \\
+\toprule
+模式 & Feature & 字节阈值 & 记录数阈值 \\
+\midrule
+\endfirsthead
+\multicolumn{4}{c}{\tablename\ \thetable{} — 续} \\
+\toprule
+模式 & Feature & 字节阈值 & 记录数阈值 \\
+\midrule
+\endhead
+\texttt{kStrict} & （默认） & 4 MiB & 32 \\
+\texttt{kBalanced} & \texttt{0x40} & 16 MiB & 64 \\
+\bottomrule
+\end{longtable}
+
+常量定义于 \filepath{chunk\_store.h}：\texttt{kStrictPackFlushBytes}、\texttt{kBalancedPackFlushBytes} 等。\texttt{PackFlushBytes()} / \texttt{PackFlushRecords()} 按 \texttt{durability\_mode\_} 返回对应值，传入 \texttt{EbPackShardSet}。
+
+\begin{designbox}[spill 与 commit fsync 的区别]
+\textbf{两种 DurabilityMode} 均在 manifest commit 前要求 \texttt{ChunkStore::Flush()}（全量 fsync pack/chunk）。差异在于 backup \textbf{过程中} \texttt{MaybeFlushPack} / EbPack spill 的频率：balanced 允许更大缓冲，降低中途 fsync 次数，但不削弱 commit-point 保证（见 \cref{ch:invariants}）。
+\end{designbox}
+
+Legacy 路径 \texttt{MaybeFlushPack} 在 session 活跃且缓冲超阈值时 \texttt{WriteBufferToSession(false)}（无 fsync），最终由 \texttt{Flush()} 统一 fsync。
+
+\section{Put 路径与 dedup 检查（TikZ）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=\flowdistance]
+  \node[flowstep] (entry) {Put / PutKnownHash\\PutPrecompressed};
+  \node[flowdec, below=of entry] (which) {API 类型?};
+  \node[flowstep, below left=1.3cm and 1.2cm of which] (put) {Put: ContentHash};
+  \node[flowstep, below=1.3cm of which] (pkh) {PutKnownHash};
+  \node[flowstep, below right=1.3cm and 1.2cm of which] (ppc) {PutPrecompressed};
+  \node[flowdec, below=2.2cm of which] (ex) {Exists /\\ExistsMany?};
+  \node[flowstep, below left=1.1cm and 0.5cm of ex] (dup) {newly\_written=false\\返回 Ok};
+  \node[flowstep, below right=1.1cm and 0.5cm of ex] (enc) {Encode / 加密\\（PutPrecompressed 跳过）};
+  \node[flowstep, below=of enc] (app) {AppendRecordInternal};
+  \node[flowdec, below=of app] (eb) {use\_ebpack?};
+  \node[flowstep, below left=1cm and 0.8cm of eb] (leg) {write\_buffer +\\MaybeFlushPack};
+  \node[flowstep, below right=1cm and 0.8cm of eb] (pack) {EbPackShardSet\\AppendRecord};
+  \node[flowstep, below=2.4cm of eb] (idx) {更新 shard\_index +\\TrackIndexEntry};
+
+  \draw[arrow] (entry)--(which);
+  \draw[arrow] (which)-- node[left,font=\scriptsize]{Put} (put);
+  \draw[arrow] (which)-- node[right,font=\scriptsize]{PKH} (pkh);
+  \draw[arrow] (which)-- node[right,font=\scriptsize]{PPC} (ppc);
+  \draw[arrow] (put)--(pkh);
+  \draw[arrow] (pkh)--(ex);
+  \draw[arrow] (ppc)--(ex);
+  \draw[arrow] (ex)-- node[left,font=\scriptsize]{是} (dup);
+  \draw[arrow] (ex)-- node[right,font=\scriptsize]{否} (enc)--(app)--(eb);
+  \draw[arrow] (eb)-- node[left,font=\scriptsize]{否} (leg);
+  \draw[arrow] (eb)-- node[right,font=\scriptsize]{是} (pack);
+  \draw[arrow] (leg)--(idx);
+  \draw[arrow] (pack)--(idx);
+\end{tikzpicture}
+\caption{ChunkStore Put 路径与 dedup 短路}
+\label{fig:chunk-put-dedup}
+\end{figure}
+
+\section{读取与校验}
+
+\texttt{Get} / \texttt{ReadRecordForHash}：经 shard map 定位 offset/pack，读取 header+payload，\texttt{DecodePayload}（解压/解密），最后 \texttt{ContentHash} 校验与请求 hash 一致（I-B1 运行时验证）。
+
+\texttt{ReadEbPackRecordAt}：静态方法，打开 pack 校验 \texttt{EBPACK1} magic 与 offset 范围，供 compact/verify 使用。
+
+\section{ForEachRecord 快照语义}
+
+\begin{lstlisting}[caption={ForEachRecord snapshot 模式（节选）},label={lst:foreach-record}]
+for (size_t shard = 0; shard < kIndexShardCount; ++shard) {
+  std::lock_guard<std::mutex> lock(shard_index_mu_[shard]);
+  for (const auto& kv : shard_index_[shard]) { /* copy to refs */ }
+}
+{ /* tombstones_mu_: erase tombstoned refs */ }
+for (const RecordRef& ref : refs) { cb(ref.hash, ref.offset, ref.stored_len); }
+\end{lstlisting}
+
+Callback 在\textbf{无 index 锁}下执行，允许 compact 过程中再次调用 store API（须自行避免死锁）。GC 与 \texttt{ComputeReferencedLiveBytes} 均依赖此语义。
+
+\section{Get 路径与 DecodePayload}
+
+\texttt{Get(hash, out)} 调用 \texttt{ReadRecordForHash}：
+\begin{enumerate}[nosep]
+  \item \texttt{Exists} 等价检查（含 tombstone）；
+  \item 若 \texttt{pack\_path} 非空，\texttt{ReadEbPackRecordAt}；否则 \texttt{ReadRecordAt}；
+  \item \texttt{DecodePayload}：按 codec 解密（若加密位）$\rightarrow$ LZ4/zstd 解压；
+  \item \texttt{ContentHash} 校验明文与 hash 入参一致。
+\end{enumerate}
+
+Corrupt payload 或 hash mismatch 返回 \texttt{Status::Corrupt}，verify/restore 路径向上传播。
+
+\section{Tombstone 语义}
+
+\texttt{TombstoneHash} 将 hash 加入 \texttt{tombstones\_} 集合并 append 至 \filepath{chunks.tombstones}（hex 行）。Tombstone 后：
+\begin{itemize}[nosep]
+  \item \texttt{Exists} 返回 false（逻辑删除）；
+  \item 物理 record 仍在文件/pack 中，由 compact 回收空间；
+  \item \texttt{ForEachRecord} 跳过 tombstoned hash；
+  \item 同 hash 再次 \texttt{Put} 可写入新 record（新 offset），index 覆盖旧 \texttt{ChunkLocation}。
+\end{itemize}
+
+\section{PhysicalBytes 与 repo-stats}
+
+\texttt{PhysicalBytes()} 估算 live chunk 字节 + pack header 开销；\texttt{ComputeReferencedLiveBytes(referenced)} 仅统计 \texttt{referenced} 集合中的 hash（GC 报告用）。两者均遍历 shard snapshot，tombstone 过滤后累加 \texttt{kChunkHeaderV2Size + stored\_len}，EbPack 路径另加 distinct \texttt{pack\_path} 的 \texttt{kEbPackHeaderSize}。
+
+\section{Legacy 单文件 append 细节}
+
+非 session 模式下每次 \texttt{AppendRecordInternal}：
+\begin{enumerate}[nosep]
+  \item 打开 append fd；
+  \item \texttt{WriteBufferToSession(true)} 立即 fsync；
+  \item 关闭 fd（避免长 backup 持有 fd）。
+\end{enumerate}
+
+Session 模式（\texttt{BeginAppendSession} 后）写入 \texttt{write\_buffer\_}，由 \texttt{MaybeFlushPack} 按阈值批量落盘（无 fsync），最终 \texttt{Flush()} 统一 fsync——与 EbPack 行为对齐。
+
+\section{PipelineDedupTrust}
+
+\texttt{SetPipelineDedupTrust(true)} 使 \texttt{PutPrecompressed} 跳过 \texttt{Exists} 检查，假定 Pipeline 已 \texttt{ExistsMany}。错误启用可能导致同 txn 内重复 append 相同 hash（浪费空间但不破坏正确性——读取仍返回首次 record）。默认 false；仅在 store worker 确定 dedup 已完成时启用。
+
+\section{错误处理与 Status 码}
+
+\begin{table}[htbp]
+\centering
+\caption{ChunkStore 常见 Status}
+\begin{tabular}{@{}llp{6cm}@{}}
+\toprule
+Status & 典型触发 \\
+\midrule
+\texttt{Ok} & 成功；dedup 命中亦 Ok \\
+\texttt{InvalidArgument} & null 指针、加密无 key \\
+\texttt{IoError} & 文件 open/write/fsync 失败 \\
+\texttt{Corrupt} & header CRC、hash mismatch、ebpack magic \\
+\texttt{NotFound} & \texttt{TombstoneHash} 对不存在 hash \\
+\texttt{Internal} & ebpack shard set 未 active \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{版本演进摘要}
+
+\begin{longtable}{@{}llp{7cm}@{}}
+\caption{ChunkStore 相关版本里程碑} \\
+\toprule
+版本 & 变更 \\
+\midrule
+\endfirsthead
+\multicolumn{2}{c}{\tablename\ \thetable{} — 续} \\
+\toprule
+版本 & 变更 \\
+\midrule
+\endhead
+v0.3.1 & persistent index + defer save \\
+v0.6 & EbPack 默认后端 \\
+v0.8 & \texttt{ExistsMany}、dedup-before-encode \\
+v0.9.0 & 16-shard index、ForEachRecord snapshot、锁序 \\
+v0.9.0 & balanced durability spill 16MB/64 \\
+\bottomrule
+\end{longtable}
+
+\section{本章小结}
+
+\texttt{ChunkStore} 通过 16-shard 内存索引、tombstone 过滤与 append session 统一 legacy/EbPack 写入语义；\texttt{PutPrecompressed} 与 \texttt{ExistsMany} 支撑 Pipeline 高吞吐 dedup。EbPack 文件格式与 HXID 持久化索引详见 \cref{ch:ebpack-index}；manifest 引用 chunk hash 集合见 \cref{ch:manifest-format}。

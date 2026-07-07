@@ -1,0 +1,100 @@
+\chapter{阶段四：Wave 5 与 Sprint 4（\versiontag{0.9.0}--\versiontag{0.9.4}）}
+\label{ch:phase-streaming}
+
+\section{\versiontag{0.9.0}：正确性优先于分数}
+
+\begin{pressbox}[P3 爆发]
+Pipeline v4 多 worker 下 ChunkStore 全局 \texttt{index\_mu\_} 导致 heap corruption（\texttt{0xC0000005}/\texttt{0xC0000374}）与 \texttt{ForEachRecord} 重入死锁——在 L5 $\sim$146 MB/s 时若继续 chase 分数，生态将因 \textbf{不可恢复 crash} 归零。
+\end{pressbox}
+
+\textbf{数据对照}（同版）：
+\begin{itemize}[nosep]
+  \item L3b ratio \textbf{0.96--0.98}：曾险触 immutable 0.90 floor；
+  \item L5 \textbf{142--149}：相对 v0.8 146 略波动；
+  \item profile：chunk 占 pipeline \textbf{98\%}——指向拓扑而非 store。
+\end{itemize}
+
+\textbf{Stage 3 分层数据}：v0.9.0 曾写入 \texttt{ci\_floor.json} 草案 L5=\textbf{280}；v0.9.1 下调 Stage 3.1 至 L5=\textbf{105}，Stage 3.2 保留 280（见 \cref{ch:measured-data}）。
+
+\section{\versiontag{0.9.2}：StreamingChunkCpuPipeline}
+
+\textbf{Profile 前（v0.9.0）}：chunk \textbf{98\%}。
+
+\textbf{修改参数}：32MB \texttt{FastCdcStreamFeed}；\textbf{2} encode worker + \textbf{1} store worker；carry ring。
+
+\textbf{结果数据}：
+\begin{table}[htbp]
+\centering
+\caption{v0.9.2 前后}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+指标 & v0.9.0 & v0.9.2 \\
+\midrule
+L5 MB/s & 142--149 & 154 \\
+L7 MB/s & 598 & 601 \\
+L3b ratio & 0.96--0.98 & 1.04 \\
+chunk 占比 & 98\% & 83\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+L7 几乎不变（+0.5\%）而 L5 +3--8\%——\textbf{数据证明}分化有效且未伤害 multi-file 路径。
+
+\section{\versiontag{0.9.3}：digest\_base}
+
+\textbf{stream\_sub 数据}：
+\begin{table}[htbp]
+\centering
+\begin{tabular}{@{}lrr@{}}
+\toprule
+子阶段 & v0.9.2 & v0.9.3 \\
+\midrule
+digest 占 chunk 内 & $\sim$38\% & $\sim$16\% \\
+cdc 占 chunk 内 & — & $\sim$82\% \\
+carry & $\sim$1\% & $\sim$1.6\% \\
+\midrule
+L5 MB/s & 154 & 159--163 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{ROI}：digest $-$22pp $\Rightarrow$ L5 +5--9 MB/s（$\approx$+1 MB/s 每 4pp，粗估）。
+
+\textbf{剪枝}：Phase 3C CDC carry-boundary——parity 失败，\textbf{0 MB/s 收益}，回退。
+
+\section{\versiontag{0.9.4} Sprint 4}
+
+\subsection{Phase B（默认）}
+
+\begin{itemize}[nosep]
+  \item L5：159--163 $\rightarrow$ \textbf{170--172}（CHANGELOG：+6--9\% vs v0.9.3）；
+  \item L6：172--179 $\rightarrow$ \textbf{186}；
+  \item L3b ratio：1.01--1.13 $\rightarrow$ 1.01--1.05；
+  \item stream\_sub：cdc $\sim$82\%，digest $\sim$16\%，carry $\sim$1.7\%。
+\end{itemize}
+
+\subsection{Phase A（opt-in）}
+
+\begin{table}[htbp]
+\centering
+\caption{Phase A 止损数据}
+\begin{tabular}{@{}lr@{}}
+\toprule
+指标 & 数值 \\
+\midrule
+Phase B L5 & 170--172 MB/s \\
+Phase A L5 & $\sim$105 MB/s \\
+绝对损失 & 65--67 MB/s \\
+相对损失 & $\mathbf{-39\%}$ \\
+L3b ratio（A 路径） & 仍可能 $\geq$0.90 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{prunebox}[量化止损条件]
+若默认 Phase A：L5 从 171 跌至 105——\textbf{低于 v0.6 的 139}，相当于 Wave 2--4 白做。Immutable ratio 无法捕获此劣化，故用\textbf{绝对 MB/s + 默认路径}守卫。
+\end{prunebox}
+
+\section{阶段小结}
+
+\versiontag{0.9.x} 四轮 sprint 合计 L5：145 $\rightarrow$ 171（+\textbf{18\%}），L7：598 $\rightarrow$ 653（+\textbf{9\%}）。单文件瓶颈仍在 cdc 82\%——Stage 3.2 的 280 MB/s 需 $\mathbf{+109}$ MB/s（\cref{ch:measured-data}），这是 Sprint 5 的量化目标而非口号。

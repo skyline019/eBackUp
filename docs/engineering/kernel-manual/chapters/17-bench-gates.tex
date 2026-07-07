@@ -1,0 +1,205 @@
+\chapter{Bench 门禁 L1--L7}
+\label{ch:bench-gates}
+
+\section{概述}
+
+Bench 门禁是 ebbackup 交付质量的硬约束（不变量 I-B4）。实现于 \filepath{tests/bench/bench\_check.cc}，作为 ctest target \texttt{ebbackup\_bench\_check} 在 CI 中阻塞合并。
+
+\begin{itemize}[nosep]
+  \item 吞吐单位：\textbf{SI MB/s}（$10^6$ B/s），见 \filepath{include/ebbackup/bench/throughput.h}；
+  \item Floor 配置：\filepath{engine\_cpp/bench/baselines/ci\_floor.json}（Stage 3.1 blocking）；
+  \item 覆盖 override：\texttt{EB\_BENCH\_FLOOR\_PATH} 环境变量。
+\end{itemize}
+
+\section{L1--L7 完整规格}
+
+\begin{longtable}{@{}lllp{4.8cm}l@{}}
+\toprule
+Level & 工作负载 & 输出指标 & 判定 & Stage 3.1 floor \\
+\midrule
+\endhead
+L1a & 64MB 合成数据 FastCDC slice & \texttt{fastcdc\_MBps} & $\geq$ floor & 121 MB/s \\
+L1b & 同上 HCRBO 增量（1-byte @ 5MB 后） & \texttt{hcrbo\_incr\_MBps} & $\geq$ floor & 79 MB/s \\
+L2 & L1 数据集 + reuse 统计 & \texttt{reuse\_pct} & $\geq$ 90\% & 90 \\
+L3a & 32MB 单文件 full；pipeline vs sequential & \texttt{pipeline\_ratio} & $\geq$ 0.90 & 0.90 \\
+L3b & 256MB 单文件 full；Streaming vs sequential & \texttt{pipeline\_ratio\_256MB} & $\geq$ 0.90 & 0.90 \\
+L5 & 256MB 单文件 full pipeline 绝对吞吐 & \texttt{backup\_pipeline\_256MBps} & $\geq$ floor & 105 MB/s \\
+L6 & 2GB 单文件 full pipeline & \texttt{backup\_pipeline\_2GBps} & $\geq$ floor & 112 MB/s \\
+L7 & 32$\times$32MB 多文件 pipeline & \texttt{backup\_pipeline\_multi\_MBps} & $\geq$ floor & 550 MB/s \\
+L4a & EbPack 512KB + 32KB orphan inject + compact & \texttt{ampl\_ratio\_after} & $\leq$ 1.05 & 1.05 \\
+L4b & 64MB 不可压缩 \texttt{.jpg} auto vs lz4 & \texttt{content\_auto\_vs\_lz4} & $\leq$ 1.10 & 1.10 \\
+\bottomrule
+\caption{L1--L7 工作负载与门禁}
+\end{longtable}
+
+\textbf{注：}L3 Stage 3.1 中 \texttt{backup\_pipeline\_MBps\_min=0}（32MB 绝对吞吐不阻塞 CI，仅 ratio）。
+
+\section{\filepath{ci\_floor.json} 逐键说明}
+
+当前 Stage 3.1 文件内容（\versiontag{0.9.4}）：
+
+\begin{lstlisting}[caption={ci\_floor.json 全文},label={lst:ci-floor}]
+{
+  "fastcdc_MBps_min": 121,
+  "hcrbo_incr_MBps_min": 79,
+  "reuse_pct_min": 90,
+  "pipeline_ratio_min": 0.90,
+  "pipeline_ratio_256MB_min": 0.90,
+  "backup_pipeline_MBps_min": 0,
+  "backup_pipeline_256MBps_min": 105,
+  "backup_pipeline_2GBps_min": 112,
+  "backup_pipeline_multi_MBps_min": 550,
+  "ampl_ratio_post_compact_max": 1.05,
+  "content_auto_vs_lz4_max": 1.10
+}
+\end{lstlisting}
+
+\begin{longtable}{@{}llp{7.5cm}@{}}
+\toprule
+JSON 键 & 值 & 含义与对应 Level \\
+\midrule
+\texttt{fastcdc\_MBps\_min} & 121 & L1 FastCDC 纯分块 CPU 下限 \\
+\texttt{hcrbo\_incr\_MBps\_min} & 79 & L1 HCRBO 增量路径下限 \\
+\texttt{reuse\_pct\_min} & 90 & L2 增量 reuse 百分比（\textbf{immutable}） \\
+\texttt{pipeline\_ratio\_min} & 0.90 & L3a adaptive/sequential 比（\textbf{immutable}） \\
+\texttt{pipeline\_ratio\_256MB\_min} & 0.90 & L3b 256MB 比（\textbf{immutable}） \\
+\texttt{backup\_pipeline\_MBps\_min} & 0 & L3a 绝对吞吐；Stage 3.1 禁用 \\
+\texttt{backup\_pipeline\_256MBps\_min} & 105 & L5 256MB 绝对吞吐 \\
+\texttt{backup\_pipeline\_2GBps\_min} & 112 & L6 2GB 绝对吞吐 \\
+\texttt{backup\_pipeline\_multi\_MBps\_min} & 550 & L7 32 文件绝对吞吐 \\
+\texttt{ampl\_ratio\_post\_compact\_max} & 1.05 & L4a compact 后放大比上限 \\
+\texttt{content\_auto\_vs\_lz4\_max} & 1.10 & L4b ContentClass auto 耗时 / lz4 \\
+\bottomrule
+\end{longtable}
+
+Legacy 键 \texttt{fastcdc\_mbps\_min}（MiB/s）仍被解析并打印 deprecation warning，自动换算为 SI MB/s。
+
+\section{Stage 3.1 vs Stage 3.2}
+
+\begin{table}[htbp]
+\centering
+\caption{Stage 3.1（CI blocking）vs Stage 3.2（aspirational）}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+键 / Level & Stage 3.1 (\filepath{ci\_floor.json}) & Stage 3.2 (\filepath{ci\_floor\_stage32.json}) \\
+\midrule
+L3a \texttt{pipeline\_ratio\_min} & 0.90 & 0.90 \\
+L3b \texttt{pipeline\_ratio\_256MB\_min} & 0.90 & 0.90 \\
+L3 \texttt{backup\_pipeline\_MBps\_min} & \textbf{0}（禁用） & 150 \\
+L5 \texttt{backup\_pipeline\_256MBps\_min} & \textbf{105} & 280 \\
+L6 \texttt{backup\_pipeline\_2GBps\_min} & \textbf{112} & 300 \\
+L7 \texttt{backup\_pipeline\_multi\_MBps\_min} & 550 & 550 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Stage 3.2 仅用于 nightly/manual（\texttt{ci\_floor\_measure.json}、\texttt{ci\_floor\_profile.json}），\textbf{不接入 ctest}。
+
+\begin{invariantbox}[永不可降低（Wave 5 起）]
+\texttt{reuse\_pct\_min=90}、\texttt{pipeline\_ratio\_min=0.90}、\texttt{pipeline\_ratio\_256MB\_min=0.90}。任何性能 sprint 不得下调；绝对吞吐 floor 可在实测提升后\textbf{上调}（约 70\% 观测值规则）。
+\end{invariantbox}
+
+\section{Immutable Gates 政策}
+
+\begin{longtable}{@{}llp{8cm}@{}}
+\toprule
+键 & 值 & 理由 \\
+\midrule
+\texttt{reuse\_pct\_min} & 90 & 1-byte edit @ 5MB 后 HCRBO 须保持高 reuse；回归意味着 CDC/CFI 语义破坏 \\
+\texttt{pipeline\_ratio\_min} & 0.90 & Pipeline 不得慢于 sequential 超过 10\%（32MB） \\
+\texttt{pipeline\_ratio\_256MB\_min} & 0.90 & StreamingChunkCpuPipeline 大文件同理 \\
+\bottomrule
+\end{longtable}
+
+\section{版本实测对照表}
+
+\subsection{\versiontag{0.9.4}（Release Windows，Stage 3.1）}
+
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+Level & 实测 & Floor & 状态 \\
+\midrule
+L3a ratio & 1.17--1.44 & 0.90 & PASS \\
+L3b ratio & 1.01--1.05 & 0.90 & PASS \\
+L5 abs & 170--172 MB/s & 105 & PASS \\
+L6 abs & 186 MB/s & 112 & PASS \\
+L7 abs & 646--658 MB/s & 550 & PASS \\
+\bottomrule
+\end{tabular}
+
+L5 profile：chunk $\sim$82\%；\texttt{stream\_sub} cdc $\sim$82\%，digest $\sim$16\%；Phase B seg1 bulk 降低 carry 虚拟 CDC 开销。
+
+\subsection{\versiontag{0.9.3}--\versiontag{0.8.0} 摘要}
+
+\begin{longtable}{@{}lrrrr@{}}
+\toprule
+版本 & L5 (MB/s) & L6 & L7 & 备注 \\
+\midrule
+v0.9.3 & 159--163 & 172--179 & 596--627 & digest\_base；digest share $\downarrow$38\%$\rightarrow$16\% \\
+v0.9.2 & 154 & 166 & 601 & StreamingChunkCpuPipeline 首版 \\
+v0.9.0 & 142--149 & 160 & 598 & Stage 3.1 引入；L3b $\sim$0.96--0.98 \\
+v0.8.0 & 146 & 153 & 554 & Pipeline v4；floors L5/L6=100 \\
+\bottomrule
+\end{longtable}
+
+\section{Market Comparability}
+
+\begin{longtable}{@{}llp{7cm}@{}}
+\toprule
+Level & 可比场景 & 注意事项 \\
+\midrule
+L1 & lz4/zstd chunk micro-benchmark、restic chunker CPU & 纯内存；无磁盘/网络 \\
+L3a & 桌面单文件小备份 adaptive path & 仅 ratio gate；非绝对吞吐 \\
+L3b &  vendors 大文件单路径 backup & 256MB Streaming vs sequential \\
+L5 & 同 vendors 256MB 级单文件 & 减少固定开销噪声 \\
+L6 & 超大单文件顺序备份 & 2GB 摊销 scan/manifest \\
+L7 & 多文件桌面/数据集 & FileScheduler + 全局 chunk 队列 \\
+\bottomrule
+\end{longtable}
+
+\textbf{单位陷阱：}ebbackup 明确标注 SI MB/s（$10^6$ B/s）。许多工具报告 MiB/s 但标为「MB/s」——对比前须换算。
+
+\section{算法变更政策}
+
+对 \filepath{eb\_hcrbo.cc}、\filepath{fast\_cdc*.cc}、\filepath{backup\_pipeline.cc} 的任何变更必须：
+
+\begin{enumerate}[nosep]
+  \item 全部 gtest parity 测试通过（含 \texttt{CdcFastPathMatchesStreamFeedManifest} 等）；
+  \item \texttt{ebbackup\_bench\_check} ctest 通过；
+  \item 不得改变 Content ID / SHA256 语义（除非 major release 计划）；
+  \item immutable ratio/reuse floors 不得降低。
+\end{enumerate}
+
+\section{L5 Profile 输出格式}
+
+每次 L5 运行打印（condensed）：
+
+\begin{verbatim}
+bench_check L5 profile_pct: chunk=...% encode=...% store=...%
+stream_sub: cdc=...% digest=...% carry=...%
+sha_ni: available|unavailable
+\end{verbatim}
+
+设置 \texttt{EBBACKUP\_PIPELINE\_PROFILE=1} 启用完整毫秒 breakdown：
+
+\begin{verbatim}
+pipeline_profile: scan=...ms read=...ms chunk=...ms encode=...ms
+store=...ms flush=...ms meta=...ms pipe=...ms total=...ms
+\end{verbatim}
+
+字段来源 \texttt{PipelinePhaseStats}（见附录 \cref{ch:appendix}）。
+
+\section{本地运行}
+
+\begin{lstlisting}[language=bash,caption={构建与运行 bench gate}]
+cmake -S . -B build -DEBBACKUP_BUILD_TESTS=ON
+cmake --build build --config Release --target ebbackup_bench_check
+set EB_BENCH_FLOOR_PATH=E:\recoveryProjects\engine_cpp\bench\baselines\ci_floor.json
+build\engine_cpp\Release\ebbackup_bench_check.exe
+\end{lstlisting}
+
+更新 floor 流程：在目标 runner Release 构建上跑 bench $\rightarrow$ 将各 \texttt{*\_min} 设为观测值约 \textbf{70\%} $\rightarrow$ 提交 JSON $\rightarrow$ 验证 CI。
+
+\section{本章小结}
+
+Bench 门禁将性能与正确性绑定：immutable reuse/ratio 保护增量语义；Stage 3.1 绝对吞吐 floors 跟踪 Wave 5 实测。C API 集成见 \cref{ch:c-api}。

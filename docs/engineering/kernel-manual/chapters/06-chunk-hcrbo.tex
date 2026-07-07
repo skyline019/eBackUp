@@ -1,0 +1,437 @@
+\chapter{HCRBO 增量分块与 CFI}
+\label{ch:chunk-hcrbo}
+
+\section{章节定位}
+
+HCRBO（Hash-Content Rolling Block Optimization）在 FastCDC 全量分块之上提供\textbf{增量路径}：对未变更文件区域直接 reuse  prior manifest 中的 chunk hash，跳过 read/encode/store；对变更区域重新 FastCDC 切分。CFI（Chunk Feature Index）索引 prior 备份写入的\textbf{锚点}（offset、length、hash、rolling checksum），配合 Bloom 负向预滤与 rolling batch skip 降低 hash 重算成本。
+
+\begin{designbox}[与 BackupEngine 的衔接]
+\texttt{BackupEngine::ChunkPendingFiles} 在 \texttt{BackupMode::kIncremental} 时对每文件 \texttt{FindPriorCfi}，调用 \texttt{EbHcrboChunker::ChunkIncremental}；Store 阶段对 \texttt{reused\_from\_cfi} 且 \texttt{Exists(hash)} 的 chunk 跳过 \texttt{PutKnownHash}（\cref{ch:backup-engine}）。
+\end{designbox}
+
+\textbf{实现位置}：
+\begin{itemize}[nosep]
+  \item 头文件：\filepath{engine\_cpp/include/ebbackup/chunk/eb\_hcrbo.h}
+  \item 源文件：\filepath{engine\_cpp/src/chunk/eb\_hcrbo.cc}
+  \item CFI 结构：\filepath{engine\_cpp/include/ebbackup/chunk/cfi\_index.h}
+  \item Bloom：\filepath{engine\_cpp/src/chunk/cfi\_bloom.cc}
+  \item Rolling：\filepath{engine\_cpp/src/chunk/cfi\_rolling.cc}
+\end{itemize}
+
+%--------------------------------------------------------------------
+\section{EbHcrboConfig 与 EbHcrboStats}
+\label{sec:hcrbo-config-stats}
+
+\subsection{EbHcrboConfig}
+
+\begin{lstlisting}[caption={EbHcrboConfig（\filepath{eb\_hcrbo.h}）},label={lst:eb-hcrbo-config}]
+struct EbHcrboConfig {
+  FastCdcConfig fast{};
+  uint32_t strong_anchor_bytes{64 * 1024};
+  uint64_t rabin_mask{0xFFFF};
+  DigestAlgo digest_algo{DigestAlgo::kLegacy};
+};
+\end{lstlisting}
+
+\begin{longtable}{@{}p{3.8cm}p{10.2cm}@{}}
+\toprule
+\textbf{字段} & \textbf{说明} \\
+\midrule
+\endhead
+\texttt{fast} &
+  内嵌 \texttt{FastCdcConfig}；由 \texttt{EbHcrboConfigForFileSize} 填充（\cref{ch:chunk-fastcdc}）。 \\
+\texttt{strong\_anchor\_bytes} &
+  Rabin 边界搜索宽度（默认 64\,KB）；用于 \texttt{use\_rabin\_edges} 路径。 \\
+\texttt{rabin\_mask} &
+  Rabin fingerprint 命中掩码（默认 \texttt{0xFFFF}）。 \\
+\texttt{digest\_algo} &
+  ContentHash 算法；同步至 \texttt{fast.digest\_algo}。 \\
+\bottomrule
+\caption{EbHcrboConfig 字段}
+\label{tab:hcrbo-config}
+\end{longtable}
+
+\subsection{EbHcrboStats 字段}
+
+\begin{lstlisting}[caption={EbHcrboStats 统计结构},label={lst:eb-hcrbo-stats}]
+struct EbHcrboStats {
+  uint64_t chunks_reused_from_cfi{0};
+  uint64_t cfi_rolling_skip_hits{0};
+  uint64_t cfi_rolling_recompute_avoided{0};
+  uint64_t cfi_bloom_skip_hits{0};
+  uint64_t chunks_cut_fastcdc{0};
+  uint64_t chunks_cut_rabin{0};
+};
+\end{lstlisting}
+
+\begin{longtable}{@{}p{4.5cm}p{9.5cm}@{}}
+\toprule
+\textbf{字段} & \textbf{递增条件} \\
+\midrule
+\endhead
+\texttt{chunks\_reused\_from\_cfi} &
+  \texttt{ChunkIncremental} 中 rolling+hash 验证通过，输出 \texttt{reused\_from\_cfi=true} 的 chunk。 \\
+\texttt{cfi\_rolling\_skip\_hits} &
+  rolling checksum 不匹配时，batch skip 扫描跳过的连续 anchor 数（v0.1 rolling batch skip）。 \\
+\texttt{cfi\_rolling\_recompute\_avoided} &
+  \texttt{CfiRollingVerifier} 对相同 $(offset,length)$ 缓存命中，避免重复 \texttt{RollingChecksum}。 \\
+\texttt{cfi\_bloom\_skip\_hits} &
+  rolling 匹配但 Bloom \texttt{MightContain(hash)} 为 false，直接判定变更（省去 SHA256）。 \\
+\texttt{chunks\_cut\_fastcdc} &
+  \texttt{ChunkRegion} 内 FastCDC 产生的 chunk 数。 \\
+\texttt{chunks\_cut\_rabin} &
+  Rabin 边界切分的 strong anchor chunk 数。 \\
+\bottomrule
+\caption{EbHcrboStats 语义}
+\label{tab:hcrbo-stats}
+\end{longtable}
+
+\texttt{BackupStats::chunks\_reused\_from\_cfi} 累加各文件 \texttt{hstats.chunks\_reused\_from\_cfi}；bench 输出 rolling/bloom skip 辅助诊断 reuse 回归。
+
+%--------------------------------------------------------------------
+\section{CFI 锚点结构（cfi\_index.h）}
+\label{sec:cfi-index}
+
+\begin{lstlisting}[caption={ChunkAnchor 与 CfiIndex（\filepath{cfi\_index.h}）},label={lst:cfi-index-h}]
+enum class AnchorStrength : uint8_t { kWeak = 0, kStrong = 1 };
+
+struct ChunkAnchor {
+  uint64_t offset{0};
+  uint32_t length{0};
+  uint8_t hash[32]{};
+  AnchorStrength strength{AnchorStrength::kWeak};
+  uint32_t rolling_checksum{0};
+};
+
+struct CfiIndex {
+  std::vector<ChunkAnchor> anchors;
+};
+
+inline bool AnchorEqual(const ChunkAnchor& a, const ChunkAnchor& b);
+\end{lstlisting}
+
+\begin{longtable}{@{}p{3.2cm}p{10.8cm}@{}}
+\toprule
+\textbf{字段} & \textbf{语义} \\
+\midrule
+\endhead
+\texttt{offset} / \texttt{length} &
+  锚点覆盖的文件字节区间 $[offset, offset+length)$；与 \texttt{ChunkDescriptor} 对齐。 \\
+\texttt{hash} &
+  Content ID（SHA256/legacy digest）；reuse 判定的最终依据。 \\
+\texttt{strength} &
+  \texttt{kWeak}：FastCDC 产生；\texttt{kStrong}：Rabin 边界产生。 \\
+\texttt{rolling\_checksum} &
+  \texttt{RollingChecksum(data+offset, length)}；由 \texttt{PopulateAnchorChecksums} 在 backup 时写入 manifest，供下次增量预检。 \\
+\bottomrule
+\caption{ChunkAnchor 字段}
+\label{tab:chunk-anchor}
+\end{longtable}
+
+\texttt{CfiIndex} 序列化嵌入 \texttt{ManifestFileEntry::cfi}（见 \cref{ch:manifest-format}），增量 backup 通过 \texttt{FindPriorCfi(prior, relative\_path)} 检索。
+
+%--------------------------------------------------------------------
+\section{ChunkFull 与 ChunkRegion}
+\label{sec:hcrbo-chunk-full-region}
+
+\subsection{ChunkFull}
+
+\texttt{ChunkFull} 等价于对整个文件调用 \texttt{ChunkRegion(data, len, 0, len, use\_rabin\_edges=false, ...)}：
+\begin{itemize}[nosep]
+  \item 清空 \texttt{out} 与 \texttt{cfi\_out->anchors}；
+  \item 默认\textbf{不启用} Rabin edges，输出与 pure \texttt{FastCdcSlice::Chunk} 一致的 weak anchors；
+  \item 每个输出 chunk 同步追加 \texttt{ChunkAnchor}（strength=\texttt{kWeak}）。
+\end{itemize}
+
+\subsection{ChunkRegion 算法}
+
+\texttt{ChunkRegion} 处理半开区间 $[\mathit{region\_start}, \mathit{region\_end})$：
+
+\begin{enumerate}
+  \item \textbf{短 region}：若 $\mathit{region\_len} \leq \texttt{fast.min\_size}$，单 chunk + 可选 anchor，返回。
+  \item \textbf{Rabin 左边界}（\texttt{use\_rabin\_edges=true}）：
+  \begin{itemize}[nosep]
+    \item 在 $[\mathit{region\_start}, \mathit{region\_start}+\mathit{edge})$ 内 \texttt{RabinFindAnchor}；
+    \item 若找到，切出 left strong chunk，\texttt{inner\_start} 右移。
+  \end{itemize}
+  \item \textbf{FastCDC 主体}：对 $[\mathit{inner\_start}, \mathit{inner\_end})$ 调用 \texttt{fast\_.Chunk}，offset 加 \texttt{inner\_start} 修正，追加 weak anchors。
+  \item \textbf{Rabin 右边界}：若 \texttt{inner\_end < region\_end}，切出尾部 strong chunk。
+\end{enumerate}
+
+增量路径中 \texttt{ChunkIncremental} 调用 \texttt{ChunkRegion(..., use\_rabin\_edges=false)}，Rabin 仅作为可选优化保留在 API 中。
+
+%--------------------------------------------------------------------
+\section{ChunkIncremental 算法（编号步骤）}
+\label{sec:hcrbo-incremental}
+
+\subsection{预处理}
+
+\begin{enumerate}[label=\textbf{I-\arabic*.}]
+  \item 若 \texttt{history.anchors.empty()}，退化 \texttt{ChunkFull}。
+  \item \texttt{BuildCfiAnchorIndex(history, \&index)}：构建 \texttt{CfiAnchorIndex}（见 \cref{sec:cfi-anchor-index}）。
+  \item \texttt{CfiBloomFilter bloom = BuildFromCfi(history)}。
+  \item 初始化 \texttt{CfiRollingVerifier rolling}；\texttt{pos=0}，\texttt{sorted\_pos=0}。
+\end{enumerate}
+
+\subsection{主循环（按 offset 排序 walk）}
+
+\begin{enumerate}[label=\textbf{W-\arabic*.}]
+  \item 若 \texttt{sorted\_pos >= index.by\_offset.size()}，对 $[\mathit{pos}, len)$ 调用 \texttt{ChunkRegion}，结束。
+  \item 令 \texttt{anchor = history.anchors[index.by\_offset[sorted\_pos]]}。
+  \item \textbf{Gap 填充}：若 \texttt{anchor.offset > pos}，对 $[\mathit{pos}, \mathit{anchor.offset})$ \texttt{ChunkRegion}（新内容/插入），\texttt{pos = anchor.offset}。
+  \item \textbf{Stale 跳过}：若 \texttt{anchor.offset < pos}（已被 re-chunk 覆盖），\texttt{sorted\_pos++}，继续。
+  \item \textbf{越界}：若 \texttt{anchor.offset + anchor.length > len}，对 $[\mathit{pos}, len)$ \texttt{ChunkRegion}，返回。
+  \item \textbf{Reuse 判定}：
+  \begin{enumerate}[label*=\alph*.]
+    \item 若 \texttt{rolling\_checksum != 0}：\texttt{rolling.VerifyAnchor(...)}；
+    \item rolling 匹配且 Bloom \texttt{MightContain(hash)}：\texttt{ContentHash} 比对；
+    \item rolling 匹配但 Bloom 排除：\texttt{hash\_match=false}，\texttt{cfi\_bloom\_skip\_hits++}；
+    \item rolling 不匹配：\texttt{rolling\_mismatch=true}，\texttt{rolling\_skip\_hits++}。
+  \end{enumerate}
+  \item \textbf{Reuse 命中}：输出 \texttt{ChunkDescriptor\{reused\_from\_cfi=true\}}，复制 anchor 至 \texttt{cfi\_out}，\texttt{pos += length}，\texttt{sorted\_pos++}。
+  \item \textbf{Reuse 失败}：计算 \texttt{change\_end}（下一 anchor offset 或 EOF）；若 \texttt{rolling\_mismatch}，执行 \textbf{rolling batch skip}（\cref{sec:rolling-batch-skip}）扩展 \texttt{change\_end}；对 $[\mathit{pos}, \mathit{change\_end})$ \texttt{ChunkRegion}；\texttt{pos = change\_end}；更新 \texttt{sorted\_pos}。
+\end{enumerate}
+
+\subsection{Incremental Walk TikZ 图}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=\flowdistance,
+  scale=0.88, transform shape
+]
+  \node[flowstep] (start) {取 sorted anchor};
+  \node[flowdec, below=of start] (gap) {anchor.offset $>$ pos?};
+  \node[flowstep, below left=1.0cm and 2.0cm of gap] (fill) {ChunkRegion gap};
+  \node[flowdec, below right=1.0cm and 2.0cm of gap] (roll) {rolling 匹配?};
+  \node[flowdec, below=of roll] (bloom) {Bloom 含 hash?};
+  \node[flowstep, below left=of bloom] (reuse) {reuse chunk\\reused\_from\_cfi};
+  \node[flowstep, below right=of bloom] (hash) {ContentHash 比对};
+  \node[flowdec, below=of hash] (match) {hash 相等?};
+  \node[flowstep, below=of match, xshift=-2.2cm] (rechunk) {ChunkRegion\\变更区间};
+  \node[flowstep, below=of reuse] (advance) {pos += len\\sorted\_pos++};
+
+  \draw[arrow] (start)--(gap);
+  \draw[arrow] (gap)-|node[near start,left,font=\scriptsize]{是} (fill);
+  \draw[arrow] (gap)-|node[near start,right,font=\scriptsize]{否} (roll);
+  \draw[arrow] (roll)-|node[near start,left,font=\scriptsize]{否} (rechunk);
+  \draw[arrow] (roll)--node[right,font=\scriptsize]{是} (bloom);
+  \draw[arrow] (bloom)-|node[near start,left,font=\scriptsize]{否} (rechunk);
+  \draw[arrow] (bloom)-|node[near start,right,font=\scriptsize]{是} (hash);
+  \draw[arrow] (hash)--(match);
+  \draw[arrow] (match)-|node[near start,left,font=\scriptsize]{是} (reuse);
+  \draw[arrow] (match)-|node[near start,right,font=\scriptsize]{否} (rechunk);
+  \draw[arrow] (reuse)--(advance);
+  \draw[arrow] (fill.south)++(0,-0.3) -| (start.east);
+  \draw[arrow] (rechunk.south)++(0,-0.3) -| (start.east);
+  \draw[arrow] (advance.east)++(0.8,0) |- (start.east);
+\end{tikzpicture}
+\caption{ChunkIncremental 锚点 walk：match / mismatch 分支}
+\label{fig:hcrbo-incremental-flow}
+\end{figure}
+
+%--------------------------------------------------------------------
+\section{CfiAnchorIndex}
+\label{sec:cfi-anchor-index}
+
+\texttt{CfiAnchorIndex} 为 \texttt{ChunkIncremental} 内部结构（\filepath{eb\_hcrbo.cc} 匿名命名空间）：
+
+\begin{lstlisting}[caption={CfiAnchorIndex 布局},label={lst:cfi-anchor-index}]
+struct CfiAnchorIndex {
+  std::vector<size_t> by_offset;  // 按 anchor.offset 排序的索引
+  std::unordered_map<uint32_t, std::vector<size_t>> by_rolling;
+  uint64_t rolling_skip_hits{0};
+};
+\end{lstlisting}
+
+\texttt{BuildCfiAnchorIndex}：
+\begin{itemize}[nosep]
+  \item \texttt{by\_offset}：对 \texttt{0..anchors.size()-1} 按 \texttt{anchors[i].offset} 排序；
+  \item \texttt{by\_rolling}：\texttt{rolling\_checksum != 0} 的 anchor 填入 multimap，供未来扩展（当前主 walk 用 sorted offset）；
+  \item \texttt{LowerBoundAnchorPos}：\texttt{std::lower\_bound} 定位 $\mathit{pos}$ 对应的 \texttt{sorted\_pos}，在 re-chunk 后快速前进。
+\end{itemize}
+
+%--------------------------------------------------------------------
+\section{CfiBloomFilter}
+\label{sec:cfi-bloom}
+
+\textbf{目的}：rolling checksum 为 32-bit，存在碰撞可能；Bloom 提供\textbf{负向}快速排除——若 \texttt{MightContain(hash)} 为 false，则必非 reuse，跳过昂贵 SHA256。
+
+\begin{designbox}[Bloom 参数]
+\begin{itemize}[nosep]
+  \item 期望条目数 = \texttt{history.anchors.size()}；bit 数 $\approx 10\times$ entries，最小 4096；
+  \item 4 次 probe，\texttt{HashSlice} + \texttt{Mix64} 混合 32-byte hash；
+  \item \textbf{仅负向可靠}：false negative 不允许（不插入则必返回 false）；false positive 仅导致多算 SHA256。
+\end{itemize}
+\end{designbox}
+
+Reuse 路径中 rolling 匹配后：
+\begin{enumerate}[nosep]
+  \item Bloom 排除 $\rightarrow$ 直接 \texttt{hash\_match=false}，\texttt{cfi\_bloom\_skip\_hits++}；
+  \item Bloom 可能包含 $\rightarrow$ \texttt{ContentHash} 最终确认。
+\end{enumerate}
+
+%--------------------------------------------------------------------
+\section{CfiRollingVerifier}
+\label{sec:cfi-rolling}
+
+\texttt{CfiRollingVerifier} 缓存上一次 \texttt{VerifyAnchor} 的 $(offset, length, rc)$：
+
+\begin{lstlisting}[caption={CfiRollingVerifier::VerifyAnchor},label={lst:cfi-rolling}]
+uint32_t CfiRollingVerifier::VerifyAnchor(
+    const uint8_t* data, size_t offset, size_t length,
+    uint32_t expected_rc) {
+  if (has_prev_ && prev_offset_ == offset && prev_len_ == length) {
+    ++recompute_avoided_;
+    return prev_rc_;
+  }
+  const uint32_t rc = RollingChecksum(data + offset, length);
+  // 更新缓存 ...
+  return rc;
+}
+\end{lstlisting}
+
+在 batch skip 内对连续 anchor 调用时，若区间相同可避免重复 rolling 计算；统计写入 \texttt{cfi\_rolling\_recompute\_avoided}。
+
+%--------------------------------------------------------------------
+\section{Rolling Batch Skip（v0.1）}
+\label{sec:rolling-batch-skip}
+
+当 \texttt{rolling\_mismatch=true} 时，单点 mismatch 往往预示邻近 anchor 亦 stale（例如插入/删除导致 offset 连锁漂移）。batch skip 向前扫描 sorted anchors：
+
+\begin{enumerate}[nosep]
+  \item 从 \texttt{sorted\_pos} 起，检查 \texttt{next\_anchor}；
+  \item 若 \texttt{next\_anchor.rolling} 亦 mismatch，扩展 \texttt{change\_end} 至再下一 anchor；
+  \item 直至遇到 rolling 匹配的 anchor 或 EOF；
+  \item \texttt{rolling\_skip\_hits} 累计跳过数；
+  \item 对合并后的 $[\mathit{pos}, \mathit{change\_end})$ 一次性 \texttt{ChunkRegion}。
+\end{enumerate}
+
+\begin{invariantbox}[边界不变性]
+Batch skip \textbf{不改变} FastCDC cut 点语义：仅扩大「需 re-chunk 的字节区间」，减少逐 anchor 失败时的无效 hash 计算。最终 chunk 边界仍由 \texttt{ChunkRegion} 内 FastCDC 决定（I-B1）。
+\end{invariantbox}
+
+%--------------------------------------------------------------------
+\section{L2 Bench Reuse Gate}
+\label{sec:l2-reuse-gate}
+
+CI \textbf{immutable floor}（I-B4）：64\,MB 合成数据在 5\,MB 偏移处 1-byte 编辑后，incremental reuse $\geq$ 90\%。
+
+\begin{table}[htbp]
+\centering
+\caption{L2 门禁配置（\filepath{ci\_floor.json}）}
+\label{tab:l2-gate}
+\begin{tabular}{@{}ll@{}}
+\toprule
+键 & 值 \\
+\midrule
+\texttt{reuse\_pct\_min} & 90 \\
+数据大小 & 64\,MB（\texttt{MakeSyntheticData}） \\
+编辑位置 & 5\,MB（\texttt{kDeltaOffset}） \\
+编辑方式 & 1 byte XOR \texttt{0x3C} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{测试}：
+\begin{itemize}[nosep]
+  \item \filepath{tests/bench/bench\_reuse\_gate\_test.cc}：\texttt{L1SyntheticReuseAtLeast90Pct}，3 次 run 取 min；
+  \item \filepath{tests/bench/bench\_check.cc}：\texttt{ebbackup\_bench\_check} 集成 chunk bench + floor 比较；
+  \item \filepath{tests/engine/eb\_hcrbo\_test.cc}：\texttt{OneByteEditHighReuse} 要求 20\,MB 数据 $\geq$95\% reuse（更严格单元测试）。
+\end{itemize}
+
+Reuse 计算公式：
+\[
+\text{reuse\_pct} = 100 \times \frac{\texttt{stats.chunks\_reused\_from\_cfi}}{|\text{full\_chunks}|}
+\]
+
+%--------------------------------------------------------------------
+\section{测试矩阵}
+\label{sec:hcrbo-tests}
+
+\begin{longtable}{@{}p{4.8cm}p{9.2cm}@{}}
+\toprule
+\textbf{测试} & \textbf{断言} \\
+\midrule
+\endhead
+\texttt{UnchangedFileFullReuse} &
+  未编辑文件 incremental 输出 chunk 数 = full，全部 \texttt{reused\_from\_cfi}。 \\
+\texttt{OneByteEditHighReuse} &
+  20\,MB 数据 5\,MB 处 1-byte 编辑，reuse $\geq$ 95\%。 \\
+\texttt{IncrementalBackupVerify} &
+  Engine 级 full + incremental backup 后 \texttt{Verify} 通过。 \\
+\texttt{RollingBatchSkip*} &
+  rolling mismatch 场景下 batch 扩展 change region（v0.1 回归）。 \\
+\texttt{BenchReuseGateTest} &
+  64\,MB L2 floor reuse $\geq$ 90\%。 \\
+\bottomrule
+\caption{HCRBO/CFI 测试}
+\label{tab:hcrbo-tests}
+\end{longtable}
+
+%--------------------------------------------------------------------
+\section{Rolling Checksum 与锚点预检}
+\label{sec:rolling-checksum}
+
+CFI 增量路径的第一道预检为 \texttt{RollingChecksum(data + offset, length)}（\filepath{rolling\_checksum.h}）：32-bit Adler 类滚动和，计算成本远低于 SHA256。Prior manifest 中的 \texttt{rolling\_checksum} 由 \texttt{BackupEngine::PopulateAnchorChecksums} 在\textbf{本次 backup 写入前}填充：
+
+\begin{lstlisting}[caption={PopulateAnchorChecksums（\filepath{backup\_engine.cc}）},label={lst:populate-rolling}]
+void PopulateAnchorChecksums(const uint8_t* data, size_t len, CfiIndex* cfi) {
+  for (auto& a : cfi->anchors) {
+    if (a.offset + a.length <= len) {
+      a.rolling_checksum = RollingChecksum(data + a.offset, a.length);
+    }
+  }
+}
+\end{lstlisting}
+
+\begin{designbox}[Rolling 与 Hash 的分工]
+\begin{itemize}[nosep]
+  \item \textbf{Rolling}：快速排除绝大多数未变更 anchor（$O(\mathit{length})$ 但常数极小）；
+  \item \textbf{Bloom}：rolling 碰撞时的负向预滤；
+  \item \textbf{ContentHash}：reuse 的最终法律依据，保证 I-B1 Content ID 正确。
+\end{itemize}
+\end{designbox}
+
+%--------------------------------------------------------------------
+\section{与 Manifest 的 CFI 往返}
+\label{sec:hcrbo-manifest}
+
+增量 backup 的数据流：
+
+\begin{enumerate}[nosep]
+  \item \textbf{Full backup}：\texttt{ChunkFull} $\rightarrow$ \texttt{pending\_cfi\_[i]} $\rightarrow$ \texttt{ManifestFileEntry::cfi} 序列化至 manifest；
+  \item \textbf{Incremental backup}：\texttt{LoadPriorManifest} $\rightarrow$ \texttt{FindPriorCfi(prior, rel\_path)} $\rightarrow$ \texttt{ChunkIncremental}；
+  \item \textbf{Reuse chunk}：\texttt{ChunkDescriptor.reused\_from\_cfi=true}，Store 阶段若 \texttt{Exists(hash)} 则跳过 Put；
+  \item \textbf{新/变更 chunk}：正常 \texttt{PutKnownHash}，CFI 输出更新后的 anchor 链写入新 manifest。
+\end{enumerate}
+
+Restore 路径不直接消费 CFI（按 manifest \texttt{chunk\_hashes\_hex} 顺序 \texttt{Get}），但 Verify 确保 hash 链与文件 size 一致（\cref{ch:restore-verify-v4}）。
+
+%--------------------------------------------------------------------
+\section{性能特征与 bench 输出}
+\label{sec:hcrbo-perf}
+
+\texttt{bench\_check.cc} 的 chunk bench 在 64\,MB 合成数据上报告：
+
+\begin{table}[htbp]
+\centering
+\caption{Typical bench\_check chunk 输出字段}
+\label{tab:bench-chunk-output}
+\begin{tabular}{@{}ll@{}}
+\toprule
+字段 & 含义 \\
+\midrule
+\texttt{fastcdc\_MBps} & 全量 FastCDC 吞吐 \\
+\texttt{hcrbo\_incr\_MBps} & 增量 HCRBO 吞吐 \\
+\texttt{reuse\_pct} & 1-byte 编辑后 reuse 比例 \\
+\texttt{rolling\_skip\_hits} & batch skip 命中次数 \\
+\texttt{bloom\_skip\_hits} & Bloom 负向排除次数 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+增量路径吞吐通常低于全量（需 walk anchor + 条件 hash），但 \textbf{跳过的 Store/encode} 使端到端 incremental backup 在变更率 $<$5\% 时仍显著快于 full re-chunk。
+
+
+HCRBO 以 \texttt{ChunkIncremental} 为核心，在 prior \texttt{CfiIndex} 上按 offset 排序 walk，通过 rolling checksum + Bloom + ContentHash 三级判定实现高 reuse 增量分块。\texttt{CfiAnchorIndex}、\texttt{CfiBloomFilter}、\texttt{CfiRollingVerifier} 与 rolling batch skip 构成 CFI 加速子系统；L2 bench reuse gate 将增量效果固化为不可回归的 CI 契约。FastCDC 负责变更区域 re-chunk（\cref{ch:chunk-fastcdc}），BackupEngine 负责 CFI reuse 与 Store 跳过（\cref{ch:backup-engine}）。

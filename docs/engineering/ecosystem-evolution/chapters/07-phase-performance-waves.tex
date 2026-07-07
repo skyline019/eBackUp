@@ -1,0 +1,81 @@
+\chapter{阶段三：性能 Wave（\versiontag{0.5.0}--\versiontag{0.8.0}）}
+\label{ch:phase-waves}
+
+\section{Wave 2（\versiontag{0.5.0}）：技术预研与 opt-in 文化}
+
+\textbf{主压力}：P1——必须在 256MB 全量 pipeline 上建立 L5 门禁。
+
+\textbf{决策}：算法/存储/元数据三线并进，但\textbf{默认不开启}——用 \texttt{InitV05Repo} 隔离风险。
+
+\begin{table}[htbp]
+\centering
+\caption{Wave 2 交付与 opt-in}
+\begin{tabular}{@{}llp{6cm}@{}}
+\toprule
+Track & 交付 & 本土化手法 \\
+\midrule
+A & DigestPool、SIMD CDC、CFI Bloom、dedup-before-encode & parity 后并入 \\
+B & EbPack 8MB pack + HXID v2 & 索引需 pack\_name \\
+C & Coalesced meta & 减 superblock fsync（P2） \\
+D & L5 floor 84 MB/s & $\sim$70\% 实测 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{结果}：\outcome{正向}——L5 从「无绝对指标」变为可 chase；\outcome{风险}——\texttt{uint8\_t} feature 截断 bug（\versiontag{0.6.0} 修）。
+
+\section{\versiontag{0.6.0}：预研上升为默认产品}
+
+\textbf{压力}：P1 + P4——bench 与真实 init 路径必须一致。
+
+\textbf{决策}：CLI/C API/daemon 默认 EbPack + coalesced；\textbf{breaking}：新 repo 布局，旧 repo 只读兼容、\textbf{不 auto migrate}。
+
+\textbf{修改}：Pipeline v2 双 Store worker；\texttt{CompactEbPackStore}；ABI v12。
+
+\textbf{结果}：
+\begin{itemize}[nosep]
+  \item \outcome{正向}：观测 L3 $\sim$145、L5 $\sim$139 $\rightarrow$ floor \textbf{101/97}（70\% 规则）；L5 单版本 +63 MB/s 级跃升（76$\rightarrow$139，见 \cref{ch:measured-data}）；
+  \item \outcome{负向可控}：双栈 + 双布局维护成本（P5）。
+\end{itemize}
+
+\textbf{剪枝}：明确放弃「一键迁移旧 chunks 到 EbPack」——P5 下成本不可控。
+
+\section{Wave 3（\versiontag{0.7.0}）：硬件与并行}
+
+\textbf{压力 P1}：单线程 digest 与单 pack \texttt{append\_mu\_} 触顶。
+
+\textbf{修改}：
+\begin{itemize}[nosep]
+  \item 16-shard EbPack（hash[0]\&0x0F）；
+  \item SHA-NI runtime dispatch；
+  \item Pipeline v3 + \texttt{FastCdcStreamFeed}（与 slice parity）；
+  \item L6 2GB 门禁。
+\end{itemize}
+
+\textbf{结果}：\outcome{正向}——multi-shard 扩展 L7 基础；\outcome{负向信号}——单文件 L5 仍 $\sim$155 级，说明瓶颈转移到 CDC/digest（为 v0.9 铺路）。
+
+\section{Wave 4（\versiontag{0.8.0}）：Pipeline v4 与拓扑债务}
+
+\textbf{压力 P1}：multi-file 必须上 500+ MB/s 才有生态说服力。
+
+\textbf{决策}：全局 chunk/encoded 队列 + \texttt{FileAggregator}；引入 \texttt{PipelinePhaseStats}（后成 profile 文化基础）。
+
+\textbf{修改}：L7 32$\times$32MB 门禁；\texttt{ExistsMany}；EbPack append-only writer；fsync 去重。
+
+\textbf{结果}：
+\begin{itemize}[nosep]
+  \item \outcome{正向}：L7 $\sim$554$\rightarrow$646+ MB/s（后续版本）；
+  \item \outcome{负向}：单文件 L5 仍 $\sim$146——\textbf{v4 对单大文件非最优拓扑}（P5 复杂度↑）。
+\end{itemize}
+
+\textbf{未剪枝但标记风险}：保留 v4 服务 multi-file/增量；单文件路径待 Wave 5 分化。
+
+\section{Wave 阶段总结}
+
+\begin{philobox}[Wave 2--4 教给我的事]
+\begin{enumerate}[nosep]
+  \item \textbf{并行化 store} 解决 L7，不自动解决 L5；
+  \item \textbf{profile} 比架构辩论更能驱动下一步；
+  \item \textbf{拓扑分支}是 P5 债务——必须在 v0.9 用「路由分化」而不是再加一层 v5。
+\end{enumerate}
+\end{philobox}

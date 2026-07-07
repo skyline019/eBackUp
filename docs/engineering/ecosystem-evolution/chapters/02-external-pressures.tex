@@ -1,0 +1,126 @@
+\chapter{外部环境压力图谱}
+\label{ch:pressures}
+
+\section{压力分类框架}
+
+我将驱动决策的外部因素分为五类。每一类在后续时间线中会反复出现。
+
+\begin{table}[htbp]
+\centering
+\caption{五类外部压力}
+\small
+\begin{tabular}{@{}clp{6.8cm}@{}}
+\toprule
+代号 & 类型 & 典型表现 \\
+\midrule
+P1 & \textbf{性能可比性} & 本地全量备份 MB/s；L3 ratio 不能倒挂 \\
+P2 & \textbf{I/O 与 fsync 成本} & Windows 桌面盘、strict durability 下写放大 \\
+P3 & \textbf{正确性/并发} & ASan、powerfail、多 worker pipeline crash \\
+P4 & \textbf{运维可交付} & ampl\_ratio、compact、snapshot 保留、daemon 真实部署 \\
+P5 & \textbf{维护带宽} & 单人维护 232 测试；拓扑复杂度爆炸风险 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{P1：性能可比性压力}
+
+\begin{pressbox}[压力来源]
+\begin{itemize}[nosep]
+  \item 内容定义分块备份的「硬通货」是\textbf{端到端 MB/s}（SI $10^6$ B/s）；
+  \item 社区工具（restic、borg 等）公开数字多为单线程/本地盘场景；
+  \item 若 L5 256MB 长期 $<$100 MB/s，内核在生态对话中失去可信度。
+\end{itemize}
+\end{pressbox}
+
+\textbf{我的响应链}：v0.1 bench 门禁（L1：121/79 MB/s）$\rightarrow$ v0.4.6 mmap pipeline（L3 floor 53）$\rightarrow$ Wave 2--5 性能 sprint（L5 76$\rightarrow$172）$\rightarrow$ v0.9 流式拓扑 $\rightarrow$ profile 驱动 Sprint 4。
+
+\textbf{量化现状}（\versiontag{0.9.4}）：
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+级别 & 实测 & floor & 余量 \\
+\midrule
+L5 256MB & 170--172 & 105 & +62--64\% \\
+L6 2GB & 186 & 112 & +66\% \\
+L7 multi & 646--658 & 550 & +17--20\% \\
+L3b ratio & 1.01--1.05 & 0.90 & +12--17\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{未响应（刻意）}：不设 Stage 3.2（280 MB/s）为 CI blocking——那是 aspirational，避免在 P5 下被不可能目标拖死。
+
+\section{P2：I/O 与 fsync 压力}
+
+\begin{pressbox}[压力来源]
+\begin{itemize}[nosep]
+  \item 早期每 chunk open/fsync 在 Windows 上 E2E 极差；
+  \item superblock 双写 + manifest 原子提交已够复杂，不能再叠加无意义 meta fsync；
+  \item balanced/strict 用户需要「完成可 verify」而非「每步都 fsync」。
+\end{itemize}
+\end{pressbox}
+
+\textbf{响应}：v0.4.6 commit-point 语义澄清；append session；EbPack spill 阈值；coalesced meta（v0.5）。
+
+\section{P3：正确性压力}
+
+\begin{pressbox}[压力来源]
+\begin{itemize}[nosep]
+  \item Pipeline v3/v4 引入多 worker 后，ChunkStore 全局 map 在 MSVC 下 heap corruption；
+  \item compact/GC 重入 \texttt{ForEachRecord} 死锁；
+  \item CDC 优化一旦 cut point 漂移，Content ID 语义崩溃——比 crash 更糟。
+\end{itemize}
+\end{pressbox}
+
+\textbf{响应}：Wave 5 并发重构；parity 测试矩阵；immutable reuse/ratio floor；powerfail extended。
+
+\section{P4：运维压力}
+
+\begin{pressbox}[压力来源]
+\begin{itemize}[nosep]
+  \item Legacy append-only \filepath{chunks} 无法回答「磁盘浪费多少」；
+  \item 用户需要 \texttt{restore --at}、自动 prune、daemon 单 repo 增量链；
+  \item 真实文件类型（Unicode、媒体、嵌套）在实验室 synthetic 数据下测不出 bug。
+\end{itemize}
+\end{pressbox}
+
+\textbf{响应}：v0.3 compact/repo-stats；v0.4 snapshot/GFS；v0.4.2--4.4 fixture 矩阵。
+
+\section{P5：维护带宽压力}
+
+\begin{pressbox}[压力来源]
+\begin{itemize}[nosep]
+  \item \texttt{backup\_pipeline.cc} 单文件 $>$1300 行，拓扑分支多；
+  \item 每增一条 pipeline 路径，parity + bench + 文档成本指数上升；
+  \item 传统「需求评审 $\rightarrow$ 设计评审 $\rightarrow$ 两阶段发布」对单人项目是纯 overhead。
+\end{itemize}
+\end{pressbox}
+
+\textbf{响应}：opt-in 环境变量路径；Stage 3.1 blocking / 3.2 aspirational 双轨；文档归档（\filepath{docs/}、kernel-manual）；\textbf{废弃重型流程}（见 \cref{ch:abandoned}）。
+
+\section{压力交互示意}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.9cm]
+  \node[pres] (p1) {P1 性能};
+  \node[pres, right=0.6cm of p1] (p2) {P2 I/O};
+  \node[pres, right=0.6cm of p2] (p3) {P3 正确性};
+  \node[pres, below=0.8cm of p1] (p4) {P4 运维};
+  \node[pres, right=0.6cm of p4] (p5) {P5 带宽};
+
+  \node[evt, below=1.6cm of p2] (k) {内核决策：在 I-B1--I-B4 宪法内取可行解};
+  \draw[arrow] (p1.south) -- ++(0,-0.4) -| (k.north);
+  \draw[arrow] (p2.south) -- (k.north);
+  \draw[arrow] (p3.south) -- ++(0,-0.4) -| (k.north);
+  \draw[arrow] (p4.north) -- (k.south);
+  \draw[arrow] (p5.north) -- ++(0,0.4) -| (k.south);
+\end{tikzpicture}
+\caption{多压力汇聚：无单一「最优解」，只有约束下的适应性取舍}
+\end{figure}
+
+\section{本章小结}
+
+后续各阶段时间线均用 \textbf{P1--P5 标签}标注主驱动压力，并在每节点给出 \outcome{正向}/\outcome{负向}/\outcome{剪枝} 判定。

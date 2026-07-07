@@ -1,0 +1,75 @@
+\chapter{生态理念：我建设的是什么}
+\label{ch:philosophy}
+
+\section{一句话定位}
+
+我要的不是「又一个 backup CLI」，而是在 \textbf{可验证、可回归、可单机交付} 的前提下，把\textbf{内容寻址增量备份内核}做到\textbf{本地吞吐与运维闭环}足够强——强到可以用 \textbf{SI MB/s 数字}与 restic/borg 类工具同台比较，而不是用 PPT 里的「企业级」形容词。
+
+\section{生态边界（ deliberately 不做什么）}
+
+\begin{philobox}[产品边界 = 生态边界]
+\begin{itemize}
+  \item \textbf{不做}：多租户云仓库、S3 兼容 API、GUI Workbench、完整 SQLite 式查询引擎；
+  \item \textbf{不做}：无测试的性能口号；未 opt-in 的语义变更；
+  \item \textbf{做}：HCRBO/FastCDC、EbPack、Snapshot 时间旅行、RAR/Merkle 可验证、稳定 C API、daemon schedule/watch；
+  \item \textbf{做}：232 gtest + L1--L7 bench 硬门禁 + powerfail/chaos 矩阵。
+\end{itemize}
+\end{philobox}
+
+\textbf{量化锚点}（\versiontag{0.9.4}，见 \cref{ch:measured-data}）：
+\begin{itemize}[nosep]
+  \item L5 256MB：\textbf{170--172 MB/s}（Stage 3.1 floor 105，余量 +63\%）；
+  \item L7 32$\times$32MB：\textbf{646--658 MB/s}（floor 550）；
+  \item L3b ratio：\textbf{1.01--1.05}（immutable floor 0.90）；
+  \item gtest：\textbf{153 $\rightarrow$ 232}（+52\%），PR ctest 仍 $\sim$53--60 s。
+\end{itemize}
+
+这与 eB-Tree 文档中的思路一致：\textbf{内核交付可验证语义}，上层 SKU/生态另行演化。ebbackup 当前阶段\textbf{内核即产品}。
+
+\section{「本土化」在我语境中的含义}
+
+\begin{table}[htbp]
+\centering
+\caption{本土化 ≠ 简单汉化；而是环境适配}
+\begin{tabular}{@{}llp{7cm}@{}}
+\toprule
+维度 & 外部环境 & 本土化响应 \\
+\midrule
+开发机 & Windows 为主，Release 构建 & bench 基线以 Release Windows 为准；WSL/Linux CI 为补充 \\
+资源 & 单人/极小团队维护 & 流程极短：改代码 $\rightarrow$ ctest $\rightarrow$ 文档；无专职 PM/Scrum \\
+竞争压力 & 本地备份工具比 MB/s & L5/L6/L7 绝对门禁 + \texttt{profile\_pct} 定位瓶颈（v0.9.4：cdc 82\%） \\
+存储现实 & 桌面磁盘 fsync 昂贵 & coalesced meta、EbPack batch flush、commit-point 单点 fsync \\
+用户预期 & 「能 restore、能 verify、能 compact」 & v0.3 运维链 + v0.4 snapshot + repo-stats \\
+工程债务 & 不能频繁 breaking migrate & ABI v12 后冻结 init 语义；新特性用 feature flag + opt-in \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{恒定约束（生态的「宪法」）}
+
+无论外部压力如何，以下约束\textbf{不因本土化而放松}——它们是我与「牺牲正确性换速度」路线的分界线：
+
+\begin{enumerate}
+  \item \textbf{Content ID}：\texttt{SHA256(content)}，任何 pipeline/CDC 路径不得改变 chunk 边界语义；
+  \item \textbf{提交点耐久性}：manifest commit 前 \texttt{ChunkStore::Flush()}；
+  \item \textbf{Immutable CI}：\texttt{reuse\_pct$\geq$90}、\texttt{pipeline\_ratio*$\geq$0.90} 永不可降；
+  \item \textbf{可恢复性}：中断 txn $\rightarrow$ \texttt{kAborted}，前一 snapshot 仍可 verify。
+\end{enumerate}
+
+\section{与「工程技术手册」的分工}
+
+\begin{longtable}{@{}lp{9.5cm}@{}}
+\toprule
+文档 & 问题 \\
+\midrule
+\filepath{kernel-manual/} & 模块是什么、字段偏移多少、API 签名 \\
+\textbf{本文} & 为何在此刻做此改、压力从哪来、结果正负、何时剪枝 \\
+\filepath{VERSION\_HISTORY.md} & 版本索引 \\
+\filepath{CHANGELOG.md} & 变更明细 \\
+\filepath{chapters/12-measured-data.tex} & L1--L7 实测矩阵、floor 历史、profile 表 \\
+\bottomrule
+\end{longtable}
+
+\section{本章小结}
+
+我的生态理念可以概括为：\textbf{在明确边界内，用可测量反馈环驱动内核进化，而不是用流程仪式驱动}. 下一章列出「外部环境压力」清单——它们是后续所有决策的母题。

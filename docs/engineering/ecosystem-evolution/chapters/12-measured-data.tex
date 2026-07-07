@@ -1,0 +1,203 @@
+\chapter{实测数据总表（Release Windows）}
+\label{ch:measured-data}
+
+本章用 \filepath{docs/reference/PERF\_BASELINE.md}、\filepath{engine\_cpp/bench/baselines/ci\_floor.json} 与 CHANGELOG \versiontag{0.9.4} 的\textbf{可引用数字}支撑前文论断。环境：Windows Release 构建，参考 runner（与 CI 同类 x64 桌面级 CPU）。
+
+\section{Stage 3.1 当前 CI 门禁（blocking）}
+
+\begin{table}[htbp]
+\centering
+\caption{\filepath{ci\_floor.json}（Stage 3.1，ctest 硬门禁）}
+\begin{tabular}{@{}llr@{}}
+\toprule
+键 & 含义 & 下限 \\
+\midrule
+\texttt{fastcdc\_MBps\_min} & L1 64MB FastCDC 微基准 & 121 MB/s \\
+\texttt{hcrbo\_incr\_MBps\_min} & L1 64MB HCRBO 增量 & 79 MB/s \\
+\texttt{reuse\_pct\_min} & L2 5MB 处 1-byte 编辑后 reuse & 90\% \\
+\texttt{pipeline\_ratio\_min} & L3a 32MB adaptive/sequential & 0.90 \\
+\texttt{pipeline\_ratio\_256MB\_min} & L3b 256MB streaming/sequential & 0.90 \\
+\texttt{backup\_pipeline\_MBps\_min} & L3 32MB 绝对吞吐 & \textbf{0}（禁用） \\
+\texttt{backup\_pipeline\_256MBps\_min} & L5 256MB 全量 pipeline & 105 MB/s \\
+\texttt{backup\_pipeline\_2GBps\_min} & L6 2GB 全量 pipeline & 112 MB/s \\
+\texttt{backup\_pipeline\_multi\_MBps\_min} & L7 32$\times$32MB 多文件 & 550 MB/s \\
+\texttt{ampl\_ratio\_post\_compact\_max} & L4 compact 后放大比 & 1.05 \\
+\texttt{content\_auto\_vs\_lz4\_max} & L4 ContentClass CPU & 1.10 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Immutable}（永不可降）：\texttt{reuse\_pct\_min}、\texttt{pipeline\_ratio\_min}、\texttt{pipeline\_ratio\_256MB\_min}。
+
+\section{Stage 3.2  aspirational（非 blocking）}
+
+\begin{table}[htbp]
+\centering
+\caption{\filepath{ci\_floor\_stage32.json} vs Stage 3.1}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+指标 & Stage 3.1 floor & Stage 3.2 & v0.9.4 实测 \\
+\midrule
+L5 256MB & 105 & \textbf{280} & 170--172 \\
+L6 2GB & 112 & \textbf{300} & 186 \\
+L7 multi & 550 & 550 & 646--658 \\
+L3 32MB abs & 0 & 150 & （仅 ratio 门禁） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{量化解读}（v0.9.4）：
+\begin{itemize}[nosep]
+  \item L5 实测 171 MB/s 仅为 Stage 3.2 目标 280 的 \textbf{61.1\%}；差距 \textbf{109 MB/s}；
+  \item 相对 Stage 3.1 floor 105，实测余量 \textbf{+63\%}（$(171-105)/105$）；
+  \item 若将 Stage 3.2 作 CI 阻塞：当前版本将 \textbf{100\% 失败}——这是我将其剪枝为 nightly 的直接数据依据。
+\end{itemize}
+
+\section{全版本 bench 实测矩阵（L3a/L3b/L5/L6/L7）}
+
+\begin{longtable}{@{}lrrrrr@{}}
+\caption{Release Windows 实测 vs Stage 3.1 floor（MB/s 或 ratio）} \\
+\toprule
+版本 & L3a ratio & L3b ratio & L5 & L6 & L7 \\
+\midrule
+\endfirsthead
+\multicolumn{6}{c}{\tablename\ \thetable{} — 续} \\
+\toprule
+版本 & L3a ratio & L3b ratio & L5 & L6 & L7 \\
+\midrule
+\endhead
+\versiontag{0.8.0} & — & — & 146 & 153 & 554 \\
+\versiontag{0.9.0} & 1.03--1.26 & 0.96--0.98 & 142--149 & 160 & 598 \\
+\versiontag{0.9.2} & 1.03--1.33 & 1.04 & 154 & 166 & 601 \\
+\versiontag{0.9.3} & 1.03--1.33 & 1.01--1.13 & 159--163 & 172--179 & 596--627 \\
+\versiontag{0.9.4} & 1.17--1.44 & 1.01--1.05 & \textbf{170--172} & \textbf{186} & \textbf{646--658} \\
+\midrule
+Stage 3.1 floor & 0.90 & 0.90 & 105 & 112 & 550 \\
+\bottomrule
+\end{longtable}
+
+\section{L5 单文件 256MB 演进与增量}
+
+\begin{table}[htbp]
+\centering
+\caption{L5 逐步增量（MB/s 与相对上一版）}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+版本 & L5 实测 & $\Delta$ vs 上版 & $\Delta$\% & 累计 vs v0.4.6 \\
+\midrule
+\versiontag{0.4.6} & $\sim$76 & — & — & 基准 \\
+\versiontag{0.6.0} & $\sim$139 & +63 & +83\% & +83\% \\
+\versiontag{0.8.0} & $\sim$146 & +7 & +5\% & +92\% \\
+\versiontag{0.9.0} & 142--149 & $\approx$0 & 0\% & +92\% \\
+\versiontag{0.9.2} & 154 & +5--12 & +3--8\% & +103\% \\
+\versiontag{0.9.3} & 159--163 & +5--9 & +3--6\% & +109--114\% \\
+\versiontag{0.9.4} & 170--172 & +7--13 & +4--8\% & \textbf{+124--126\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{关键拐点}：\versiontag{0.4.6}$\rightarrow$\versiontag{0.6.0} 贡献最大单次跃升（+63 MB/s）；\versiontag{0.9.0}$\rightarrow$\versiontag{0.9.4} 四轮 sprint 再贡献 $\sim$25 MB/s（142$\rightarrow$172）。
+
+\section{L5 Phase 占比（profile\_pct / stream\_sub）}
+
+\begin{longtable}{@{}lrrrrrr@{}}
+\caption{256MB L5 pipeline 阶段占比（\% of pipe time）} \\
+\toprule
+版本 & chunk & encode & store & read & cdc$^\dagger$ & digest$^\dagger$ \\
+\midrule
+\versiontag{0.9.0} & 98 & — & — & — & — & — \\
+\versiontag{0.9.2} & 83 & 16 & 1 & — & — & — \\
+\versiontag{0.9.3} & 83 & 16 & 1 & 1 & 82 & 16 \\
+\versiontag{0.9.4} & 82 & 16 & 1 & 0.5 & 82 & 16 \\
+\bottomrule
+\multicolumn{7}{l}{\small $^\dagger$ stream\_sub：chunk 内部；v0.9.2 carry $\sim$1\%；v0.9.3 digest 自 38\% 降至 16\%。} \\
+\end{longtable}
+
+\textbf{数据驱动的 Sprint 决策}：
+\begin{enumerate}[nosep]
+  \item v0.9.0：chunk 98\% $\Rightarrow$ 做拓扑分化（streaming），而非加 store worker；
+  \item v0.9.3：digest 38\%$\rightarrow$16\%（$-$22pp）$\Rightarrow$ L5 +5 MB/s；证明 digest\_base 有效；
+  \item v0.9.4：cdc 仍 82\% $\Rightarrow$ Phase B seg1 bulk；+6--9\% L5；Phase A 默认关（见下节）。
+\end{enumerate}
+
+\section{Sprint 4 Phase A vs Phase B（量化止损）}
+
+\begin{table}[htbp]
+\centering
+\caption{CDC 路径 A/B 同 workload（256MB 单文件 full backup）}
+\begin{tabular}{@{}lrrp{5.5cm}@{}}
+\toprule
+路径 & L5 MB/s & 相对 B & 处置 \\
+\midrule
+Phase B（默认 stream feed） & 170--172 & 100\% & 默认 \\
+Phase A（FastCdcSlice 整文件） & $\sim$105 & \textbf{61\%} & opt-in only \\
+\midrule
+差距 & $-$65--67 & $-$39\% & 若默认 A：生态叙事倒退 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{L3b ratio 陷阱}：Phase A 下 ratio 仍可能 $\geq$0.90（sequential 更慢），\textbf{绝对 MB/s 才反映用户感知}——这是我坚持「ratio + 绝对吞吐双看」的原因。
+
+\section{CI floor 历史（$\sim$70\% 实测规则）}
+
+\begin{longtable}{@{}lrrrr@{}}
+\caption{bench floor 随版本上调（摘录 CHANGELOG）} \\
+\toprule
+版本 & L3 abs & L5 & L6 & L7 multi \\
+\midrule
+\versiontag{0.4.5} & 49 & — & — & — \\
+\versiontag{0.4.6} & 53 & — & — & — \\
+\versiontag{0.5.0} & — & 84 & — & — \\
+\versiontag{0.6.0} & 101 & 97 & — & — \\
+\versiontag{0.8.0} & 70 & 100 & 100 & 120 \\
+\versiontag{0.9.0} Stage3 草案 & 150 & 280 & 300 & 550 \\
+\versiontag{0.9.1} Stage 3.1 & \textbf{0} & 105 & 112 & 550 \\
+\bottomrule
+\end{longtable}
+
+\versiontag{0.6.0} 标定：观测 L3 $\sim$145、L5 $\sim$139，floor 101/97 $\approx$ 70\%——成为后续 Stage 3.1 的校准惯例。
+
+\section{测试规模与 CI 耗时}
+
+\begin{table}[htbp]
+\centering
+\caption{gtest 规模与 fixture（CHANGELOG 摘录）}
+\begin{tabular}{@{}lrl@{}}
+\toprule
+里程碑 & 用例数 & 备注 \\
+\midrule
+\versiontag{0.4.1} & 153 & C API 独立 target \\
+\versiontag{0.4.2} & 188 & +35 E2E/chaos/powerfail \\
+\versiontag{0.4.4} & 196 & +media fixture \\
+\versiontag{0.9.4} & \textbf{232} & +streaming/CDC parity \\
+PR 全量 ctest & $\sim$53--60 s & Release Windows \\
+Chaos 试验 & 8 次 & \texttt{std::mt19937(42)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Durability / EbPack 阈值（P2 量化）}
+
+\begin{table}[htbp]
+\centering
+\caption{写路径 batch 参数（\versiontag{0.4.6}+）}
+\begin{tabular}{@{}lll@{}}
+\toprule
+模式 & spill 阈值 & manifest commit \\
+\midrule
+strict & 4 MiB / 32 records & 必须 fsync \\
+balanced & 16 MiB / 64 records & 必须 fsync \\
+EbPack target & 8 MiB / pack & shard=16（$hash[0]\&0x0F$） \\
+Stream feed & 32 MiB / block & 主线程 CDC feed 粒度 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Snapshot 默认保留（P4 量化）}
+
+GFS 默认：\texttt{1h:24,1d:7,7d:4,30d:6}，\texttt{retain\_min=3}。GC/compact 引用 hash 取自\textbf{所有保留 snapshot} 的并集——非仅 latest。
+
+\section{本章小结}
+
+以上数据说明：\textbf{每一次本土化决策都有可审计数字}——不是「感觉变快了」，而是 L5/L7、profile 占比、floor 余量、Phase A/B 差 39\% 共同约束下一步。

@@ -1,0 +1,393 @@
+\chapter{Digest 栈、DigestPool 与内容加密}
+\label{ch:digest-crypto}
+
+本章详述 ebbackup 备份内核的摘要子系统（Legacy/Standard 双栈、\texttt{DigestPool} 并行化、SHA-NI 硬件路径）以及 AES-256-GCM 内容加密与 PBKDF2 密钥派生。摘要层为 Content ID 与 dedup 提供基础；加密层在存储前变换 payload，但\textbf{不改变} Content ID 语义（不变量 I-B1，见 \cref{ch:invariants}）。
+
+\section{DigestAlgo 与 ContentHash 路由}
+
+\subsection{双栈设计动机（v0.2）}
+
+ebbackup 在 v0.2 引入 \texttt{DigestAlgo} 枚举，将 SHA-256/HMAC/PBKDF2 的实现分为两套\textbf{可互操作}路径：
+
+\begin{table}[htbp]
+\centering
+\caption{Digest 栈对比与默认路由}
+\begin{tabular}{@{}llp{5.5cm}l@{}}
+\toprule
+栈 & 源码 & 典型仓库 & Feature flag \\
+\midrule
+\texttt{kLegacy} & \filepath{digest\_legacy.cc} & \texttt{InitRepo(legacy)}、早期测试仓库 & （无） \\
+\texttt{kStandard} & \filepath{digest\_standard.cc} & \texttt{eb init} 默认、C API 新仓库 & \texttt{0x08} \\
+SHA-NI 加速 & \filepath{digest\_sha\_ni.cc} & \texttt{kStandard} 路径 runtime dispatch & — \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{designbox}[ContentHash 路由语义]
+\texttt{ContentHash(algo, data, len, hash\_out)} 是引擎内唯一应使用的 chunk 摘要入口（\filepath{digest.cc}）：
+\begin{enumerate}[nosep]
+  \item \texttt{algo == kStandard}：若 \texttt{DigestShaNiAvailable()} 则 \texttt{Sha256ShaNi}，否则 \texttt{Sha256Standard}；
+  \item \texttt{algo == kLegacy}：恒 \texttt{Sha256Legacy}；
+  \item \texttt{HmacSha256} / \texttt{Pbkdf2Sha256} 按 \texttt{algo} 分别路由至 Standard 或 Legacy 实现。
+\end{enumerate}
+\textbf{Content ID} 恒为 \texttt{SHA256(明文 content)}；digest 栈影响 HMAC/PBKDF2 与 bench 互操作细节，不改变 content hash 对同一明文的输出（\texttt{digest\_dual\_test.cc}、\texttt{digest\_standard\_test.cc} 覆盖）。
+\end{designbox}
+
+仓库级 digest 选择由 superblock \texttt{backup\_features} 决定：
+
+\begin{lstlisting}[caption={DigestAlgo 从 superblock 解析（\filepath{digest.h}）},label={lst:digest-from-sb}]
+inline bool RepoUsesStandardDigest(const BackupSuperBlock& sb) {
+  return (sb.ext.backup_features & kBackupFeatureDigestStandard) != 0;
+}
+inline DigestAlgo DigestAlgoFromSuperBlock(const BackupSuperBlock& sb) {
+  return RepoUsesStandardDigest(sb) ? DigestAlgo::kStandard
+                                    : DigestAlgo::kLegacy;
+}
+\end{lstlisting}
+
+\texttt{BackupEngine::Open()} 读取 superblock 后调用 \texttt{chunk\_store\_->SetDigestAlgo(digest\_algo\_)}，保证 store 层 \texttt{Put} 重算 hash 与 pipeline 一致。C API 可通过 \texttt{EB\_BACKUP\_FLAG\_LEGACY\_DIGEST} 强制 Legacy；CLI \texttt{eb init --legacy-digest} 等效。
+
+\subsection{Legacy 与 Standard 实现差异}
+
+两套 SHA-256 核心均为 portable C++ 实现，常量表与轮函数结构相同；差异主要体现在：
+
+\begin{itemize}
+  \item \textbf{代码路径隔离}：Legacy 供 RAR 链、bundle 加密、历史 parity 使用；Standard 为默认栈并可挂接 SHA-NI；
+  \item \textbf{HMAC/PBKDF2}：\texttt{pbkdf2\_test.cc} 验证两栈对同一 password/salt/iterations 输出一致；
+  \item \textbf{编译选项}：Linux Release 对 \filepath{digest\_sha\_ni.cc} 启用 \texttt{-msha}，Legacy/Standard portable 路径不依赖 SHA 扩展。
+\end{itemize}
+
+\begin{invariantbox}[I-D1：Content ID 与 digest 栈解耦]
+无论 \texttt{DigestAlgo}、Pipeline 拓扑（sequential / v4 / streaming）或 CDC 实现如何，chunk 的 Content ID 均为明文 \texttt{SHA256(content)}。加密仓库存储 AES-GCM 密文，但 \texttt{Put} 在 encode/encrypt \textbf{之前}已对明文计算 hash。
+\end{invariantbox}
+
+\section{DigestPool 并行摘要（v0.5 \wave{2}，v0.9.3 增强）}
+
+\subsection{API 与数据结构}
+
+\textbf{实现}：\filepath{src/common/digest\_pool.cc}、\filepath{include/ebbackup/common/digest\_pool.h}
+
+\begin{structbox}[DigestPool 公开接口]
+\begin{itemize}[nosep]
+  \item \texttt{DigestPool::Shared()}：进程级单例，Pipeline / FastCDC / streaming 共享；
+  \item \texttt{HashRegions(algo, base, spans, span\_count, hashes\_out)}：对同一连续 \texttt{base} 缓冲区内多个 \texttt{DigestSpan\{offset,length\}} 批量计算 32B hash，输出按 span 顺序排列；
+  \item \texttt{threads()}：构造时解析的 worker 数（构造后 \texttt{SetThreads} 为 no-op，线程池规模固定）。
+\end{itemize}
+\end{structbox}
+
+v0.8 起采用\textbf{持久 worker 线程池}，不再 per-batch spawn；v0.9.3 引入 \textbf{intra-job span sharding}，当 \texttt{span\_count >= threads\_} 时在调用线程上临时 fork helper 线程按 span 区间并行（避免 job queue 开销）。
+
+\subsection{线程数解析}
+
+\begin{lstlisting}[caption={ResolveThreadCount（\filepath{digest\_pool.cc}）},label={lst:digest-threads}]
+unsigned ResolveThreadCount(unsigned requested) {
+  if (requested > 0) return requested;
+  const char* env = std::getenv("EBBACKUP_DIGEST_THREADS");
+  if (env && env[0] != '\0') {
+    const long parsed = std::strtol(env, nullptr, 10);
+    if (parsed > 0) return static_cast<unsigned>(parsed);
+    if (parsed == 0) return 1;
+  }
+  const unsigned hw = std::thread::hardware_concurrency();
+  const unsigned base = hw > 0 ? hw : 8;
+  return std::max<unsigned>(4, std::min(16u, base / 2));
+}
+\end{lstlisting}
+
+\begin{longtable}{@{}p{3.2cm}p{10cm}@{}}
+\caption{\texttt{EBBACKUP\_DIGEST\_THREADS} 环境变量语义} \\
+\toprule
+取值 & 行为 \\
+\midrule
+\endfirsthead
+\multicolumn{2}{c}{\tablename\ \thetable{} — 续} \\
+\toprule
+取值 & 行为 \\
+\midrule
+\endhead
+未设置 & \texttt{max(4, min(16, hw/2))}；\texttt{hw==0} 时按 8 核估算 \\
+正整数 $N$ & 固定 $N$ 个持久 worker \\
+\texttt{0} & 强制单线程（\texttt{digest\_pool\_test} parity 路径） \\
+\bottomrule
+\end{longtable}
+
+CI bench（\filepath{bench\_check.cc}、\texttt{bench\_reuse\_gate\_test.cc}）统一设 \texttt{EBBACKUP\_DIGEST\_THREADS=4}，保证 L2/L5 门禁可重复。
+
+\subsection{HashRegions 调度策略}
+
+\texttt{HashRegions} 按以下顺序选择执行策略：
+
+\begin{enumerate}
+  \item \textbf{Fast path}：\texttt{span\_count == 1} 或 \texttt{threads\_ <= 1} $\rightarrow$ 调用线程串行 \texttt{ContentHash}；
+  \item \textbf{Span sharding}（v0.9.3）：\texttt{span\_count >= threads\_} $\rightarrow$ 按 worker 数均分 span 索引区间，spawn 临时 \texttt{std::thread}，join 后返回（无 job queue）；
+  \item \textbf{Job queue}：span 数少于线程数时，将整批 span 封装为 \texttt{DigestJob} 入队，持久 worker 在 \texttt{WorkerLoop} 中 \texttt{RunJob}，调用方 \texttt{wait} on \texttt{job->done}。
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=\flowdistance]
+  \node[flowstep] (in) {HashRegions 入参\\spans, span\_count};
+  \node[flowdec, below=of in] (c1) {span==1\\或 threads<=1?};
+  \node[flowstep, below left=1.2cm and 0.8cm of c1] (serial) {串行 ContentHash};
+  \node[flowdec, below right=1.2cm and 0.8cm of c1] (c2) {span\_count\\>= threads?};
+  \node[flowstep, below=of c2] (shard) {临时线程\\按 span 分片};
+  \node[flowstep, right=2.4cm of shard] (queue) {DigestJob\\入 worker 队列};
+
+  \draw[arrow] (in) -- (c1);
+  \draw[arrow] (c1) -- node[left,font=\scriptsize]{是} (serial);
+  \draw[arrow] (c1) -- node[right,font=\scriptsize]{否} (c2);
+  \draw[arrow] (c2) -- node[left,font=\scriptsize]{是} (shard);
+  \draw[arrow] (c2) -- node[above,font=\scriptsize]{否} (queue);
+\end{tikzpicture}
+\caption{DigestPool::HashRegions 三路调度}
+\label{fig:digest-pool-routing}
+\end{figure}
+
+Pipeline \textbf{dedup-before-encode}（v0.8+）：FastCDC / streaming 先 \texttt{HashRegions} 得到 chunk hash，再 \texttt{ExistsMany} 批量查重；命中则跳过 encode/store（见 \cref{ch:chunk-store}）。
+
+\section{SHA-NI 硬件路径（v0.7 \wave{3}）}
+
+\subsection{CPUID 检测与 self-test}
+
+\texttt{digest\_sha\_ni.cc} 在 x86/x64 上实现 Intel SHA Extensions 加速的 SHA-256：
+
+\begin{enumerate}[nosep]
+  \item \texttt{ProbeShaNiCpu()}：CPUID leaf 7, subleaf 0，检测 EBX bit 29（SHA）；
+  \item \texttt{SelfTestShaNi()}：对消息 \texttt{"abc"} 计算 \texttt{Sha256NiCore}，与 \texttt{Sha256Standard} 逐字节比较；
+  \item 结果缓存于 \texttt{g\_sha\_ni\_cached}（\texttt{memory\_order\_acquire/release}），避免重复探测；
+  \item 仅当编译宏 \texttt{EBBACKUP\_SHA\_NI\_COMPILED} 且 CPUID+self-test 均通过时 \texttt{DigestShaNiAvailable()} 返回 true。
+\end{enumerate}
+
+\begin{lstlisting}[caption={ContentHash Standard 路径 dispatch},label={lst:content-hash-shani}]
+void ContentHash(DigestAlgo algo, const uint8_t* data, size_t len,
+                 uint8_t hash_out[32]) {
+  if (algo == DigestAlgo::kStandard) {
+    if (DigestShaNiAvailable()) {
+      Sha256ShaNi(data, len, hash_out);
+    } else {
+      Sha256Standard(data, len, hash_out);
+    }
+  } else {
+    Sha256Legacy(data, len, hash_out);
+  }
+}
+\end{lstlisting}
+
+L5 bench profile 打印 \texttt{sha\_ni: available|unavailable}（\filepath{backup\_pipeline.cc} phase stats）。非 x86 或未编译 SHA 内联时，\texttt{Sha256ShaNi} 透明 fallback 至 \texttt{Sha256Standard}。
+
+\subsection{Sha256ShaNi 实现要点}
+
+\texttt{Sha256NiCore} 使用 \texttt{\_mm\_sha256rnds2\_epu32}、\texttt{\_mm\_sha256msg1/2\_epu32} 处理 64B 块；尾部 padding 与 bit-length 编码与 FIPS 180-4 一致。\texttt{digest\_sha\_ni\_test.cc} 的 \texttt{ContentHashDispatchParity} 验证 dispatch 输出与 Standard 一致。
+
+\section{AES-256-GCM 与 PBKDF2}
+
+\subsection{加密管线}
+
+\textbf{实现}：\filepath{src/crypto/aes\_gcm.cc}、\filepath{aes\_block.cc}、\filepath{gcm\_portable.cc}
+
+\begin{table}[htbp]
+\centering
+\caption{AES-256-GCM 存储格式}
+\begin{tabular}{@{}lll@{}}
+\toprule
+字段 & 长度 & 说明 \\
+\midrule
+nonce & 12 B & 每 chunk 随机（\texttt{kAesGcmNonceSize}） \\
+ciphertext & $N$ B & 与明文等长 \\
+auth tag & 16 B & GCM MAC（\texttt{kAesGcmTagSize}） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Windows 优先 \texttt{BCrypt} AES-GCM；失败或非 Windows 走 \texttt{Aes256GcmEncryptPortable}。NIST 测试向量覆盖 portable 路径（\filepath{tests/crypto/}）。
+
+\texttt{ChunkStore::PutKnownHash} 在 \texttt{ContentClassEncode} 之后、\texttt{AppendRecord} 之前调用 \texttt{Aes256GcmEncrypt}；codec 经 \texttt{EncryptCodec(codec)} 标记加密位，但 header 中 \texttt{hash[32]} 仍为\textbf{明文} Content ID。
+
+\subsection{PBKDF2 与 crypto.salt}
+
+\begin{lstlisting}[caption={DeriveContentKey（\filepath{aes\_gcm.cc}）},label={lst:derive-cek}]
+Status DeriveContentKey(const std::string& password, const uint8_t salt[16],
+                        uint8_t cek[32], DigestAlgo algo) {
+  if (password.empty()) return Status::InvalidArgument("empty password");
+  Pbkdf2Sha256(algo, ..., salt, 16, 100000, cek);
+  return Status::Ok();
+}
+\end{lstlisting}
+
+\begin{itemize}
+  \item \filepath{crypto.salt}：每仓库 16B 随机 salt；\texttt{LoadOrCreateRepoSalt} 首次创建后 \texttt{FsyncPath}；
+  \item PBKDF2-HMAC-SHA256，\textbf{100\,000} 次迭代，输出 32B Content Encryption Key（CEK）；
+  \item digest 栈决定 PBKDF2 内部 HMAC 实现，Legacy/Standard 仓库均可加密（\texttt{digest\_dual\_encrypt\_test}）；
+  \item Feature \texttt{kBackupFeatureEncrypted}（0x04）；CLI \texttt{--encrypt} / \texttt{--password-env}。
+\end{itemize}
+
+\section{ChunkRecordHeader v1 与 v2}
+
+chunk 记录在 legacy 单文件与 EbPack 内共用 header 布局（v2 为当前默认）：
+
+\begin{longtable}{@{}rrl p{6cm}@{}}
+\caption{ChunkRecordHeader v2 字节布局（48B，\filepath{chunk\_store.h}）} \\
+\toprule
+偏移 & 长度 & 字段 & 说明 \\
+\midrule
+\endfirsthead
+\multicolumn{4}{c}{\tablename\ \thetable{} — 续} \\
+\toprule
+偏移 & 长度 & 字段 & 说明 \\
+\midrule
+\endhead
+0 & 32 & \texttt{hash[32]} & Content ID（明文 SHA-256） \\
+32 & 4 & \texttt{stored\_len} & 存储 payload 字节数（含加密/压缩后） \\
+36 & 4 & \texttt{uncompressed\_len} & 逻辑明文长度 \\
+40 & 1 & \texttt{codec} & \texttt{ChunkCodec} 枚举 \\
+41 & 3 & \texttt{reserved[3]} & 对齐保留 \\
+44 & 4 & \texttt{record\_crc32} & header CRC（字段置零后计算） \\
+\midrule
+\multicolumn{4}{l}{\textbf{v1（40B）}：仅 \texttt{hash} + \texttt{raw\_len} + \texttt{record\_crc32}；无 codec/uncompressed\_len，逻辑长度等于 \texttt{raw\_len}} \\
+\bottomrule
+\end{longtable}
+
+\begin{lstlisting}[caption={ChunkRecordHeader v2 结构},label={lst:chunk-header-v2}]
+struct ChunkRecordHeader {
+  uint8_t hash[32];
+  uint32_t stored_len;
+  uint32_t uncompressed_len;
+  uint8_t codec;
+  uint8_t reserved[3];
+  uint32_t record_crc32;
+};
+static_assert(sizeof(ChunkRecordHeader) == 48);
+\end{lstlisting}
+
+\texttt{ReadParsedHeaderAt} 先尝试 v1 CRC；失败则按 v2 解析。Open/LoadIndex 扫描与 persistent index 均支持 v1/v2 混存仓库（向后兼容）。
+
+\section{与 Pipeline / ChunkStore 的集成}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=\flowdistance]
+  \node[flowdata] (plain) {明文 chunk};
+  \node[flowstep, below=of plain] (hash) {DigestPool::HashRegions\\或 ContentHash};
+  \node[flowstep, below=of hash] (dedup) {ExistsMany / Exists};
+  \node[flowdec, below=of dedup] (hit) {已存在?};
+  \node[flowstep, below left=1.1cm and 0.6cm of hit] (skip) {跳过 store};
+  \node[flowstep, below right=1.1cm and 0.6cm of hit] (enc) {Encode + 可选 AES-GCM};
+  \node[flowstep, below=of enc] (put) {PutKnownHash / PutPrecompressed};
+
+  \draw[arrow] (plain)--(hash)--(dedup)--(hit);
+  \draw[arrow] (hit)-- node[left,font=\scriptsize]{是} (skip);
+  \draw[arrow] (hit)-- node[right,font=\scriptsize]{否} (enc)--(put);
+\end{tikzpicture}
+\caption{摘要层在 dedup-before-encode 中的位置}
+\label{fig:digest-pipeline}
+\end{figure}
+
+Streaming CDC（v0.9.3）对虚拟段使用 file-absolute \texttt{digest\_base} 指针调用 \texttt{HashRegions}，保证与 \texttt{FastCdcSlice} mmap 路径 hash 一致。
+
+\section{Legacy 栈的保留场景}
+
+尽管 \texttt{eb init} 默认 Standard，Legacy 栈在以下场景仍为\textbf{权威}路径：
+
+\begin{table}[htbp]
+\centering
+\caption{必须使用 Legacy digest 的组件}
+\begin{tabular}{@{}llp{7cm}@{}}
+\toprule
+组件 & API & 原因 \\
+\midrule
+RAR 审计链 & \texttt{ComputeRarSha256(body, kLegacy)} & 链式 hash 与历史 audit 记录绑定 \\
+eb bundle 加密 & \texttt{Pbkdf2Sha256(kLegacy, ...)} & 归档 bundle 互操作 \\
+\texttt{Sha256()} 便捷函数 & \texttt{DigestAlgo::kLegacy} & 非引擎工具代码默认 \\
+C API legacy flag & \texttt{EB\_BACKUP\_FLAG\_LEGACY\_DIGEST} & 显式兼容模式 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+迁移 Standard 仓库时\textbf{无需}重算 chunk hash；仅需在新 backup 时启用 \texttt{kBackupFeatureDigestStandard}，后续 HMAC/PBKDF2 走 Standard 实现。
+
+\section{DigestPool 实现细节与边界条件}
+
+\subsection{Worker 生命周期}
+
+\texttt{DigestPoolImpl} 构造时 spawn \texttt{threads\_} 个 \texttt{WorkerLoop} 线程；析构时设 \texttt{stop\_=true}、\texttt{notify\_all}、\texttt{join} 全部 worker。进程退出时 \texttt{Shared()} 单例随静态析构顺序销毁——gtest 中局部 \texttt{DigestPool pool(4)} 实例会在测试结束时正常 join。
+
+\subsection{Job queue 路径的适用场景}
+
+当 FastCDC 一切文件仅产生少量 span（例如小文件 2--3 个 chunk）且 \texttt{threads\_>1} 时，走 job queue 而非 span sharding：单个 worker 处理整批 span，其余 worker 空闲。这是预期行为——micro-batch 的调度开销低于错误并行化带来的同步成本。大文件 streaming 路径通常 \texttt{span\_count >> threads}，命中 sharding 快路径。
+
+\subsection{SetThreads 为 no-op 的原因}
+
+v0.8 后线程池规模在构造时固定；\texttt{SetThreads} 保留 API 兼容性但不改变 \texttt{threads\_}。动态调整 worker 数需重建 \texttt{DigestPool} 实例（bench 通过环境变量在进程启动前设定）。
+
+\section{SHA-NI 编译与平台矩阵}
+
+\begin{longtable}{@{}llp{7cm}@{}}
+\caption{SHA-NI 可用性矩阵} \\
+\toprule
+平台 & 编译 & Runtime \\
+\midrule
+\endfirsthead
+\multicolumn{3}{c}{\tablename\ \thetable{} — 续} \\
+\toprule
+平台 & 编译 & Runtime \\
+\midrule
+\endhead
+Linux x86\_64 Release & \texttt{-msha} 启用 intrinsic & CPUID + self-test \\
+Linux x86\_64 Debug & 可能无 \texttt{-msha} & fallback Standard \\
+Windows x64 MSVC & \texttt{\_M\_X64} + intrin & 同左 \\
+ARM / RISC-V & 无 \texttt{EBBACKUP\_SHA\_NI\_COMPILED} & 恒 false \\
+\bottomrule
+\end{longtable}
+
+CPUID 检测 EBX bit 29 对应 Intel SHA extensions；AMD Zen 部分型号亦支持。self-test 防止 errata 或虚拟化 CPU 误报。
+
+\section{AES-GCM blob 布局与解密}
+
+存储 blob 布局：\texttt{[nonce 12B][ciphertext N B][tag 16B]}。解密时 \texttt{Aes256GcmDecrypt} 校验 tag；失败返回 \texttt{Corrupt}。Windows BCrypt 路径失败时自动 fallback portable（与 encrypt 对称）。
+
+\texttt{ChunkStore::DecodePayload} 在读取后根据 codec 加密位选择解密，再解压；verify 路径对解密明文重算 \texttt{ContentHash} 与 header hash 比对。
+
+\section{ChunkRecordHeader CRC 计算}
+
+v2 header CRC 算法：复制 header，\texttt{record\_crc32} 置零，对整个 48B 结构做 \texttt{Crc32}。v1 同理对 40B 计算。Open scan 时 CRC 不匹配尝试另一版本；均失败则视为 corrupt tail 起点。
+
+\section{环境变量与运维调优汇总}
+
+\begin{table}[htbp]
+\centering
+\caption{Digest 相关环境变量}
+\begin{tabular}{@{}llp{6cm}@{}}
+\toprule
+变量 & 典型值 & 效果 \\
+\midrule
+\texttt{EBBACKUP\_DIGEST\_THREADS} & \texttt{4}（CI） & 固定 DigestPool worker 数 \\
+ & 未设置 & \texttt{max(4, min(16, hw/2))} \\
+ & \texttt{0} & 单线程（parity/debug） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+生产环境大核 CPU 可适当提高 \texttt{EBBACKUP\_DIGEST\_THREADS}（如 8--12），但超过 chunk 并行度收益递减；L5 profile 可观察 digest 阶段 \texttt{chunk\_ns} 占比。
+
+\section{测试与 bench 覆盖}
+
+\begin{table}[htbp]
+\centering
+\caption{Digest 相关测试矩阵（节选）}
+\begin{tabular}{@{}llp{7cm}@{}}
+\toprule
+测试文件 & 覆盖点 \\
+\midrule
+\texttt{digest\_legacy\_test.cc} & Legacy SHA/HMAC 向量 \\
+\texttt{digest\_standard\_test.cc} & Standard 路由、ContentHash \\
+\texttt{digest\_sha\_ni\_test.cc} & SHA-NI parity、dispatch \\
+\texttt{digest\_pool\_test.cc} & 多线程 HashRegions vs 串行 \\
+\texttt{digest\_dual\_test.cc} & Legacy/Standard 仓库 round-trip \\
+\texttt{pbkdf2\_test.cc} & PBKDF2 双栈一致 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{本章小结}
+
+Digest 子系统通过 \texttt{ContentHash} 统一路由 Legacy/Standard/SHA-NI，\texttt{DigestPool} 在 chunk 边界并行化摘要且可通过 \texttt{EBBACKUP\_DIGEST\_THREADS} 调优。加密在 store 之前应用，PBKDF2+salt 派生 CEK，但不改变 Content ID。下一章 \cref{ch:chunk-store} 描述 hash-keyed 持久化与 dedup 查重语义。

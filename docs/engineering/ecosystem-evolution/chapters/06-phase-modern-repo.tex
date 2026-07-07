@@ -1,0 +1,69 @@
+\chapter{阶段二：现代仓库与真实世界（\versiontag{0.3.0}--\versiontag{0.4.6}）}
+\label{ch:phase-modern}
+
+\section{\versiontag{0.3.0}：从「能备份」到「能运维」}
+
+\begin{longtable}{@{}p{2.2cm}p{12cm}@{}}
+\toprule
+\textbf{压力} & P2（索引写放大）+ P4（compact、repo-stats、zstd） \\
+\midrule
+\textbf{决策} & 引入持久化 \filepath{chunk.idx}、manifest v4、ContentClass、DurabilityMode \\
+\midrule
+\textbf{修改} & zstd vendored、\texttt{eb compact}、\texttt{eb repo-stats}、ABI v10 \\
+\midrule
+\textbf{适应性} & CLI/C API init 默认现代特性；C++ \texttt{InitRepo()} 保持 legacy 测兼容 \\
+\midrule
+\textbf{结果} & \outcome{正向}——ampl\_ratio 可观测；\outcome{负向}——LoadIndex 多 chunk 截断 bug（已修） \\
+\midrule
+\textbf{剪枝} & 无 auto 迁移旧 repo \\
+\bottomrule
+\end{longtable}
+
+\section{\versiontag{0.3.1}：Schedule 本土化}
+
+\textbf{压力 P5}：测试路径与 daemon 生产路径不一致；\texttt{repo-*} 轮转在单机部署中无人用。
+
+\textbf{决策}：\texttt{<base>/current} 单 repo + 增量链；defer \filepath{chunk.idx} 到 backup 结束。
+
+\textbf{修改}：\texttt{InitV03Repo} 统一测试；schedule JSON 增加 compress/durability。
+
+\textbf{结果}：\outcome{正向}——IOPS 降；schedule 与 manual backup 行为一致。
+
+\textbf{剪枝}：\textbf{废弃 legacy repo-* 轮转}作为默认故事（\versiontag{0.4.1} 进一步限制 \texttt{PruneRotatedRepos}）。
+
+\section{\versiontag{0.4.0}：Snapshot 作为生态必备}
+
+\textbf{压力 P4}：无时间旅行则「误删 restore」场景无法本土化 compete with 商业 backup。
+
+\textbf{决策}：GFS 分层 + \texttt{restore --at}；GC 引用\textbf{所有保留 snapshot} 的 hash 并集。
+
+\textbf{结果}：\outcome{正向}——运维闭环完整；\outcome{代价}——GC/compact 逻辑更复杂（P5）。
+
+\section{\versiontag{0.4.2}--\versiontag{0.4.4}：真实世界压测}
+
+\textbf{压力 P3/P4}：synthetic 64MB 测不出 Unicode 路径、媒体 skip 压缩、嵌套目录。
+
+\textbf{决策}：投入 fixture 资产（real\_world、media）+ chaos(\texttt{seed=42}) + powerfail 分层。
+
+\textbf{修改}：$\sim$35 新用例；\texttt{EBTEST\_FIXTURE\_DIR}；ContentClass 对 \texttt{.exe} 等 skip。
+
+\textbf{结果}：\outcome{正向}——PR ctest $<$60s 仍成立；回归覆盖面质变。
+
+\section{\versiontag{0.4.5}--\versiontag{0.4.6}：P1+P2 合流}
+
+\begin{pressbox}[v0.4.6 是本土化分水岭]
+CHANGELOG 记录：L3 \texttt{backup\_pipeline\_MBps\_min} 从 49（\versiontag{0.4.5}）抬至 \textbf{53}（$\sim$70\% $\times$ 观测 $\sim$76 MB/s）。同版引入 strict/balanced \textbf{4MiB/32} 与 \textbf{16MiB/64} records spill 阈值、mmap \texttt{FileView}、append session——L5 从「不可测」进入可 chase 区间（见 \cref{ch:measured-data}）。
+\end{pressbox}
+
+\textbf{修改要点}：
+\begin{itemize}[nosep]
+  \item strict/balanced 均在 manifest commit 时 fsync（语义澄清）；
+  \item \texttt{BeginAppendSession}/\texttt{Flush}/\texttt{EndAppendSession}；
+  \item Pipeline 零拷贝 mmap；\texttt{queue\_depth=16}。
+\end{itemize}
+
+\textbf{结果}：\outcome{正向}——E2E 从「算法 microbench 很好、pipeline 很差」变为可继续 Wave 优化。
+
+\section{阶段小结}
+
+现代仓库阶段证明：\textbf{P4 运维特性}与\textbf{P3 真实 fixture}是本土化可信度来源；\versiontag{0.4.6} 为性能 Wave 清障。

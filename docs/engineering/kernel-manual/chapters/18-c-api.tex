@@ -1,0 +1,190 @@
+\chapter{C API 与 ABI v12}
+\label{ch:c-api}
+
+\section{概述}
+
+稳定 C API 定义于 \filepath{include/ebbackup/eb\_backup.h}，实现于 \filepath{src/engine/eb\_backup\_capi.cc}。当前 \texttt{EB\_BACKUP\_ABI\_VERSION = 12}。\versiontag{0.7.0}--\versiontag{0.9.4} \textbf{无 breaking ABI 变更}。
+
+集成方应在运行时调用 \texttt{eb\_backup\_abi\_version()} 并与编译期 \texttt{EB\_BACKUP\_ABI\_VERSION} 比对。
+
+\section{ABI 版本演进表（v7--v12）}
+
+\begin{longtable}{@{}clp{8cm}@{}}
+\toprule
+ABI & 引入版本 & 关键新增 / 行为变更 \\
+\midrule
+v7 & M7 & \texttt{BackupFilter}、CFI rolling gate、\texttt{REQUIRE\_ANCHOR} \\
+v8 & M8 & \texttt{EB\_RESTORE\_FLAG\_SKIP\_CONTENT\_VERIFY}、Merkle 内容校验 \\
+v9 & \versiontag{0.2.0} & \texttt{eb\_backup\_init\_repo\_ex}、\texttt{LEGACY\_DIGEST} flag \\
+v10 & \versiontag{0.3.0} & \texttt{eb\_backup\_compact}、\texttt{repo\_stats}、\texttt{INIT\_LEGACY} \\
+v11 & \versiontag{0.4.0} & \texttt{list\_snapshots}、\texttt{prune\_snapshots}、\texttt{restore\_at}/\texttt{verify\_at} \\
+v12 & \versiontag{0.6.0} & 默认 EbPack + coalesced meta；\texttt{NO\_PIPELINE} \\
+\bottomrule
+\end{longtable}
+
+\section{EB\_BACKUP\_FLAG 全表}
+
+Init / Run flags（\filepath{eb\_backup.h}）：
+
+\begin{longtable}{@{}lrp{7.5cm}@{}}
+\toprule
+宏 & 值 & 效果 \\
+\midrule
+\texttt{EB\_BACKUP\_FLAG\_LZ4} & 0x0001 & Run 时启用 LZ4 压缩 \\
+\texttt{EB\_BACKUP\_FLAG\_PIPELINE} & 0x0002 & Run 时启用 pipeline（除非 \texttt{NO\_PIPELINE}） \\
+\texttt{EB\_BACKUP\_FLAG\_REQUIRE\_ANCHOR} & 0x0004 & Verify 时要求 CARL anchor \\
+\texttt{EB\_BACKUP\_FLAG\_ENCRYPT} & 0x0008 & 启用 AES-GCM（需 \texttt{set\_password}） \\
+\texttt{EB\_BACKUP\_FLAG\_LEGACY\_DIGEST} & 0x0010 & Init：Legacy digest 栈（默认 Standard） \\
+\texttt{EB\_BACKUP\_FLAG\_COMPRESS\_AUTO} & 0x0020 & ContentClass auto \\
+\texttt{EB\_BACKUP\_FLAG\_COMPRESS\_ZSTD} & 0x0040 & 优先 zstd \\
+\texttt{EB\_BACKUP\_FLAG\_BALANCED\_DURABILITY} & 0x0080 & Init/run：balanced spill 阈值 \\
+\texttt{EB\_BACKUP\_FLAG\_MANIFEST\_BINARY} & 0x0100 & Init：manifest v4（现代默认已含） \\
+\texttt{EB\_BACKUP\_INIT\_LEGACY} & 0x0200 & Init：最简 legacy repo（无 index/snapshot/ebpack） \\
+\texttt{EB\_BACKUP\_FLAG\_NO\_PIPELINE} & 0x0400 & 禁用自动 pipeline \\
+\bottomrule
+\end{longtable}
+
+Restore flags：
+
+\begin{longtable}{@{}lrp{8cm}@{}}
+\toprule
+宏 & 值 & 效果 \\
+\midrule
+\texttt{EB\_RESTORE\_FLAG\_SKIP\_CONTENT\_VERIFY} & 0x0001 & 跳过 Merkle 与逐 chunk 内容校验（加速） \\
+\bottomrule
+\end{longtable}
+
+\section{EbBackupStats 字段}
+
+\begin{longtable}{@{}llp{8cm}@{}}
+\toprule
+字段 & 类型 & 含义 \\
+\midrule
+\texttt{files\_processed} & \texttt{uint64\_t} & 本次 backup 处理文件数 \\
+\texttt{chunks\_written} & \texttt{uint64\_t} & 新写入 chunk 数 \\
+\texttt{chunks\_reused} & \texttt{uint64\_t} & reuse 总数 \\
+\texttt{chunks\_reused\_from\_cfi} & \texttt{uint64\_t} & 经 CFI 锚点 reuse \\
+\texttt{bytes\_processed} & \texttt{uint64\_t} & 读取/处理源字节 \\
+\texttt{orphan\_chunks\_hint} & \texttt{uint64\_t} & abort 后 orphan 估计 \\
+\texttt{content\_incompressible\_skips} & \texttt{uint64\_t} & ContentClass 跳过压缩次数 \\
+\texttt{content\_lz4\_only} & \texttt{uint64\_t} & 仅 LZ4 路径 \\
+\texttt{content\_zstd\_attempts} & \texttt{uint64\_t} & 尝试 zstd 次数 \\
+\texttt{content\_zstd\_wins} & \texttt{uint64\_t} & zstd 胜出次数 \\
+\bottomrule
+\end{longtable}
+
+映射自 \texttt{BackupStats} + \texttt{ContentClassStats}（\texttt{eb\_backup\_get\_stats}）。
+
+\section{EbRepoStats 字段}
+
+\begin{longtable}{@{}llp{8cm}@{}}
+\toprule
+字段 & 类型 & 含义 \\
+\midrule
+\texttt{physical\_bytes} & \texttt{uint64\_t} & 磁盘 chunk/pack 占用 \\
+\texttt{live\_bytes} & \texttt{uint64\_t} & 被 manifest/snapshot 引用逻辑字节 \\
+\texttt{orphan\_bytes} & \texttt{uint64\_t} & 无引用 chunk 字节 \\
+\texttt{manifest\_bytes} & \texttt{uint64\_t} & manifest + snapshot 元数据 \\
+\texttt{unique\_chunks} & \texttt{uint64\_t} & 索引中唯一 hash 数 \\
+\texttt{tombstoned\_chunks} & \texttt{uint64\_t} & 已 tombstone 记录 \\
+\texttt{ampl\_ratio} & \texttt{double} & \texttt{physical\_bytes / live\_bytes} \\
+\bottomrule
+\end{longtable}
+
+\section{EbCompactReport 字段}
+
+\begin{longtable}{@{}llp{8cm}@{}}
+\toprule
+字段 & 类型 & 含义 \\
+\midrule
+\texttt{physical\_before} / \texttt{physical\_after} & \texttt{uint64\_t} & compact 前后物理字节 \\
+\texttt{live\_bytes} & \texttt{uint64\_t} & 存活逻辑字节 \\
+\texttt{records\_copied} & \texttt{uint64\_t} & 复制到新 pack/chunk 的记录数 \\
+\texttt{ampl\_ratio\_before} / \texttt{ampl\_ratio\_after} & \texttt{double} & compact 前后放大比 \\
+\bottomrule
+\end{longtable}
+
+\section{EbSnapshotInfo / EbPruneReport}
+
+\texttt{EbSnapshotInfo}：\texttt{txn\_id}、\texttt{created\_at\_unix}、\texttt{manifest\_crc32}、\texttt{file\_count}。
+
+\texttt{EbPruneReport}：\texttt{kept\_count}、\texttt{pruned\_count}。
+
+\section{API 函数分组}
+
+\subsection{生命周期}
+
+\begin{itemize}[nosep]
+  \item \texttt{eb\_backup\_open} / \texttt{eb\_backup\_open\_ex} — 打开仓库；
+  \item \texttt{eb\_backup\_close} — 释放引擎；
+  \item \texttt{eb\_backup\_init\_repo} / \texttt{eb\_backup\_init\_repo\_ex} — 初始化；
+  \item \texttt{eb\_backup\_abi\_version} — ABI 版本查询。
+\end{itemize}
+
+\subsection{备份与验证}
+
+\begin{itemize}[nosep]
+  \item \texttt{eb\_backup\_run} / \texttt{eb\_backup\_run\_ex} — 全量；
+  \item \texttt{eb\_backup\_run\_incremental} / \texttt{eb\_backup\_run\_incremental\_ex} — 增量；
+  \item \texttt{eb\_backup\_verify} / \texttt{eb\_backup\_verify\_ex} / \texttt{eb\_backup\_verify\_at}；
+  \item \texttt{eb\_backup\_recover} — 显式 abort/recover。
+\end{itemize}
+
+\subsection{恢复}
+
+\begin{itemize}[nosep]
+  \item \texttt{eb\_backup\_restore} / \texttt{eb\_backup\_restore\_ex} — 最新 snapshot；
+  \item \texttt{eb\_backup\_restore\_at} — 时间旅行 restore。
+\end{itemize}
+
+\subsection{运维与统计}
+
+\begin{itemize}[nosep]
+  \item \texttt{eb\_backup\_compact} — 物理 compact；
+  \item \texttt{eb\_backup\_gc\_orphans} — orphan GC（\texttt{dry\_run}）；
+  \item \texttt{eb\_backup\_repo\_stats}、\texttt{eb\_backup\_get\_stats}；
+  \item \texttt{eb\_backup\_list\_snapshots} / \texttt{eb\_backup\_free\_snapshots}；
+  \item \texttt{eb\_backup\_prune\_snapshots} — GFS 保留策略。
+\end{itemize}
+
+\subsection{配置与辅助}
+
+\begin{itemize}[nosep]
+  \item \texttt{eb\_backup\_set\_password} — 加密密钥；
+  \item \texttt{eb\_backup\_load\_filter\_file} — 选择性 backup/restore；
+  \item \texttt{eb\_backup\_set\_progress} — 进度回调（permille）；
+  \item \texttt{eb\_backup\_last\_error} / \texttt{eb\_backup\_free\_string} — 错误信息。
+\end{itemize}
+
+\section{Init 行为矩阵}
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{eb\_backup\_init\_repo\_ex} flags 与 \texttt{RepoInitOptions} 映射}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Flags & \texttt{InitRepoEx} 行为 \\
+\midrule
+\texttt{0}（现代默认） & standard\_digest, persistent\_index, manifest\_binary, snapshots, ebpack, coalesced\_meta \\
+\texttt{LEGACY\_DIGEST} & \texttt{standard\_digest=false} \\
+\texttt{INIT\_LEGACY} & 以上现代特性\textbf{全部关闭} \\
+\texttt{BALANCED\_DURABILITY} & 运行时 \texttt{RunWithMode} 设置 balanced（非 init 持久化，需 init 时通过 engine 路径） \\
+\texttt{MANIFEST\_BINARY} & 显式 manifest v4（默认已开） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{eb init} CLI 等价于 \texttt{init\_repo\_ex(0)}（\versiontag{0.6+} 现代仓库）。
+
+\section{EbStatus 错误码}
+
+\texttt{EB\_OK}、\texttt{EB\_ERROR\_INVALID\_ARGUMENT}、\texttt{EB\_ERROR\_NOT\_FOUND}、\texttt{EB\_ERROR\_CORRUPTED}、\texttt{EB\_ERROR\_IO}、\texttt{EB\_ERROR\_INTERNAL}、\texttt{EB\_ERROR\_CONFLICT}（如 compact 时 repo busy）。
+
+\section{C API 测试}
+
+独立 target \texttt{eb\_run\_tests\_capi}（\filepath{tests/engine/eb\_backup\_capi\_test.cc}，8 tests），与 gtest 主套件并行。
+
+\section{本章小结}
+
+C API 是稳定集成面；ABI v12 默认现代 EbPack 仓库。运维 compact/GC 见 \cref{ch:compact-gc}。

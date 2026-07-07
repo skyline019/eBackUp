@@ -1,0 +1,57 @@
+\chapter{阶段一：内核奠基（M5--\versiontag{0.2.0}）}
+\label{ch:phase-foundation}
+
+\section{M5--M6：先有「能恢复的信任」}
+
+\begin{longtable}{@{}p{2.2cm}p{12cm}@{}}
+\toprule
+\textbf{压力} & P4 运维 + P3 正确性：没有 verify/audit 的 backup 在生态中没有存在权 \\
+\midrule
+\textbf{决策} & 优先 HCRBO、Pipeline 四阶段、AES-GCM、RAR、daemon——而非 premature 性能 \\
+\midrule
+\textbf{修改} & \filepath{backup\_engine} FSM、\filepath{eb\_hcrbo}、四阶段 pipeline、CLI \texttt{eb} \\
+\midrule
+\textbf{适应性} & 功能垂直切片：backup/restore/verify 闭环先于 bench \\
+\midrule
+\textbf{结果} & \outcome{正向}：内核可演示、可 powerfail 基础验证 \\
+\midrule
+\textbf{剪枝} & 无（阶段未扩张边界） \\
+\bottomrule
+\end{longtable}
+
+\section{M7--M8：选择性恢复与可验证性加深}
+
+\textbf{压力 P4}：用户只要恢复 \texttt{src/} 子树；必须能证明恢复内容未被篡改。
+
+\textbf{决策}：Filter 与内容 Merkle 校验进入主路径，而非做独立「Pro 版」。
+
+\textbf{修改}：\texttt{BackupFilterOptions}、CFI offset index、\texttt{EB\_RESTORE\_FLAG\_SKIP\_CONTENT\_VERIFY}、ABI v7--v8。
+
+\textbf{结果}：\outcome{正向}——生态位从「全量克隆工具」变为「可审计的选择性备份内核」。
+
+\section{\versiontag{0.1.0}：第一次对 P1 制度化}
+
+\begin{adaptbox}[本土化转折]
+此前性能优化靠「感觉变快了」；\versiontag{0.1.0} 起，\textbf{P1 压力通过 ctest 制度化}：L1 FastCDC/HCRBO、L2 reuse、L3 pipeline ratio。
+\end{adaptbox}
+
+\begin{itemize}
+  \item \textbf{驱动}：P1 可比性 + P3（CFI rolling skip 不能改 chunk 边界）；
+  \item \textbf{修改}：\texttt{ebbackup\_bench\_check}、\texttt{ci\_floor.json}、rolling batch skip；
+  \item \textbf{结果}：\outcome{正向}——后续 Wave 2--5 所有 sprint 有共同标尺；
+  \item \textbf{剪枝}：无。
+\end{itemize}
+
+\section{\versiontag{0.2.0}：双 Digest 栈（互操作 vs 兼容）}
+
+\textbf{压力 P4}：新标准 digest 与旧 repo 兼容；C 集成者需要明确 ABI。
+
+\textbf{决策}：Legacy 冻结 + Standard 新 repo 默认；\textbf{不强制迁移}旧仓库。
+
+\textbf{修改}：\texttt{digest\_legacy/standard}、ABI v9、CLI \texttt{--legacy-digest}。
+
+\textbf{结果}：\outcome{正向}——生态可渐进；\outcome{负向可控}——双栈维护成本上升（接受为 P5 代价）。
+
+\section{阶段小结}
+
+奠基阶段建立了我后续一直沿用的原则：\textbf{先信任与可验证，再把 P1 量化}. 现代仓库与性能 Wave 在下一阶段响应 P2/P4。

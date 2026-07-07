@@ -10,6 +10,8 @@
 
 | 文档 | 说明 |
 |------|------|
+| [engineering/kernel-manual/](engineering/kernel-manual/) | **LaTeX 工程技术手册**（v1.1 完整扩写，193 页 PDF，XeLaTeX） |
+| [engineering/ecosystem-evolution/](engineering/ecosystem-evolution/) | **LaTeX 生态理念与本土化发展实录**（压力驱动时间线、剪枝、流程反思；**第 12 章 L1–L7 实测数据**） |
 | [VERSION_HISTORY.md](VERSION_HISTORY.md) | **主归档**：v0.1–v0.9.4 时间线、逐版本技术档案、ABI/Feature/Bench 演进 |
 | [CHANGELOG_ARCHIVE.md](CHANGELOG_ARCHIVE.md) | CHANGELOG 完整镜像（与根目录同步归档） |
 | [reference/PERF_BASELINE.md](reference/PERF_BASELINE.md) | L1–L7 性能基线、CI 门禁、Stage 3.1/3.2、各版本实测表 |

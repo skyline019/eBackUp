@@ -1,0 +1,77 @@
+% ebbackup 生态理念与本土化发展 — 共享导言区
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable,skins}
+\usepackage{tikz}
+\usetikzlibrary{positioning,fit,arrows.meta,calc,matrix,backgrounds,shapes.geometric}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!60!black,
+  urlcolor=teal!60!black,
+  pdftitle={ebbackup 生态理念与本土化发展},
+  pdfauthor={ebbackup Project}
+}
+
+\definecolor{PressRed}{RGB}{160,50,40}
+\definecolor{AdaptGreen}{RGB}{30,110,60}
+\definecolor{PruneOrange}{RGB}{180,90,20}
+\definecolor{PosBlue}{RGB}{30,80,140}
+
+\newtcolorbox{philobox}[1][]{
+  colback=blue!4!white, colframe=PosBlue, fonttitle=\bfseries,
+  title={#1}, breakable, arc=2pt
+}
+
+\newtcolorbox{pressbox}[1][]{
+  colback=red!4!white, colframe=PressRed, fonttitle=\bfseries,
+  title={#1}, breakable, arc=2pt
+}
+
+\newtcolorbox{adaptbox}[1][]{
+  colback=green!4!white, colframe=AdaptGreen, fonttitle=\bfseries,
+  title={#1}, breakable, arc=2pt
+}
+
+\newtcolorbox{prunebox}[1][]{
+  colback=orange!5!white, colframe=PruneOrange, fonttitle=\bfseries,
+  title={#1}, breakable, arc=2pt
+}
+
+\newcommand{\filepath}[1]{\texttt{\small #1}}
+\newcommand{\wave}[1]{\textbf{Wave #1}}
+\newcommand{\versiontag}[1]{\texttt{v#1}}
+\newcommand{\outcome}[1]{\textbf{【#1】}}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE,RO]{\leftmark}
+\fancyhead[LO,RE]{ebbackup 生态理念与本土化发展}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries}{\chaptertitlename\ \thechapter}{12pt}{\Huge}
+
+\setcounter{secnumdepth}{3}
+\setcounter{tocdepth}{2}
+
+\tikzset{
+  evt/.style={rectangle, rounded corners=2pt, draw=gray!60, fill=blue!5,
+    align=left, minimum width=10cm, minimum height=0.85cm, font=\small},
+  pres/.style={rectangle, draw=PressRed!70, fill=red!6, align=center,
+    minimum width=2.8cm, minimum height=0.75cm, font=\footnotesize},
+  arrow/.style={-{Stealth[length=2mm]}, thick, draw=gray!60}
+}

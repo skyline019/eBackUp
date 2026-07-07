@@ -1,0 +1,26 @@
+\chapter*{摘要}
+\addcontentsline{toc}{chapter}{摘要}
+
+本文档与 \filepath{docs/engineering/kernel-manual/} 中的\textbf{工程技术手册}互补：后者回答「内核是什么、字节如何布局」；\textbf{本文}回答「在何种生态位与外部压力下，我为何、如何对 ebbackup 内核做本土化发展，以及哪些路径被证明有效、哪些被剪枝止损」。
+
+核心论点：
+\begin{enumerate}[nosep]
+  \item \textbf{生态位}：单节点、可验证、内容寻址备份内核——不做云同步协议、不做 GUI Workbench、不做「大而全」平台；
+  \item \textbf{本土化}：以 Windows Release 实测 + ctest 硬门禁为「真实环境代理」，用 bench 与 parity 替代重型流程；
+  \item \textbf{适应性修改}：先测后改、immutable 正确性 floor、Stage 3.1/3.2 双轨、opt-in 实验路径；
+  \item \textbf{剪枝}：parity 失败即回退；性能负向即默认关闭；拓扑复杂度用文档与测试矩阵约束。
+\end{enumerate}
+
+\vspace{1em}
+\noindent\textbf{读者}：项目维护者、未来协作者、以及希望理解「为何不走传统软件工程流程」的审查者。
+
+\chapter*{修订历史}
+\addcontentsline{toc}{chapter}{修订历史}
+\begin{longtable}{@{}llp{9cm}@{}}
+\toprule
+日期 & 版本 & 说明 \\
+\midrule
+2026-07-07 & v1.0 & 首版：生态理念 + M5--\versiontag{0.9.4} 压力驱动时间线 + 剪枝目录 \\
+2026-07-07 & v1.1 & 扩写：第 12 章实测数据（L1--L7 矩阵、floor 历史、profile、Phase A/B） \\
+\bottomrule
+\end{longtable}

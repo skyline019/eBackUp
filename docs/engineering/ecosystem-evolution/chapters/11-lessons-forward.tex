@@ -1,0 +1,57 @@
+\chapter{前瞻：生态下一步与决策准则}
+\label{ch:forward}
+
+\section{当前生态位评估（\versiontag{0.9.4}）}
+
+\begin{table}[htbp]
+\centering
+\caption{本土化成功度（自评）}
+\begin{tabular}{@{}llp{6cm}@{}}
+\toprule
+维度 & 状态 & 说明 \\
+\midrule
+本地内核可信 & 强 & 232 测试 + commit-point + RAR/Merkle \\
+单文件吞吐 & 中上 & L5 $\sim$171；距 Stage 3.2 远 \\
+多文件吞吐 & 强 & L7 $\sim$646+ \\
+运维闭环 & 强 & snapshot/compact/repo-stats/daemon \\
+云与多节点 & 无 & 刻意边界 \\
+流程成熟度 & 异类 & bench 驱动；非 enterprise 流程 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Sprint 5 可能方向（假设，非承诺）}
+
+\begin{enumerate}
+  \item \textbf{Hybrid ChunkCuts + feed-timed replay}：保留 Phase A cut 一次 + Phase B overlap——需新 parity 矩阵；
+  \item \textbf{Topology 合并}：减少默认路由条数（P5 债务）；
+  \item \textbf{文档/生态外圈}：SDK 示例、C API 绑定——不改内核宪法。
+\end{enumerate}
+
+\section{我将坚持的决策准则}
+
+\begin{philobox}[Forward 准则]
+\begin{enumerate}
+  \item \textbf{Immutable floor 永不交易}——哪怕 L5 差 10 MB/s；
+  \item \textbf{默认路径必须是 bench 最优}——实验路径 opt-in；
+  \item \textbf{parity 失败 = 回退}，不「差不多」；
+  \item \textbf{P5 超预算则合并拓扑}，不叠床架屋；
+  \item \textbf{CHANGELOG 先于 slide}——生态对话用数字；
+  \item \textbf{不恢复无用流程}——review 靠测试与文档审计。
+\end{enumerate}
+\end{philobox}
+
+\section{给未来协作者}
+
+若你加入维护：
+\begin{itemize}
+  \item 先读 \textbf{本文} + \filepath{PERF\_BASELINE.md}，再读 \filepath{kernel-manual}；
+  \item 任何 pipeline/CDC 改动：先问 P1 还是 P3，再跑 parity；
+  \item 若提议「恢复 Scrum/长设计评审」：请证明它比 \texttt{ebbackup\_bench\_check} 更便宜且更准。
+\end{itemize}
+
+\section{结语}
+
+ebbackup 的本土化，不是把某套国外方法论翻译成中文，而是在\textbf{Windows 桌面、单人带宽、本地 MB/s 话语体系、可验证备份}的交叉压力下，长出一套\textbf{以测量为立法、以测试为执法、以剪枝为风控}的内核进化史。
+
+工程手册记录「是什么」；本文记录「为什么是这样」。

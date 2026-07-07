@@ -1,0 +1,489 @@
+\chapter{CLI 与 Daemon 完整命令参考}
+\label{ch:daemon-cli-v4}
+
+\section{概述}
+
+ebbackup 用户操作面由三部分组成：
+\begin{itemize}[nosep]
+  \item \textbf{CLI} \texttt{eb}：\filepath{engine\_cpp/cli/eb\_main.cc}，命令行入口；
+  \item \textbf{Daemon 调度}：\texttt{schedule} / \texttt{watch}，\filepath{src/daemon/backup\_daemon.cc}；
+  \item \textbf{C API}：\filepath{src/engine/eb\_backup\_capi.cc}，稳定 ABI（本章聚焦 CLI/daemon）。
+\end{itemize}
+
+除非注明，路径参数均为本地文件系统路径；加密仓库通过 \texttt{--password-env} 或 \texttt{--password-file} 提供口令。
+
+\section{eb 命令总表}
+
+\begin{longtable}{@{}p{2.2cm}p{4.8cm}p{7.2cm}@{}}
+\toprule
+命令 & 标志 / 参数 & 说明 \\
+\midrule
+\endfirsthead
+\toprule
+命令 & 标志 / 参数 & 说明 \\
+\midrule
+\endhead
+
+\texttt{init} &
+\texttt{<repo>} &
+创建新仓库目录结构 \\
+&
+\texttt{--legacy-init} &
+使用 \texttt{InitV03Repo}：legacy chunks，无 EbPack/snapshot 等 \\
+&
+\texttt{--legacy-digest} &
+Legacy SHA256 而非 Standard digest \\
+&
+\texttt{--encrypt} &
+（若实现）初始化加密 salt \\
+\midrule
+
+\texttt{backup} &
+\texttt{<repo> <source>} &
+运行 full 或 incremental backup \\
+&
+\texttt{--incremental} &
+增量模式（需 prior manifest） \\
+&
+\texttt{--progress} &
+stderr 进度 permille（0--1000） \\
+&
+\texttt{--lz4} &
+启用 LZ4 压缩 \\
+&
+\texttt{--compress auto|lz4|zstd|off} &
+压缩模式；\texttt{auto} 默认 cpu-budget=600‰ \\
+&
+\texttt{--cpu-budget PCT} &
+1--100，映射 \texttt{cpu\_budget\_permille=PCT*10} \\
+&
+\texttt{--durability strict|balanced} &
+EbPack flush/fsync 策略 \\
+&
+\texttt{--pipeline} / \texttt{--no-pipeline} &
+强制启用 / 禁用 pipeline \\
+&
+\texttt{--encrypt} &
+内容 AES-256-GCM 加密 \\
+&
+\texttt{--password-env VAR} / \texttt{--password-file PATH} &
+加密口令来源 \\
+&
+\texttt{--filter-file PATH} &
+filter 键值文件 \\
+&
+\texttt{--include PATH} / \texttt{--exclude PATH} &
+路径前缀 filter \\
+&
+\texttt{--include-glob GLOB} / \texttt{--exclude-glob GLOB} &
+glob filter \\
+&
+\texttt{--ext EXT} &
+扩展名 filter \\
+&
+\texttt{--min-size N} / \texttt{--max-size N} &
+文件大小（字节） \\
+&
+\texttt{--mtime-after UNIX} / \texttt{--mtime-before UNIX} &
+mtime 窗口 \\
+&
+\texttt{--uid N} &
+uid 精确匹配 \\
+\midrule
+
+\texttt{verify} &
+\texttt{<repo>} &
+仓库一致性校验 \\
+&
+\texttt{--at TXN} / \texttt{--at latest} &
+VerifyAt snapshot（\texttt{latest}=0 当前） \\
+&
+\texttt{--require-anchor} &
+强制 CARL anchor 验证 \\
+&
+\texttt{--password-env} / \texttt{--password-file} &
+加密仓库解密 \\
+\midrule
+
+\texttt{recover} &
+\texttt{<repo>} &
+修复中断 txn $\rightarrow$ \texttt{kAborted} \\
+\midrule
+
+\texttt{restore} &
+\texttt{<repo> <dest>} &
+从 manifest 恢复文件树 \\
+&
+\texttt{--at TXN} &
+时间旅行 snapshot \\
+&
+\texttt{--filter-file}、include/exclude/glob/ext/size/mtime/uid &
+与 backup 相同 filter 语义 \\
+&
+\texttt{--verify-content} &
+恢复后流式 chunk 内容校验 \\
+&
+\texttt{--skip-content-verify} &
+跳过子集 Merkle 与内容校验 \\
+&
+\texttt{--password-env} / \texttt{--password-file} &
+加密仓库 \\
+\midrule
+
+\texttt{export} &
+\texttt{<repo> <bundle.ebb>} &
+导出 bundle \\
+&
+\texttt{--encrypt-bundle} &
+bundle 加密 \\
+\midrule
+
+\texttt{import} &
+\texttt{<bundle.ebb> <repo>} &
+导入 bundle 至新仓库 \\
+\midrule
+
+\texttt{schedule} &
+\texttt{<config>} &
+Daemon 定时 incremental \\
+&
+\texttt{--once} &
+仅运行一轮 \\
+\midrule
+
+\texttt{watch} &
+\texttt{<repo> <source>} &
+目录变更触发 incremental \\
+&
+\texttt{--debounce-ms N} &
+去抖毫秒，默认 2000 \\
+&
+\texttt{--once} &
+仅触发一次 \\
+&
+backup 同名 flags &
+lz4/pipeline/encrypt/filter 等 \\
+\midrule
+
+\texttt{gc-orphans} &
+\texttt{<repo>} &
+回收无引用 chunk \\
+&
+\texttt{--dry-run} &
+仅统计 \\
+&
+\texttt{--latest-only} &
+仅 latest manifest 引用的 hash（默认含全部保留 snapshot） \\
+\midrule
+
+\texttt{compact} &
+\texttt{<repo>} &
+EbPack 重写压缩 \\
+&
+\texttt{--dry-run} &
+预览 \\
+&
+\texttt{--wait-idle SEC} &
+等待仓库 idle 再 compact \\
+\midrule
+
+\texttt{repo-stats} &
+\texttt{<repo>} &
+物理/live/orphan/ampl\_ratio 等指标 \\
+\midrule
+
+\texttt{list-snapshots} &
+\texttt{<repo>} &
+列出 snapshot \\
+&
+\texttt{--json} &
+JSON 数组输出 \\
+\midrule
+
+\texttt{prune-snapshots} &
+\texttt{<repo>} &
+GFS 保留策略 prune \\
+&
+\texttt{--dry-run} &
+预览 \\
+&
+\texttt{--retain-min N} &
+最少保留 snapshot 数 \\
+&
+\texttt{--retention-tiers SPEC} &
+如 \texttt{1h:24,1d:7,7d:4,30d:6} \\
+\midrule
+
+\texttt{bench cdc} &
+\texttt{<file>} &
+FastCdcSlice 吞吐 micro-bench \\
+\midrule
+
+\texttt{bench hcrbo} &
+\texttt{<file> <delta\_offset>} &
+HCRBO 增量 reuse micro-bench \\
+\bottomrule
+\caption{eb CLI 完整命令与标志}
+\label{tab:eb-cli-full}
+\end{longtable}
+
+退出码：成功 0；失败打印 \texttt{error: <message>} 返回 1。backup 成功额外打印 \texttt{stats: files=... chunks\_written=...}。
+
+\section{Init 默认 Feature Bitmask}
+
+\texttt{eb init <repo>}（无 \texttt{--legacy-init}）调用 \texttt{BackupEngine::InitRepoEx}，等价 C API \texttt{eb\_backup\_init\_repo\_ex(0)}，默认启用：
+
+\begin{table}[htbp]
+\centering
+\caption{Init 默认 feature 组合（v0.6+）}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Feature & 含义 \\
+\midrule
+\texttt{persistent\_index} & \filepath{chunk.idx} 持久化索引 \\
+\texttt{manifest\_binary}（manifest v4） & 32B hash 二进制 manifest \\
+\texttt{compress-auto} & 内容分类自适应压缩 \\
+\texttt{snapshots} & \filepath{snapshots/} 时间旅行 \\
+\texttt{EbPack} & 16-shard pack 存储 \\
+\texttt{coalesced\_meta} & backup 进行中延迟 superblock 落盘 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{--legacy-init} 回退 \texttt{InitV03Repo()}：legacy \filepath{data/chunks/} append，无上述现代 feature。
+
+\texttt{--legacy-digest} 设置 \texttt{standard\_digest=false}，使用 Legacy SHA256 内容 hash。
+
+\section{Schedule JSON 与键值配置}
+
+\subsection{ScheduleConfig 结构}
+
+\begin{structbox}[ScheduleConfig 字段]
+\begin{itemize}[nosep]
+  \item \texttt{interval\_seconds}：默认 3600，轮询间隔；
+  \item \texttt{source\_path}：备份源目录（\textbf{必填}）；
+  \item \texttt{repo\_base}：仓库基目录（\textbf{必填}），实际 repo = \texttt{repo\_base/current}；
+  \item \texttt{retain\_count}：默认 3，legacy \texttt{repo-*} 旋转保留数；
+  \item \texttt{retention\_policy}：GFS tiers + \texttt{retain\_min}；
+  \item \texttt{auto\_prune}：默认 true，每轮 backup 后 prune snapshots；
+  \item \texttt{auto\_gc\_after\_prune}：默认 false，prune 后 \texttt{GcOrphans}；
+  \item \texttt{backup\_options}：嵌套 \texttt{BackupOptions}（compress/pipeline/encrypt/filter 等）；
+  \item \texttt{encryption\_password}：schedule 级口令（亦写入 backup\_options）。
+\end{itemize}
+\end{structbox}
+
+\subsection{JSON Schema 字段}
+
+\texttt{LoadScheduleConfigAuto}：若文件首非空白字符为 \texttt{\{}，按 JSON 解析；否则按 \texttt{key=value} 行解析。JSON 支持的键（与 INI 键同名）：
+
+\begin{table}[htbp]
+\centering
+\caption{Schedule 配置键}
+\small
+\begin{tabular}{@{}llp{6cm}@{}}
+\toprule
+键 & 类型 & 说明 \\
+\midrule
+\texttt{interval\_seconds} & int &  sleep 间隔 \\
+\texttt{source} & string & 源路径 \\
+\texttt{repo\_base} & string & 仓库基目录 \\
+\texttt{retain} / \texttt{retain\_min} & int & 保留 snapshot 下限 \\
+\texttt{retention\_tiers} & string & GFS tier 规格 \\
+\texttt{auto\_prune} & bool & \texttt{true}/\texttt{1}/\texttt{yes} \\
+\texttt{auto\_gc\_after\_prune} & bool & prune 后 GC \\
+\texttt{lz4} / \texttt{pipeline} / \texttt{encrypt} & bool & backup 选项 \\
+\texttt{password} & string & 加密口令 \\
+\texttt{filter\_file} & path & 加载 filter 文件 \\
+\texttt{include\_glob} / \texttt{exclude\_glob} & string & 追加 glob \\
+\texttt{compress} & string & \texttt{auto|lz4|zstd|off} \\
+\texttt{cpu\_budget} & int & 1--100 百分比 \\
+\texttt{durability} & string & \texttt{strict|balanced} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{JSON 示例}
+
+\begin{lstlisting}[caption={schedule.json 示例},label={lst:schedule-json}]
+{
+  "interval_seconds": 1800,
+  "source": "/data/projects",
+  "repo_base": "/backup/eb",
+  "retain_min": 5,
+  "retention_tiers": "1h:24,1d:7,7d:4,30d:6",
+  "auto_prune": true,
+  "auto_gc_after_prune": true,
+  "compress": "auto",
+  "cpu_budget": 60,
+  "durability": "balanced",
+  "pipeline": true,
+  "encrypt": false,
+  "filter_file": "/etc/ebbackup/filter.conf",
+  "exclude_glob": "*.tmp"
+}
+\end{lstlisting}
+
+\subsection{INI 示例}
+
+\begin{lstlisting}[caption={schedule.conf 示例},label={lst:schedule-ini}]
+interval_seconds=3600
+source=/home/user/Documents
+repo_base=/mnt/backup/eb
+retain_min=3
+auto_prune=true
+compress=auto
+cpu_budget=80
+pipeline=true
+filter_file=/home/user/.ebbackup/filter
+\end{lstlisting}
+
+\subsection{RunScheduledBackup 行为}
+
+\begin{enumerate}
+  \item \texttt{repo = repo\_base/current}，不存在则 \texttt{InitRepoEx}（现代 feature）；
+  \item 循环：首轮 full，后续 incremental；
+  \item 可选 \texttt{PruneSnapshots} + \texttt{GcOrphans}；
+  \item legacy \texttt{repo-YYYYMMDD-HHMMSS} 目录若存在则 \texttt{PruneRotatedRepos}；
+  \item \texttt{--once} 或 \texttt{max\_runs=1} 仅一轮；否则 sleep \texttt{interval\_seconds}。
+\end{enumerate}
+
+\section{Watch 模式}
+
+\texttt{eb watch <repo> <source>} 调用 \texttt{RunWatchBackup}：
+
+\begin{itemize}[nosep]
+  \item \texttt{FsWatch}：Linux inotify / Windows ReadDirectoryChangesW；
+  \item \texttt{WaitForChange(debounce\_ms)}：默认 2000ms 去抖，合并 burst 事件；
+  \item 触发 \texttt{RunOneBackup(repo, source, kIncremental, options)}；
+  \item \texttt{--once}：单次触发后退出；否则无限循环。
+\end{itemize}
+
+Watch 不自动 prune/GC（与 schedule 不同），适合开发目录实时保护。repo 需已 init；首次 backup 建议手动 full。
+
+\section{Filter 文件格式}
+
+\subsection{语法}
+
+\begin{itemize}[nosep]
+  \item 每行 \texttt{key=value}，首尾空白 trim；
+  \item \texttt{\#} 开头为注释；
+  \item 同一 key 可重复（如多条 \texttt{exclude\_glob}）；
+  \item 键名见 \texttt{LoadBackupFilterFromFile}（\filepath{backup\_filter.cc}）。
+\end{itemize}
+
+\subsection{支持的键}
+
+\begin{table}[htbp]
+\centering
+\caption{Filter 文件键}
+\begin{tabular}{@{}ll@{}}
+\toprule
+键 & 映射字段 \\
+\midrule
+\texttt{include\_path} & \texttt{include\_paths[]} \\
+\texttt{exclude\_path} & \texttt{exclude\_paths[]} \\
+\texttt{include\_glob} & \texttt{include\_globs[]} \\
+\texttt{exclude\_glob} / \texttt{name\_glob} & \texttt{exclude\_globs[]} \\
+\texttt{ext} / \texttt{extension} & \texttt{extensions[]} \\
+\texttt{min\_size} / \texttt{max\_size} & uint64 \\
+\texttt{mtime\_after} / \texttt{mtime\_before} & int64 Unix \\
+\texttt{uid} & uint32 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{完整示例}
+
+\begin{lstlisting}[caption={生产环境 filter 示例},label={lst:filter-prod}]
+# === ebbackup filter ===
+# 排除缓存与依赖
+exclude_path=node_modules
+exclude_path=__pycache__
+exclude_path=.cache
+exclude_glob=*.pyc
+exclude_glob=*.swp
+exclude_glob=*.tmp
+exclude_glob=.DS_Store
+
+# 日志仅保留最近（配合 mtime）
+exclude_glob=*.log
+mtime_before=1893456000
+
+# 大型虚拟机磁盘（按扩展名）
+exclude_glob=*.vmdk
+exclude_glob=*.iso
+
+# 可选：仅包含源码树
+# include_path=src
+# include_glob=*.rs
+# include_glob=*.toml
+
+min_size=1
+max_size=5368709120
+\end{lstlisting}
+
+CLI \texttt{--filter-file} 与 schedule \texttt{filter\_file}、watch 均调用同一 loader；C API \texttt{eb\_backup\_load\_filter\_file} 语法一致。
+
+\section{密码与加密 CLI 惯例}
+
+\texttt{ReadPassword} 优先级：
+\begin{enumerate}
+  \item \texttt{--password-env VAR}：读取 \texttt{getenv(VAR)}；
+  \item \texttt{--password-file PATH}：读首行；
+  \item 否则空（非加密仓库 OK，加密仓库 backup/restore/verify 失败）。
+\end{enumerate}
+
+\section{Bench 子命令}
+
+\begin{itemize}[nosep]
+  \item \texttt{eb bench cdc FILE}：整文件读入内存，\texttt{FastCdcSlice::Chunk} 计时，输出 MB/s 与 avg chunk size；
+  \item \texttt{eb bench hcrbo FILE OFFSET}：在 OFFSET 异或 0x5A 后跑 HCRBO incremental，输出 reuse\% 与 rolling skip hits。
+\end{itemize}
+
+\section{与环境变量的关系}
+
+CLI 未直接暴露但影响引擎行为的环境变量（pipeline/CDC 见专门章节）：
+
+\begin{table}[htbp]
+\centering
+\caption{CLI 相关的环境变量}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+变量 & 影响 \\
+\midrule
+\texttt{EBBACKUP\_PIPELINE\_WORKERS} & backup pipeline 并发 \\
+\texttt{EBBACKUP\_PIPELINE\_PROFILE} & backup 结束 phase 打印 \\
+\texttt{EBBACKUP\_CDC\_FAST\_SLICE} & FastCdcSlice 路由 \\
+\texttt{EBBACKUP\_AUDIT\_KEY} & verify 时 CARL 签名验证 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{典型工作流}
+
+\subsection{首次部署}
+
+\begin{lstlisting}[caption={初始化与首次 full backup},label={lst:workflow-init}]
+eb init /backup/repo
+eb backup /backup/repo /data/source --compress auto --progress
+eb verify /backup/repo
+\end{lstlisting}
+
+\subsection{定时增量}
+
+\begin{lstlisting}[caption={systemd 调用 schedule},label={lst:workflow-schedule}]
+eb schedule /etc/ebbackup/schedule.json
+\end{lstlisting}
+
+\subsection{选择性恢复}
+
+\begin{lstlisting}[caption={filter 恢复 + 内容校验},label={lst:workflow-restore}]
+eb restore /backup/repo /restore/target \
+  --filter-file /etc/ebbackup/filter.conf \
+  --verify-content --at 128
+\end{lstlisting}
+
+\section{本章小结}
+
+\texttt{eb} CLI 覆盖仓库生命周期：init、backup/restore、verify/recover、snapshot 运维、compact/GC、bundle 导入导出与 micro-bench。Init 默认启用 persistent index、manifest v4、snapshots、EbPack 与 coalesced meta。Daemon \texttt{schedule} 支持 JSON/INI 双格式，单 repo \filepath{current} 增量链；\texttt{watch} 提供 debounce 目录监视。Filter 文件与 CLI flags 共用 \texttt{BackupFilterOptions} 语义，backup 与 restore 一致。

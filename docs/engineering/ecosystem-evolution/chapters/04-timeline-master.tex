@@ -1,0 +1,107 @@
+\chapter{Master 时间线（压力--决策--结果）}
+\label{ch:timeline-master}
+
+\section{总览图}
+
+\begin{figure}[htbp]
+\centering
+\small
+\begin{tikzpicture}[x=0.42cm,y=0.7cm]
+  \draw[thick,->] (0,0) -- (28,0);
+  \foreach \x/\lab in {2/M5,5/M7,8/v0.1,11/v0.3,14/v0.4,17/v0.5,20/v0.6,23/v0.8,26/v0.9.4} {
+    \draw (\x,0.08) -- (\x,-0.08);
+    \node[below,font=\tiny] at (\x,-0.3) {\lab};
+  }
+  \node[font=\scriptsize,align=left] at (14,1.2) {P1: L5 76$\rightarrow$172 MB/s (+126\%)};
+  \node[font=\scriptsize,align=left] at (14,0.7) {P4: 153$\rightarrow$232 tests};
+  \node[font=\scriptsize,align=left] at (14,2.0) {P3: v0.9.0 并发修复};
+\end{tikzpicture}
+\caption{2025--2026 主时间轴（关键数据标注）}
+\end{figure}
+
+\section{Master 表（含关键数据列）}
+
+\begin{longtable}{@{}lllrp{3.2cm}@{}}
+\caption{Master 时间线索引} \\
+\toprule
+阶段 & 压力 & 关键数据 & L5 & 剪枝 \\
+\midrule
+\endfirsthead
+\multicolumn{5}{c}{\tablename\ \thetable{} — 续} \\
+\toprule
+阶段 & 压力 & 关键数据 & L5 & 剪枝 \\
+\midrule
+\endhead
+\versiontag{0.1.0} & P1 & L1: 121/79 MB/s; reuse$\geq$90\% & — & — \\
+\versiontag{0.4.5} & P1 & L3 floor 49 MB/s; SI 单位 & — & — \\
+\versiontag{0.4.6} & P1,P2 & L3 floor 53; 观测 $\sim$76 & $\sim$76 & — \\
+\versiontag{0.5.0} & P1 & L5 floor 84 & — & opt-in V05 \\
+\versiontag{0.6.0} & P1 & 观测 145/139; floor 101/97 & $\sim$139 & 无 migrate \\
+\versiontag{0.8.0} & P1 & L7 554; floor 120 & 146 & — \\
+\versiontag{0.9.0} & P3 & chunk 98\%; L3b 0.96--0.98 & 142--149 & Stage3.2 阻塞 \\
+\versiontag{0.9.2} & P1 & +5 MB/s; L7 601 不变 & 154 & — \\
+\versiontag{0.9.3} & P1 & digest 38\%$\rightarrow$16\% & 159--163 & Phase3C \\
+\versiontag{0.9.4} & P1 & +6--9\%; A/B 105 vs 172 & 170--172 & A 默认关 \\
+\bottomrule
+\end{longtable}
+
+\section{性能主线：L5 256MB 完整序列}
+
+\begin{table}[htbp]
+\centering
+\caption{L5 演化（Release Windows，SI MB/s）}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+版本 & L5 & $\Delta$ & vs floor 105 & vs Stage3.2 280 \\
+\midrule
+\versiontag{0.4.6} & 76 & — & 72\% & 27\% \\
+\versiontag{0.6.0} & 139 & +63 & 132\% & 50\% \\
+\versiontag{0.8.0} & 146 & +7 & 139\% & 52\% \\
+\versiontag{0.9.0} & 145$^\ast$ & $-$1 & 138\% & 52\% \\
+\versiontag{0.9.2} & 154 & +9 & 147\% & 55\% \\
+\versiontag{0.9.3} & 161$^\ast$ & +7 & 153\% & 57\% \\
+\versiontag{0.9.4} & 171$^\ast$ & +10 & 163\% & \textbf{61\%} \\
+\bottomrule
+\multicolumn{5}{l}{\small $^\ast$取区间中值便于比较；完整区间见 \cref{ch:measured-data}。} \\
+\end{tabular}
+\end{table}
+
+\section{多文件 vs 单文件分化（v0.8+）}
+
+\begin{table}[htbp]
+\centering
+\caption{同版本 L5 与 L7 对比（证明拓扑分化必要性）}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+版本 & L5 单文件 & L7 32$\times$32MB & L7/L5 倍率 \\
+\midrule
+\versiontag{0.8.0} & 146 & 554 & 3.8$\times$ \\
+\versiontag{0.9.2} & 154 & 601 & 3.9$\times$ \\
+\versiontag{0.9.4} & 171 & 653$^\ast$ & 3.8$\times$ \\
+\bottomrule
+\multicolumn{4}{l}{\small $^\ast$实测 646--658 中值。Pipeline v4 对 L7 有效，不自动提升 L5。} \\
+\end{tabular}
+\end{table}
+
+\section{测试规模曲线}
+
+\begin{table}[htbp]
+\centering
+\caption{ebbackup\_tests 用例数}
+\begin{tabular}{@{}lr@{}}
+\toprule
+版本 & gtest 数 \\
+\midrule
+\versiontag{0.4.1} & 153 \\
+\versiontag{0.4.2} & 188 \\
+\versiontag{0.4.4} & 196 \\
+\versiontag{0.9.4} & 232 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+53 秒级 PR ctest（\versiontag{0.4.2}）与 232 用例并存——说明 P5 下我没有选择「少测换速」，而是靠 Release 构建 + 分层 fixture 控制总时长。
+
+\section{如何使用后续分章}
+
+第 5--8 章展开叙事；\textbf{第 12 章}为全量数据附录。所有 L5/L7/floor/profile 数字可交叉引用 \cref{ch:measured-data}。

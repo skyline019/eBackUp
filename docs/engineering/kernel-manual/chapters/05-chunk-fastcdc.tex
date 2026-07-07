@@ -1,0 +1,398 @@
+\chapter{FastCDC 与 Gear 分块}
+\label{ch:chunk-fastcdc}
+
+\section{章节定位}
+
+FastCDC（Fast Content-Defined Chunking）是 ebbackup 的\textbf{内容定义分块}基线算法：基于 Gear rolling hash 在字节流上寻找 cut 点，使 chunk 边界随内容变化而非固定偏移，从而在增量备份与跨文件 dedup 场景下获得高 reuse 率。本章覆盖 \texttt{FastCdcSlice} 整文件实现、Gear 表与 \texttt{ScanGearCut} 扫描内核、AVX2 加速路径，以及与流式 CDC 的 \textbf{bit-identical parity} 约束。
+
+\begin{invariantbox}[I-B1 与 CDC 边界]
+Content ID 为 \texttt{SHA256(明文 chunk)}，与 CDC 实现无关。但\textbf{所有生产路径}（sequential mmap、Pipeline v4、StreamingChunkCpuPipeline）必须产生\textbf{相同 cut 点}，否则 dedup 与增量 reuse 语义崩溃。因此 \texttt{FastCdcSlice::ChunkCuts} 是黄金参考（golden reference）。
+\end{invariantbox}
+
+\textbf{实现位置}：
+\begin{itemize}[nosep]
+  \item 公开 API：\filepath{engine\_cpp/include/ebbackup/chunk/fast\_cdc.h}
+  \item 整文件 CDC：\filepath{engine\_cpp/src/chunk/fast\_cdc.cc}
+  \item Gear 内核：\filepath{engine\_cpp/src/chunk/fast\_cdc\_simd.cc}、\filepath{fast\_cdc\_internal.h}
+  \item 参数解析：\filepath{engine\_cpp/include/ebbackup/chunk/chunk\_profile.h}
+  \item 流式 CDC（parity 消费方）：\filepath{engine\_cpp/src/chunk/fast\_cdc\_streaming.cc}
+\end{itemize}
+
+%--------------------------------------------------------------------
+\section{FastCdcConfig 结构}
+\label{sec:fastcdc-config}
+
+\begin{lstlisting}[caption={FastCdcConfig 与 FastCdcSlice 接口（\filepath{fast\_cdc.h}）},label={lst:fast-cdc-h}]
+struct FastCdcConfig {
+  uint32_t min_size{64 * 1024};
+  uint32_t avg_size{256 * 1024};
+  uint32_t max_size{1024 * 1024};
+  uint32_t window_size{64};
+  DigestAlgo digest_algo{DigestAlgo::kLegacy};
+};
+
+class FastCdcSlice {
+ public:
+  explicit FastCdcSlice(FastCdcConfig config = {});
+
+  Status Chunk(const uint8_t* data, size_t len,
+               std::vector<ChunkDescriptor>* out) const;
+
+  Status ChunkCuts(const uint8_t* data, size_t len,
+                   std::vector<size_t>* offsets,
+                   std::vector<uint32_t>* lengths) const;
+
+  const FastCdcConfig& config() const { return config_; }
+ private:
+  uint32_t Mask() const;
+  FastCdcConfig config_;
+  uint32_t gear_[256];
+};
+\end{lstlisting}
+
+\begin{longtable}{@{}p{3.2cm}p{10.8cm}@{}}
+\toprule
+\textbf{字段} & \textbf{语义} \\
+\midrule
+\endhead
+\texttt{min\_size} &
+  每个 chunk 的\textbf{最小}字节数；扫描 cut 点起始位置为 \texttt{pos + min\_size}。尾块不足 \texttt{min\_size} 时合并为最后一块。 \\
+\texttt{avg\_size} &
+  \textbf{目标平均} chunk 大小；用于构造 Gear mask（见 \cref{sec:gear-mask}）。期望 cut 频率 $\approx 1/\texttt{avg\_size}$。 \\
+\texttt{max\_size} &
+  \textbf{硬上限}；在 \texttt{min..max} 窗口内未找到 mask 命中时强制在 \texttt{pos + max\_size} 切分。 \\
+\texttt{window\_size} &
+  Gear rolling hash 窗口宽度 $w$（默认 64B）；影响边界抖动与 cut 点局部性。 \\
+\texttt{digest\_algo} &
+  \texttt{Chunk} 阶段 ContentHash 算法（Legacy BLAKE3 栈 / Standard SHA256）；\textbf{不影响 cut 点}。 \\
+\bottomrule
+\caption{FastCdcConfig 字段详解}
+\label{tab:fastcdc-config}
+\end{longtable}
+
+%--------------------------------------------------------------------
+\section{ChunkProfile 与 EbHcrboConfigForFileSize}
+\label{sec:chunk-profile}
+
+Pipeline 与 \texttt{BackupEngine::ChunkPendingFiles} 通过 \texttt{ChunkProfileMode} 解析 FastCDC 参数，避免对小文件过度分块、对大文件索引爆炸。
+
+\subsection{ChunkProfileMode 档位}
+
+\begin{table}[htbp]
+\centering
+\caption{ChunkProfile 三档参数（\filepath{chunk\_profile.cc}）}
+\label{tab:chunk-profile}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Profile & 条件 & min & avg & max \\
+\midrule
+\texttt{kSmall} & $\leq$256\,KB & 4\,KB & 16\,KB & 64\,KB \\
+\texttt{kDefault} & 256\,KB--64\,MB & 64\,KB & 256\,KB & 1\,MB \\
+\texttt{kLarge} & $\geq$64\,MB & 256\,KB & 1\,MB & 4\,MB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{kAuto} 模式按文件大小调用 \texttt{ResolveAutoProfile}：
+\begin{itemize}[nosep]
+  \item \texttt{file\_size $\leq$ kChunkProfileSmallMaxBytes}（256\,KB）$\rightarrow$ \texttt{kSmall}；
+  \item \texttt{file\_size $\geq$ kChunkProfileLargeMinBytes}（64\,MB）$\rightarrow$ \texttt{kLarge}；
+  \item 否则 \texttt{kDefault}。
+\end{itemize}
+
+\subsection{EbHcrboConfigForFileSize}
+
+HCRBO 包装 FastCDC 配置（见 \cref{ch:chunk-hcrbo}）：
+
+\begin{lstlisting}[caption={chunk\_profile.h 入口},label={lst:chunk-profile-h}]
+EbHcrboConfig EbHcrboConfigForFileSize(size_t file_size,
+                                       ChunkProfileMode mode,
+                                       DigestAlgo digest_algo);
+\end{lstlisting}
+
+内部将 resolved profile 的 \texttt{FastCdcConfig} 填入 \texttt{EbHcrboConfig::fast}，并同步 \texttt{digest\_algo}。因此\textbf{同一文件}在 full/incremental、sequential/pipeline 路径上 profile 一致。
+
+%--------------------------------------------------------------------
+\section{FastCdcSlice::Chunk 与 ChunkCuts}
+\label{sec:chunk-vs-cuts}
+
+\subsection{职责分离}
+
+\begin{designbox}[两阶段 API]
+\begin{itemize}[nosep]
+  \item \texttt{ChunkCuts}：\textbf{纯 CDC}，输出 \texttt{offsets[]} 与 \texttt{lengths[]}，不涉及 digest；
+  \item \texttt{Chunk}：先 \texttt{ChunkCuts}，再对每段计算 ContentHash，填充 \texttt{ChunkDescriptor}。
+\end{itemize}
+\end{designbox}
+
+这种分离使流式 CDC 可在 feed 边界增量维护 Gear 状态，仅对\textbf{已闭合} chunk 做 digest；亦使 parity 测试可仅对比 cut 点而不受 digest 线程调度影响。
+
+\subsection{ChunkCuts 主循环}
+
+\begin{lstlisting}[caption={ChunkCuts 扫描逻辑（\filepath{fast\_cdc.cc} 摘要）},label={lst:chunk-cuts}]
+size_t pos = 0;
+while (pos < len) {
+  const size_t remaining = len - pos;
+  if (remaining <= config_.min_size) {
+    offsets->push_back(pos);
+    lengths->push_back(static_cast<uint32_t>(remaining));
+    break;
+  }
+  const size_t scan_start = pos + config_.min_size;
+  size_t cut = std::min(pos + config_.max_size, len);
+  bool found = false;
+  if (scan_start >= w && scan_start < cut) {
+    ScanGearCut(data, scan_start, cut, w, mask, gear_, &cut, &found);
+  }
+  if (!found && remaining > config_.max_size)
+    cut = pos + config_.max_size;
+  else if (!found)
+    cut = len;
+  offsets->push_back(pos);
+  lengths->push_back(static_cast<uint32_t>(cut - pos));
+  pos = cut;
+}
+\end{lstlisting}
+
+\textbf{短文件优化}：若 \texttt{len $\leq$ min\_size}，\texttt{ChunkCuts} 与 \texttt{Chunk} 均输出单 chunk（整文件），跳过 Gear 扫描。
+
+\subsection{Chunk 的并行 Hash}
+
+当 chunk 数 $\geq$2 且总字节 $\geq$1\,MB 时，\texttt{HashChunkRegions} 委托 \texttt{DigestPool::HashRegions} 并行计算 hash；否则逐块 \texttt{ContentHash}。这属于\textbf{性能优化}，不改变 cut 点与 hash 结果。
+
+%--------------------------------------------------------------------
+\section{Gear Hash 表与 ScanGearCut}
+\label{sec:gear-mask}
+
+\subsection{InitGearTable}
+
+构造函数调用 \texttt{fastcdc\_internal::InitGearTable(gear\_)}，为每个字节值 $i \in [0,255]$ 预计算 32-bit Gear 表项：
+
+\begin{lstlisting}[caption={Gear 表初始化（\filepath{fast\_cdc\_simd.cc}）},label={lst:gear-init}]
+void InitGearTable(uint32_t gear[256]) {
+  for (int i = 0; i < 256; ++i) {
+    uint32_t h = static_cast<uint32_t>(i);
+    for (int j = 0; j < 16; ++j) {
+      h = (h >> 1) ^
+          (static_cast<uint32_t>(-static_cast<int32_t>(h & 1u)) & 0xD0000001u);
+    }
+    gear[i] = h;
+  }
+}
+\end{lstlisting}
+
+表在 \texttt{FastCdcSlice} 实例生命周期内不变，流式 CDC 的 \texttt{FastCdcStreamState::gear[256]} 与之相同。
+
+\subsection{Mask 构造}
+
+\begin{lstlisting}[caption={BuildMask：由 avg\_size 推导命中概率},label={lst:build-mask}]
+uint32_t BuildMask(uint32_t avg_size) {
+  uint32_t bits = 0;
+  uint32_t v = avg_size;
+  while (v > 1) { v >>= 1; ++bits; }
+  if (bits == 0) bits = 1;
+  if (bits > 31) bits = 31;
+  return (1u << bits) - 1u;
+}
+\end{lstlisting}
+
+Cut 条件：\texttt{(h \& mask) == 0}。$|\texttt{mask}|$ 越大，命中概率越低，平均 chunk 越大。例如 \texttt{avg=256KB} $\rightarrow$ \texttt{bits=18} $\rightarrow$ 期望间距 $\approx 2^{18}$ B。
+
+\subsection{Rolling Hash 更新}
+
+窗口 hash 初始化（\texttt{InitWindowHash}）：
+\[
+h = \sum_{i=\text{end}-w}^{\text{end}-1} \text{gear}[data[i]] \quad \text{（实现为移位累加）}
+\]
+
+每前进一步：
+\[
+h \leftarrow (h \ll 1) + \text{gear}[data[\text{pos}]] - \text{gear}[data[\text{pos}-w]]
+\]
+
+\subsection{ScanGearCut 扫描区间}
+
+参数语义：
+\begin{itemize}[nosep]
+  \item \texttt{scan\_start}：允许 cut 的最早字节索引（= chunk 起点 + \texttt{min\_size}）；
+  \item \texttt{cut\_limit}：扫描上界（= chunk 起点 + \texttt{max\_size} 或 EOF）；
+  \item 返回第一个 \texttt{(h \& mask)==0} 的 \texttt{pos} 作为 cut；若未找到，调用方强制 max cut 或 EOF。
+\end{itemize}
+
+%--------------------------------------------------------------------
+\section{fast\_cdc\_simd.cc：AVX2 加速}
+\label{sec:fastcdc-simd}
+
+\textbf{文件}：\filepath{engine\_cpp/src/chunk/fast\_cdc\_simd.cc}
+
+编译条件 \texttt{\_\_AVX2\_\_} 或 \texttt{\_M\_AVX2} 时，\texttt{ScanGearCut} 使用 AVX2 路径；否则回退 \texttt{ScanGearCutScalar}。
+
+\begin{designbox}[SIMD 策略（v0.9.x）]
+\begin{itemize}[nosep]
+  \item \textbf{算法等价}：AVX2 与 scalar 路径对相同输入产生\textbf{相同 cut 点}；SIMD 仅影响扫描常数因子；
+  \item \textbf{8 字节展开}：主循环每次处理 8 字节，内层仍逐字节更新 $h$ 并检测 mask；
+  \item \textbf{Prefetch}：\texttt{\_mm\_prefetch(data + i + 64, \_MM\_HINT\_T0)} 隐藏内存延迟；
+  \item \textbf{无 gather}：Gear 表查表仍为标量；未来可探索 vectorized gear 但不改变 cut 语义。
+\end{itemize}
+\end{designbox}
+
+L5 bench 画像（256\,MB 单文件）显示 CDC+digest 占 chunk phase $\sim$82\%（\cref{ch:pipeline-v4}），SIMD 主要优化 \texttt{stream\_cdc\_ns} 子项。
+
+%--------------------------------------------------------------------
+\section{Rabin 边界（HCRBO ChunkRegion 可选）}
+\label{sec:rabin-edges}
+
+FastCDC 本体\textbf{不使用} Rabin fingerprint；Rabin 边界出现在 HCRBO 的 \texttt{ChunkRegion(..., use\_rabin\_edges=true)} 路径（默认 incremental 为 \texttt{false}，见 \cref{ch:chunk-hcrbo}）。
+
+\begin{table}[htbp]
+\centering
+\caption{FastCDC 与 Rabin 边界对比}
+\label{tab:fastcdc-vs-rabin}
+\begin{tabular}{@{}llp{6.5cm}@{}}
+\toprule
+ & FastCDC & Rabin edges \\
+\midrule
+用途 & 内容定义 chunk 主体 & 变更区域两端 strong anchor \\
+触发 & Gear mask 命中 & \texttt{RabinFindAnchor} + \texttt{rabin\_mask} \\
+Anchor 强度 & kWeak & kStrong \\
+默认启用 & 总是 & 仅显式 \texttt{use\_rabin\_edges} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+理解该分离有助于阅读 parity 测试：\texttt{FastCdcSlice} golden 不包含 Rabin；HCRBO full/incremental 默认路径与 pure FastCDC 在 \texttt{ChunkRegion(..., false)} 下等价。
+
+%--------------------------------------------------------------------
+\section{流式路径 Parity 要求}
+\label{sec:streaming-parity}
+
+v0.7+ \texttt{FastCdcStreamFeed} 按 feed（16--32\,MB）增量 ingest，必须在任意 feed 划分下与 \texttt{FastCdcSlice::Chunk} \textbf{bit-identical}：
+
+\begin{itemize}[nosep]
+  \item 相同 \texttt{ChunkDescriptor::offset/length}；
+  \item 相同 32-byte Content ID hash；
+  \item 支持 8\,MB、256\,MB 及 32\,MB feed 变体（\filepath{fast\_cdc\_streaming\_test.cc}）。
+\end{itemize}
+
+\begin{structbox}[FastCdcStreamState 关键字段]
+\begin{itemize}[nosep]
+  \item \texttt{carry}：跨 feed 边界的字节缓冲（bounded ring，v0.9.2）；
+  \item \texttt{logical\_base} / \texttt{stream\_offset}：文件绝对 offset 追踪；
+  \item \texttt{digest\_base}：v0.9.3 起 file-absolute \texttt{DigestPool::HashRegions} 基址；
+  \item \texttt{profile}：\texttt{carry\_copy\_ns}、\texttt{cdc\_scan\_ns}、\texttt{digest\_ns} 可观测子项。
+\end{itemize}
+\end{structbox}
+
+\begin{invariantbox}[I-B4 Parity 门禁]
+修改 \filepath{fast\_cdc.cc}、\filepath{fast\_cdc\_simd.cc}、\filepath{fast\_cdc\_streaming.cc} 后必须通过 \texttt{fast\_cdc\_streaming\_test}、\texttt{fast\_cdc\_test}、\texttt{fast\_cdc\_bounds\_test} 及 \texttt{ebbackup\_bench\_check}（\texttt{fastcdc\_MBps\_min} floor）。
+\end{invariantbox}
+
+%--------------------------------------------------------------------
+\section{算法流程 TikZ 图}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=\flowdistance]
+  \node[flowstep] (input) {输入 $(data, len)$};
+  \node[flowdec, below=of input] (short) {$len \leq min$?};
+  \node[flowstep, below left=1.2cm and 1.8cm of short] (single) {单 chunk};
+  \node[flowstep, below right=1.2cm and 1.8cm of short] (loop) {pos = 0};
+  \node[flowstep, below=of loop] (scan) {ScanGearCut\\$[pos+min, pos+max)$};
+  \node[flowdec, below=of scan] (found) {mask 命中?};
+  \node[flowstep, below left=of found] (cut) {cut = 命中 pos};
+  \node[flowstep, below right=of found] (maxcut) {cut = max 或 EOF};
+  \node[flowdata, below=2.2cm of cut] (emit) {记录 offset/length\\pos = cut};
+  \node[flowdec, below=of emit] (done) {pos $<$ len?};
+
+  \draw[arrow] (input)--(short);
+  \draw[arrow] (short)-|node[near start,above,font=\scriptsize]{是} (single);
+  \draw[arrow] (short)-|node[near start,above,font=\scriptsize]{否} (loop);
+  \draw[arrow] (loop)--(scan)--(found);
+  \draw[arrow] (found)-|node[left,font=\scriptsize]{是} (cut);
+  \draw[arrow] (found)-|node[right,font=\scriptsize]{否} (maxcut);
+  \draw[arrow] (cut.south)-|(emit.north);
+  \draw[arrow] (maxcut.south)-|(emit.north);
+  \draw[arrow] (emit)--(done);
+  \draw[arrow] (done.west)++(-1.5,0) node[above,font=\scriptsize]{是} |- (loop.west);
+\end{tikzpicture}
+\caption{FastCdcSlice::ChunkCuts 控制流}
+\label{fig:fastcdc-flow}
+\end{figure}
+
+%--------------------------------------------------------------------
+\section{测试与基准}
+\label{sec:fastcdc-tests}
+
+\begin{longtable}{@{}p{4.5cm}p{9.5cm}@{}}
+\toprule
+\textbf{测试} & \textbf{覆盖} \\
+\midrule
+\endhead
+\filepath{fast\_cdc\_test.cc} &
+  基本切分、空输入、边界长度、hash 正确性。 \\
+\filepath{fast\_cdc\_bounds\_test.cc} &
+  所有 chunk 满足 \texttt{min\_size $\leq$ len $\leq$ max\_size}（尾块除外）。 \\
+\filepath{fast\_cdc\_streaming\_test.cc} &
+  \texttt{FastCdcStreamingParityTest}：8/256\,MB 数据，16/32\,MB feed，与 \texttt{Chunk} 完全一致。 \\
+\filepath{chunk\_profile\_test.cc} &
+  Auto profile 阈值与三档参数。 \\
+\filepath{chunk\_bench.cc} / \texttt{bench\_check} &
+  L1 \texttt{fastcdc\_MBps\_min}（121\,MB/s floor，\filepath{ci\_floor.json}）。 \\
+\bottomrule
+\caption{FastCDC 测试矩阵}
+\label{tab:fastcdc-tests}
+\end{longtable}
+
+%--------------------------------------------------------------------
+\section{DigestPool 并行 Hash 路径}
+\label{sec:fastcdc-digest-pool}
+
+\texttt{Chunk} 在获得 cut 点后，对 $\geq$1\,MB 且 $\geq$2 chunks 的输入启用 \texttt{DigestPool::HashRegions}：
+
+\begin{lstlisting}[caption={HashChunkRegions 并行门槛（\filepath{fast\_cdc.cc}）},label={lst:hash-chunk-regions}]
+constexpr size_t kParallelHashMinBytes = 1024 * 1024;
+constexpr size_t kParallelHashMinChunks = 2;
+// use_pool = count >= 2 && sum(lengths) >= 1MB
+DigestPool::Shared().HashRegions(algo, data, spans.data(), count, hashes.data());
+\end{lstlisting}
+
+流式 CDC（v0.9.3+）通过 \texttt{FastCdcStreamState::digest\_base} 指向\textbf{文件绝对基址}，使跨 feed 闭合的 chunk 仍可在 file-absolute offset 上批量 hash，与 slice 路径 digest 调度一致。
+
+%--------------------------------------------------------------------
+\section{FastCdcStreamFeed 与 Parity 测试矩阵}
+\label{sec:fastcdc-stream-feed}
+
+\begin{longtable}{@{}p{4.2cm}p{9.8cm}@{}}
+\toprule
+\textbf{测试用例} & \textbf{参数} \\
+\midrule
+\endhead
+\texttt{MatchesFullChunk} & 8\,MB 数据，16\,MB feed \\
+\texttt{MatchesFullChunkLarge} & 256\,MB 数据，16\,MB feed \\
+\texttt{MatchesFullChunk256MBWith32MBFeeds} & 256\,MB 数据，32\,MB feed \\
+\texttt{EmptyInput} & 零长度输入，空输出 \\
+\texttt{SingleByte} & 单字节文件，单 chunk \\
+\bottomrule
+\caption{\filepath{fast\_cdc\_streaming\_test.cc} 覆盖矩阵}
+\label{tab:streaming-test-matrix}
+\end{longtable}
+
+每个 parity 测试对 \texttt{offset}、\texttt{length}、32-byte \texttt{hash} 三路断言；任一 feed 划分下失败即视为 I-B4 回归。
+
+%--------------------------------------------------------------------
+\section{参数选择指南}
+\label{sec:fastcdc-tuning}
+
+\begin{designbox}[调参约束]
+\begin{itemize}[nosep]
+  \item 增大 \texttt{avg\_size} $\rightarrow$ 更大 chunk $\rightarrow$ 更低索引/manifest 开销，dedup 粒度变粗；
+  \item 减小 \texttt{min\_size} $\rightarrow$ 更细 cut 窗口 $\rightarrow$ 增量 1-byte 编辑影响范围缩小，但 CDC CPU 上升；
+  \item \texttt{window\_size} 固定 64B（与 FastCDC 论文常见配置一致）；修改需全量 parity 回归；
+  \item Profile 选择应通过 \texttt{ChunkProfileMode::kAuto} 委托 \texttt{EbHcrboConfigForFileSize}，禁止 Pipeline 与 sequential 各用一套参数。
+\end{itemize}
+\end{designbox}
+
+%--------------------------------------------------------------------
+\section{本章小结}
+
+FastCDC 层通过 \texttt{FastCdcConfig} + \texttt{ChunkProfile} 自适应 min/avg/max，以 Gear rolling hash 与 \texttt{ScanGearCut} 产生内容定义边界。\texttt{ChunkCuts} 作为 golden reference，流式 CDC 必须与其 bit-identical；AVX2 仅加速扫描，不改变语义。增量 reuse 在 HCRBO/CFI 层实现（\cref{ch:chunk-hcrbo}），但变更区域的 re-chunk 仍依赖本章算法。

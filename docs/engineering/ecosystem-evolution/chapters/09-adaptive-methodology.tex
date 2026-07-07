@@ -1,0 +1,79 @@
+\chapter{适应性修改方法论}
+\label{ch:methodology}
+
+\section{我的决策模板（六步）}
+
+每一轮内核演进，我尽量按以下模板自检——替代传统「需求文档」：
+
+\begin{enumerate}
+  \item \textbf{识别主压力}（P1--P5，可否量化？）
+  \item \textbf{宪法检查}：是否触碰 Content ID / commit-point / immutable floor？
+  \item \textbf{最小假设}：一句可 falsify 的假设（例：「digest\_base 可降 digest\_sub 到 $<$20\%」）
+  \item \textbf{实现 + 黄金 parity}：stream vs slice、manifest hash 对比
+  \item \textbf{ctest 双门禁}：232 gtest + \texttt{ebbackup\_bench\_check}
+  \item \textbf{默认策略}：全量开启 / opt-in / 回滚；写 CHANGELOG + 文档
+\end{enumerate}
+
+\section{三层门禁体系}
+
+\begin{table}[htbp]
+\centering
+\caption{本土化 QA 替代「流程 QA」}
+\begin{tabular}{@{}llp{6.5cm}@{}}
+\toprule
+层级 & 机制 & 守什么 \\
+\midrule
+L-语义 & parity + powerfail + chaos & chunk 边界、提交点、recover \\
+L-回归 & 232 gtest + fixture 矩阵 & 功能不回退 \\
+L-性能 & L1--L7；immutable reuse/ratio & 性能不倒挂；绝对吞吐 aspirational \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Stage 3.1 / 3.2 双轨}
+
+\begin{adaptbox}[为何需要双轨]
+\begin{itemize}[nosep]
+  \item \textbf{Stage 3.1}（blocking）：L5 105、L6 112、L7 550——$\sim$70\% Release 实测，单人项目\textbf{可每晚全绿}；
+  \item \textbf{Stage 3.2}（aspirational）：L5 280——指引方向，\textbf{不作为 merge 阻塞}；
+  \item 避免「目标太远 $\rightarrow$ 作弊降 floor $\rightarrow$ 生态信用破产」。
+\end{itemize}
+\end{adaptbox}
+
+\section{Opt-in 环境变量文化}
+
+\begin{longtable}{@{}llp{7cm}@{}}
+\toprule
+变量 & 默认 & 本土化用途 \\
+\midrule
+\texttt{EBBACKUP\_CDC\_FAST\_SLICE} & off & 实验路径不污染默认 \\
+\texttt{EBBACKUP\_FORCE\_STREAM\_CDC} & off & 强制回归 stream golden \\
+\texttt{EBBACKUP\_PIPELINE\_PROFILE} & off & 深度 profile 按需 \\
+\texttt{EBBACKUP\_DIGEST\_THREADS} & hw/2 & bench 可固定 4 便于比较 \\
+\texttt{EB\_BENCH\_FLOOR\_PATH} & ci\_floor.json & probe/aspirational 分离 \\
+\bottomrule
+\end{longtable}
+
+\section{文档策略：事后归档而非事前预测}
+
+\begin{itemize}
+  \item 演进中：\textbf{CHANGELOG} 是唯一高频 SSOT；
+  \item 里程碑后：\textbf{docs/} markdown 归档 + \textbf{kernel-manual} LaTeX 工程技术；
+  \item 反思层：\textbf{本文}——解释压力与剪枝逻辑。
+\end{itemize}
+
+这与废弃「先写 200 页设计再写代码」一脉相承：\textbf{设计存在于代码+bench+测试，文档是压缩与审计}.
+
+\section{拓扑复杂度预算}
+
+我给自己设了一条 P5 红线：
+
+\begin{quote}
+每新增一条 pipeline 路由，必须同时新增：(1) parity 或 manifest 对比测试；(2) bench 子指标或 profile 行；(3) 文档/router 图。
+\end{quote}
+
+\v0.9.4 路由：inline / streaming / fast-slice opt-in / v4——已接近预算上限；Sprint 5 若做 hybrid，应\textbf{合并}而非\textbf{再加}第五条默认路径。
+
+\section{本章小结}
+
+方法论核心：\textbf{测量 $\rightarrow$ 小步 $\rightarrow$ 硬门禁 $\rightarrow$ 负向则剪枝}. 下一章列完整剪枝目录。

@@ -1,0 +1,128 @@
+\chapter{Compact、GC 与 Repo 运维}
+\label{ch:compact-gc}
+
+\section{概述}
+
+运维闭环：\texttt{backup} $\rightarrow$ \texttt{repo-stats} 监控 $\rightarrow$ \texttt{prune-snapshots} $\rightarrow$ \texttt{gc-orphans} $\rightarrow$ \texttt{compact}。实现分散于 \filepath{src/store/chunk\_compactor.cc}、\filepath{eb\_pack\_compactor.cc}、\filepath{orphan\_gc.cc}、\filepath{repo\_stats.cc}。
+
+\section{ampl\_ratio 定义与公式}
+
+\[
+\text{ampl\_ratio} = \frac{\text{physical\_bytes}}{\text{live\_bytes}}
+\]
+
+其中：
+\begin{itemize}[nosep]
+  \item \texttt{physical\_bytes}：\filepath{data/chunks} + \filepath{data/packs/*.ebpack} 实际占用；
+  \item \texttt{live\_bytes}：所有\textbf{保留} manifest/snapshot 引用的 chunk 逻辑大小之和（含 header）。
+\end{itemize}
+
+\begin{table}[htbp]
+\centering
+\caption{ampl\_ratio 运维阈值}
+\begin{tabular}{@{}ll@{}}
+\toprule
+条件 & 建议动作 \\
+\midrule
+$\text{ampl\_ratio} > 1.3$ & \texttt{eb repo-stats} 关注；检查 prune/GC 策略 \\
+$\text{ampl\_ratio} > 1.5$ & 执行 \texttt{eb compact} \\
+L4 门禁 & compact 后 $\text{ampl\_ratio\_after} \leq 1.05$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{CompactEbPackStore 步骤}
+
+EbPack 仓库（\versiontag{0.6+} 默认）走 \texttt{CompactEbPackStore}（\filepath{src/store/eb\_pack\_compactor.cc}）：
+
+\begin{enumerate}
+  \item 加载 superblock；phase 须 \texttt{kIdle} 或 \texttt{kComplete}，否则 \texttt{Conflict}；
+  \item \texttt{ChunkStore::Open}；\texttt{physical\_before = store.PhysicalBytes()}；
+  \item \texttt{CollectReferencedHashesForRepo} — 合并 \filepath{manifest} + 全部 \filepath{snapshots/} hash 集；
+  \item \texttt{ForEachRecord} 扫描：统计 \texttt{live\_bytes}、\texttt{records\_copied}（referenced 记录）；
+  \item 计算 \texttt{ampl\_ratio\_before}；
+  \item 若非 \texttt{dry\_run}：逐 referenced 记录读$\rightarrow$写入新 pack 集；更新 HXID index；删除旧 pack；\texttt{FsyncPath}；
+  \item 填充 \texttt{EbCompactReport} / \texttt{CompactReport}。
+\end{enumerate}
+
+Legacy \filepath{data/chunks/} 路径走 \texttt{CompactChunkStore}：重写 append-only 文件，跳过 orphan/tombstone。
+
+\section{Orphan GC 算法}
+
+\texttt{GcOrphans}（\filepath{src/store/orphan\_gc.cc}）：
+
+\begin{enumerate}
+  \item \textbf{CollectReferencedHashesRetained}：读取 \filepath{manifest} + \texttt{ListSnapshots} 全部 txn manifest，合并 chunk hash 集合；
+  \item \texttt{ChunkStore::ForEachRecord}：对每条记录，若 hash $\notin$ referenced，标记 tombstone（\texttt{TombstoneHash}）；
+  \item \texttt{dry\_run=true}：仅统计，不修改；
+  \item 物理空间回收延迟到 \texttt{compact}（tombstone 记录跳过复制）。
+\end{enumerate}
+
+\texttt{gc\_latest\_manifest\_only} 选项（C API 内部）：无 snapshot 仓库仅扫描当前 \filepath{manifest}。
+
+\section{Snapshot Prune 交互}
+
+\texttt{PruneSnapshots}（\filepath{src/store/snapshot\_store.cc} + \filepath{retention\_policy.cc}）：
+
+\begin{itemize}[nosep]
+  \item 按 GFS tiers（如 \texttt{daily=7,weekly=4,monthly=6}）删除过期 \filepath{snapshots/<txn>.manifest}；
+  \item Prune \textbf{不立即}删除 chunk 数据；被 prune snapshot 独有引用变为 orphan；
+  \item Daemon schedule 可 \texttt{auto\_prune} + \texttt{auto\_gc\_after\_prune} 链式执行；
+  \item 推荐顺序：\texttt{prune} $\rightarrow$ \texttt{gc-orphans} $\rightarrow$ \texttt{compact}。
+\end{itemize}
+
+\section{Repo Stats 字段与 CLI}
+
+\texttt{eb repo-stats} / \texttt{eb\_backup\_repo\_stats} 输出 \texttt{EbRepoStats}（见 \cref{ch:c-api}）。
+
+\begin{longtable}{@{}llp{7.5cm}@{}}
+\toprule
+字段 & 计算来源 & 运维解读 \\
+\midrule
+\texttt{physical\_bytes} & pack 文件 + legacy chunk 文件 & 磁盘压力 \\
+\texttt{live\_bytes} & referenced chunk 逻辑大小 & 有效数据量 \\
+\texttt{orphan\_bytes} & physical $-$ live（近似） & GC/compact 收益估计 \\
+\texttt{manifest\_bytes} & manifest + snapshot 文件 & 元数据开销 \\
+\texttt{unique\_chunks} & index 条目 & dedup 粒度 \\
+\texttt{tombstoned\_chunks} & tombstone 表 & 待 compact 清理 \\
+\texttt{ampl\_ratio} & physical/live & 空间放大 \\
+\bottomrule
+\end{longtable}
+
+\section{CLI 维护工作流}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.1cm]
+  \node[flowstep] (bk) {eb backup};
+  \node[flowstep, below=of bk] (rs) {eb repo-stats};
+  \node[flowdec, below=of rs] (d1) {ampl $>$ 1.3?};
+  \node[flowstep, below=of d1] (pr) {eb prune-snapshots};
+  \node[flowstep, below=of pr] (gc) {eb gc-orphans};
+  \node[flowdec, below=of gc] (d2) {ampl $>$ 1.5?};
+  \node[flowstep, below=of d2, align=center] (cp) {eb compact\\--wait-idle SEC};
+  \node[flowstep, below=of cp] (vf) {eb verify};
+
+  \draw[arrow] (bk)--(rs)--(d1);
+  \draw[arrow] (d1)-- node[right,font=\scriptsize]{Y} (pr);
+  \draw[arrow] (d1.east) -- ++(1.2,0) node[above,font=\scriptsize]{N} |- (gc);
+  \draw[arrow] (pr)--(gc)--(d2);
+  \draw[arrow] (d2)-- node[right,font=\scriptsize]{Y} (cp);
+  \draw[arrow] (d2.west) -- ++(-1.2,0) node[above,font=\scriptsize]{N} |- (vf);
+  \draw[arrow] (cp)--(vf);
+\end{tikzpicture}
+\caption{推荐运维工作流（示意）}
+\label{fig:ops-workflow}
+\end{figure}
+
+\texttt{compact --wait-idle SEC}：轮询 superblock phase，等待无 active backup 再 compact，避免 \texttt{Conflict}。
+
+C API：\texttt{eb\_backup\_compact(eng, dry\_run, \&report)} 返回 \texttt{EbCompactReport}。
+
+\section{与 Bench L4 的关系}
+
+L4a 注入 32KB orphan 至 EbPack 会话，验证 \texttt{ampl\_ratio} 上升后 \texttt{compact} 使 \texttt{ampl\_ratio\_after $\leq$ 1.05} 且 \texttt{verify} 仍 OK。
+
+\section{本章小结}
+
+Compact/GC 不改变 Content ID 语义；仅重组物理布局与索引。测试保障见 \cref{ch:test-ci}。

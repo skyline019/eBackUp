@@ -1,0 +1,225 @@
+\chapter{备份不变量与耐久语义}
+\label{ch:invariants}
+
+\section{核心不变量公理}
+
+以下四条不变量是写路径的公理基础，自 M5 起保持不变。任何性能优化（Pipeline v4、流式 CDC、SHA-NI、EbPack sharding）均不得违反。
+
+\begin{invariantbox}[I-B1：Content ID 恒定]
+任意 chunk 的内容标识符为 \texttt{SHA256(明文 content)}。不因 digest 栈（Legacy/Standard）、Pipeline 路径、CDC 实现（slice/stream/fast-slice）、压缩编解码或加密存储格式而改变。
+
+\textbf{反例（禁止）：}对密文做 SHA256 作为 Content ID；或在 Pipeline fast path 使用截断 hash。
+\end{invariantbox}
+
+\begin{invariantbox}[I-B2：提交点耐久性]
+manifest 写入 superblock 并 \texttt{Commit} 之前，所有\textbf{本 txn 新写入} chunk 必须通过 \texttt{ChunkStore::Flush()} 持久化（含 pack/chunk fsync）。中途 crash 时当前 txn 标记 \texttt{kAborted}，前一 snapshot 仍可 verify/restore。
+
+\textbf{推论：}balanced 模式仅降低 backup \emph{过程中} spill 频率，不推迟 commit 点 Flush。
+\end{invariantbox}
+
+\begin{invariantbox}[I-B3：SuperBlock 双槽]
+\texttt{superblock.bin} 含两个 4096B slot（共 8192B）；\texttt{Load} 时 CRC 选举有效 slot（epoch 较大者优先）；\texttt{Commit} 交替写入 inactive slot，防止 torn write。
+\end{invariantbox}
+
+\begin{invariantbox}[I-B4：Immutable CI 门禁]
+bench 中 \texttt{reuse\_pct\_min$\geq$90}、\texttt{pipeline\_ratio\_min$\geq$0.90}、\texttt{pipeline\_ratio\_256MB\_min$\geq$0.90} \textbf{永不可降低}；算法变更必须通过 parity 测试与 \texttt{ebbackup\_bench\_check}。
+\end{invariantbox}
+
+\subsection{I-B1 实例：Pipeline 路径一致性}
+
+\begin{itemize}[nosep]
+  \item \texttt{FastCdcSlice::Chunk}、\texttt{FastCdcStreamFeed}、\texttt{ChunkFileStreamingFastSlice} 均须通过 \texttt{CdcFastPathMatchesStreamFeedManifest} 等 parity 测试；
+  \item \texttt{DigestPool} 与 serial digest 输出相同 32B hash；
+  \item 加密仓库：存储 AES-GCM 密文，Content ID 仍为明文 SHA256。
+\end{itemize}
+
+\subsection{I-B2 实例：crash 场景}
+
+\begin{enumerate}[nosep]
+  \item crash 于 \texttt{kStoring}：superblock 记录 in-progress phase；\texttt{Open()} $\rightarrow$ \texttt{kAborted}；已 Flush 的 chunk 成为 orphan，manifest 未更新；
+  \item crash 于 \texttt{kCommittingMeta} 且 manifest 已 fsync、superblock 未 Commit：\texttt{StartupSelfCheck} 可能将 txn 对齐至 manifest（若 \texttt{manifest.txn\_id > sb.txn\_id}）；
+  \item 用户调用 \texttt{eb backup} 前 \texttt{Recover()}：显式 abort，可立即重新 backup（v0.9：\texttt{kAborted} 仍接受 \texttt{kScanFile}）。
+\end{enumerate}
+
+\section{SuperBlock 4096B 字节布局}
+
+总大小 \texttt{kBackupSuperBlockSize = 4096}。结构定义 \filepath{include/ebbackup/state/superblock.h}。
+
+\subsection{Critical 区（512B）}
+
+\begin{longtable}{@{}rlrp{6.5cm}@{}}
+\toprule
+偏移 & 字段 & 类型 & 说明 \\
+\midrule
+0 & \texttt{magic} & \texttt{uint64\_t} & \texttt{0xEBBA0001} \\
+8 & \texttt{epoch} & \texttt{uint64\_t} & 单调递增代数（Commit 时 +1） \\
+16 & \texttt{phase} & \texttt{uint8\_t} & \texttt{BackupPhase} \\
+17 & \texttt{reserved\_phase} & 7B & 保留 \\
+24 & \texttt{txn\_id} & \texttt{uint64\_t} & 当前/最后完成 txn \\
+32 & \texttt{manifest\_offset} & \texttt{uint64\_t} & legacy 字段 \\
+40 & \texttt{chunks\_written} & \texttt{uint64\_t} & 本 txn 写入 chunk 计数 \\
+48 & \texttt{bytes\_processed} & \texttt{uint64\_t} & 本 txn 处理字节 \\
+56 & \texttt{crc32} & \texttt{uint32\_t} & critical 区 CRC（自身置 0 后计算） \\
+60 & \texttt{padding} & 452B & 零填充 \\
+\bottomrule
+\caption{BackupSuperBlockCritical 512B 映射}
+\end{longtable}
+
+\subsection{Extension 区（3572B）+ 尾部}
+
+\begin{longtable}{@{}rlrp{6.5cm}@{}}
+\toprule
+偏移(相对 block) & 字段 & 类型 & 说明 \\
+\midrule
+512 & \texttt{format\_version} & \texttt{uint32\_t} & v1$\rightarrow$v2 迁移标记 \\
+516 & \texttt{ext.next\_txn\_id} & \texttt{uint64\_t} & 下一 txn 分配 \\
+524 & \texttt{ext.last\_manifest\_crc32} & \texttt{uint32\_t} & 最后 manifest body CRC \\
+528 & \texttt{ext.merkle\_root} & 32B & manifest Merkle 根 \\
+560 & \texttt{ext.default\_codec} & \texttt{uint8\_t} & 默认压缩 codec \\
+561 & \texttt{ext.backup\_features} & \texttt{uint32\_t} & Feature flags 位图 \\
+565 & \texttt{ext.ext\_padding} & 3523B & 零填充 \\
+4088 & \texttt{block\_crc32} & \texttt{uint64\_t} & 整块 CRC（末 8B 置 0 后计算） \\
+\bottomrule
+\caption{Extension 3572B + format\_version + block\_crc32}
+\end{longtable}
+
+\begin{lstlisting}[caption={SuperBlock 结构（节选）},label={lst:superblock}]
+struct BackupSuperBlockCritical {  // 512 bytes
+  uint64_t magic;      // kBackupMagic = 0xEBBA0001
+  uint64_t epoch;
+  uint8_t phase;
+  uint8_t reserved_phase[7];
+  uint64_t txn_id;
+  // ...
+  uint32_t crc32;
+  uint8_t padding[452];
+};
+struct BackupSuperBlockExtension {  // 3572 bytes
+  uint64_t next_txn_id;
+  uint32_t last_manifest_crc32;
+  uint8_t merkle_root[32];
+  uint8_t default_codec;
+  uint32_t backup_features;
+  uint8_t ext_padding[3523];
+};
+\end{lstlisting}
+
+\section{BackupSuperBlockStore Load/Commit 算法}
+
+实现：\filepath{src/state/superblock.cc}。
+
+\subsection{Load 算法}
+
+\begin{enumerate}[nosep]
+  \item 若 \filepath{superblock.bin} 不存在，返回零初始化 block；
+  \item \texttt{ReadSlot(0)} 与 \texttt{ReadSlot(1)} 各自：读 4096B $\rightarrow$ 校验 \texttt{block\_crc32} $\rightarrow$ 校验 critical \texttt{crc32} $\rightarrow$ \texttt{MigrateLoadedBlock}（v1$\rightarrow$v2）；
+  \item 若两 slot 均 corrupt，返回 \texttt{CorruptSuperBlock}；
+  \item 若仅一 slot 有效，选该 slot；
+  \item 若两 slot 均有效，选 \texttt{critical.epoch} 较大者。
+\end{enumerate}
+
+\subsection{Commit 算法}
+
+\begin{enumerate}[nosep]
+  \item \texttt{Load(\&current)} 读取当前代数；
+  \item \texttt{next = in}；\texttt{next.critical.epoch = max(current.epoch, in.epoch) + 1}；
+  \item \texttt{FinalizeCritical(\&next)}：零填充 reserved/padding；计算 critical CRC；计算 block CRC；
+  \item \texttt{inactive = (current.epoch \% 2 == 0) ? 1 : 0}；
+  \item \texttt{WriteSlot(inactive, next)}：写入非当前活跃 slot + \texttt{FsyncPath}。
+\end{enumerate}
+
+双 slot 交替写保证任意时刻至少有一个完整 epoch 的 superblock 可读。
+
+\section{DurabilityMode 与 EbPack Spill}
+
+\begin{lstlisting}[caption={DurabilityMode（\filepath{chunk\_store.h}）},label={lst:durability}]
+enum class DurabilityMode { kStrict = 0, kBalanced = 1 };
+\end{lstlisting}
+
+\begin{table}[htbp]
+\centering
+\caption{Spill / fsync 阈值（backup 过程中）}
+\begin{tabular}{@{}lll@{}}
+\toprule
+模式 & 触发 spill 条件 & manifest commit 时 \\
+\midrule
+\texttt{kStrict} & 4 MiB 已缓冲 \textbf{或} 32 records & 必须 \texttt{Flush()} + fsync \\
+\texttt{kBalanced} & 16 MiB \textbf{或} 64 records & 同上（不变） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{designbox}[v0.4.6+ 语义澄清]
+\textbf{两种模式}均在 manifest commit 时 fsync；差异仅在于 backup 过程中 pack/chunk 缓冲 flush 频率。balanced 降低写放大与 fsync 次数，\textbf{不削弱} I-B2 commit-point 保证。
+\end{designbox}
+
+\section{Coalesced Meta 与 I-B2 交互}
+
+Feature \texttt{kBackupFeatureCoalescedMeta}（0x200）：backup 进行中 \texttt{PersistSuperBlock} 对非 terminal phase \textbf{仅更新内存} superblock，不落盘；在 \texttt{kAborted}、\texttt{kIdle}（complete 后）时 \texttt{Commit}。
+
+\begin{itemize}[nosep]
+  \item \textbf{与 I-B2 正交：}chunk 数据仍按 DurabilityMode \texttt{Flush}；仅 superblock 写合并；
+  \item \textbf{Coalesced 自愈：}\texttt{StartupSelfCheck} 在 idle + 有 pack 无 manifest 时标记 abort；
+  \item \textbf{风险缓解：}双 slot + manifest 独立 fsync 保证至少一侧一致。
+\end{itemize}
+
+\section{Commit-Point 端到端流程}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=\flowdistance]
+  \node[flowstep] (scan) {Scan 源目录};
+  \node[flowstep, below=of scan] (chunk) {Chunk + Digest\\（I-B1）};
+  \node[flowstep, below=of chunk] (enc) {Encode LZ4/zstd};
+  \node[flowstep, below=of enc] (put) {ChunkStore::Put};
+  \node[flowstep, below=of put] (spill) {Spill（按 DurabilityMode）};
+  \node[flowstep, below=of spill] (flush) {\textbf{Flush（fsync）}};
+  \node[flowstep, below=of flush] (man) {WriteManifest + Snapshot};
+  \node[flowstep, below=of man] (sb) {SuperBlock::Commit};
+  \node[flowstep, below=of sb] (rar) {Append RAR audit};
+
+  \draw[arrow] (scan)--(chunk)--(enc)--(put)--(spill)--(flush);
+  \draw[arrow] (flush)--(man)--(sb)--(rar);
+  \node[draw,red,thick,fit=(flush)(man), inner sep=6pt, label={[red,font=\scriptsize]above:commit-point 边界}] {};
+\end{tikzpicture}
+\caption{Commit-point：\texttt{Flush} 必须在 manifest/superblock 提交之前完成}
+\label{fig:commit-point}
+\end{figure}
+
+v0.9.0 起 \texttt{MergeMetaManifestEntries} 可在 \texttt{chunk\_store\_->Flush()} 期间 \texttt{std::async} 重叠构建 manifest 条目，但仍在 superblock commit 前 \texttt{join} 完成。
+
+\section{加密仓库额外不变量}
+
+启用 \texttt{kBackupFeatureEncrypted} 时：
+\begin{itemize}[nosep]
+  \item \filepath{crypto.salt} per-repo；PBKDF2 派生 32B content key；
+  \item 磁盘存储 AES-256-GCM 密文（nonce + tag）；Content ID 仍为明文 SHA256（I-B1）；
+  \item \texttt{tests/crypto/aes\_gcm\_nist\_test.cc} 覆盖 portable 路径 NIST 向量；
+  \item Restore 须 \texttt{eb\_backup\_set\_password} 或 CLI \texttt{--password}。
+\end{itemize}
+
+\section{Recover 算法步骤}
+
+\texttt{BackupEngine::Recover()}（\filepath{src/engine/backup\_engine.cc}）：
+
+\begin{enumerate}
+  \item \texttt{SetPhase(\&sb\_, kAborted)}；
+  \item \texttt{superblock\_store\_->Commit(sb\_)} — 持久化 abort 状态；
+  \item \texttt{phase\_ = kAborted}；
+  \item \texttt{sync\_.Dispatch(kRecover, \&ctx)} — 同步 executor 确认 abort；
+  \item \textbf{不删除}已写入 chunk（可能含 orphan，由 GC/compact 回收）；
+  \item manifest 指针逻辑回退：in-progress txn 不可见；最后成功 snapshot + \filepath{manifest} 仍有效。
+\end{enumerate}
+
+\texttt{Open()} 路径（implicit recover 检测）：
+\begin{itemize}[nosep]
+  \item 若 phase 为 scanning/chunking/storing/committing/auditing：\texttt{StartupSelfCheck()}；
+  \item 若 manifest.txn\_id $>$ sb.txn\_id 且 manifest 可读：对齐 txn，设 idle（成功 commit 的迟到 superblock）；
+  \item 否则：设 \texttt{kAborted} 并 Commit。
+\end{itemize}
+
+v0.9.0：自 \texttt{kAborted} 状态 \texttt{Dispatch(kScanFile)} 可进入 \texttt{kScanning}，允许不手动 Recover 直接重新 backup（若 Open 已标记 abort）。
+
+\section{本章小结}
+
+ebbackup 耐久模型比「每阶段 fsync superblock」更精细：chunk 层按 DurabilityMode 批量 spill，但 \textbf{manifest commit 前必须 Flush} 构成唯一提交点。Coalesced meta 仅合并 superblock 写频率。后续分块/存储章节不得破坏 I-B1 Content ID 语义。

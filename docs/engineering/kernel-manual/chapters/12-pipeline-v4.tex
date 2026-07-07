@@ -1,0 +1,408 @@
+\chapter{Pipeline v4 与 FileScheduler}
+\label{ch:pipeline-v4}
+
+\section{设计背景与代数不变量}
+
+自 \wave{4}（v0.8）起，ebbackup 在多文件与增量备份场景采用 \textbf{Pipeline v4}：四阶段代数
+\[
+\text{Reader} \rightarrow \text{Chunker} \rightarrow \text{Compressor} \rightarrow \text{Store}
+\]
+在\textbf{全局有界队列}上解耦，而非 v0.7 v3 的 per-file 独立 encode 队列。无论拓扑如何实例化，FastCDC/HCRBO 切出的 chunk 边界与 Content ID（SHA256）必须 bit-identical——这是 I-B1 不变量的直接推论。
+
+\textbf{主实现}：\filepath{engine\_cpp/src/pipeline/backup\_pipeline.cc}（约 1360 行）。
+
+\textbf{调度辅助}：\filepath{engine\_cpp/src/pipeline/file\_scheduler.cc}。
+
+本章聚焦 v4 全局队列拓扑；单文件 $\leq$32\,MB inline 与 StreamingChunkCpuPipeline 路由见 \cref{ch:streaming-cdc-v4}。
+
+\section{RunBackupPipeline 入口与路由表}
+
+\texttt{RunBackupPipeline} 是 \texttt{BackupEngine::RunBackup} 在 scan 完成后调用的数据平面入口。调用前引擎已设置 \texttt{ChunkStore::SetPipelineDedupTrust(true)}，允许 pipeline 在 encode 阶段批量 \texttt{ExistsMany} 而无需逐 chunk 二次确认。
+
+\subsection{预处理：ScheduledFileInput 构建}
+
+函数首先遍历 \texttt{file\_paths}，为每个文件构造 \texttt{ScheduledFileInput}：
+\begin{itemize}[nosep]
+  \item \texttt{index}：在 manifest 结果向量中的槽位；
+  \item \texttt{path}：绝对路径；
+  \item \texttt{relative\_path}：相对 \texttt{source\_root} 的仓库路径；
+  \item \texttt{file\_size}：\texttt{std::filesystem::file\_size}。
+\end{itemize}
+同时累加 \texttt{total\_bytes}，供 worker 数解析与调度器负载均衡使用。
+
+\subsection{三路路由决策}
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{RunBackupPipeline} 路由表（按优先级）}
+\small
+\begin{tabular}{@{}llp{6.2cm}@{}}
+\toprule
+条件 & 拓扑 & 函数 \\
+\midrule
+单文件、\texttt{worker\_count==0}、$\leq$32\,MB & L3a Inline & \texttt{RunSingleFileInlinePipeline} \\
+单文件、full、$>$32\,MB、未显式请求 workers & Streaming & \texttt{RunSingleFileStreamingChunkPipeline} \\
+其余（多文件 / 增量 / 显式 workers） & Pipeline v4 & 全局 \texttt{chunk\_q}/\texttt{encoded\_q} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+关键常量与辅助函数：
+\begin{lstlisting}[caption={路由阈值与显式 worker 检测},label={lst:pipeline-routing}]
+constexpr size_t kStreamFeedBytes = 32u * 1024u * 1024u;
+
+bool PipelineWorkersExplicitlyRequested(size_t worker_count) {
+  if (worker_count > 0) return true;
+  const char* env = std::getenv("EBBACKUP_PIPELINE_WORKERS");
+  if (!env || env[0] == '\0') return false;
+  return std::strtol(env, nullptr, 10) > 0;
+}
+\end{lstlisting}
+
+\textbf{路由语义说明}：
+\begin{enumerate}
+  \item \textbf{Inline（L3a）}：单文件小对象走 \texttt{RunSingleFileInlinePipeline}，主线程顺序 chunk+encode+store，与 \texttt{--no-pipeline} 等价，保证 micro-bench \texttt{pipeline\_ratio $\geq$ 0.90}。
+  \item \textbf{Streaming}：单文件大对象、full backup、默认 \texttt{worker\_count==0} 且环境未设 \texttt{EBBACKUP\_PIPELINE\_WORKERS} 时，走 2 encode + 1 store 的 StreamingChunkCpuPipeline（见 \cref{ch:streaming-cdc}）。
+  \item \textbf{v4}：多文件并行、\textbf{任意增量 backup}、或用户/环境显式要求 pipeline workers 时，启动完整 v4 DAG。
+\end{enumerate}
+
+增量 backup \textbf{始终}走 v4，因为 HCRBO 需要在 Chunker 阶段 consult prior manifest CFI，且多文件调度收益显著。
+
+\section{核心数据结构}
+
+\subsection{BoundedQueue}
+
+v4 内部模板 \texttt{BoundedQueue<T>} 基于 \texttt{std::deque} + \texttt{std::mutex} + 双 \texttt{condition\_variable}（\texttt{not\_full\_}/\texttt{not\_empty\_}）实现有界阻塞队列：
+\begin{itemize}[nosep]
+  \item \texttt{Push}：队列满时阻塞，\texttt{closed\_} 后拒绝新元素；
+  \item \texttt{Pop}：队列空时阻塞，关闭后返回 \texttt{false}；
+  \item \texttt{Close}：广播唤醒所有 waiter，用于 stage 结束传播。
+\end{itemize}
+错误传播时 \texttt{PipelineShared::SetError} 会 \texttt{Close} 全局 \texttt{chunk\_q} 与 \texttt{encoded\_q}，使 worker 优雅退出。
+
+\subsection{FilePipelineState 与 FileAggregator 语义}
+
+\texttt{FilePipelineState} 是 per-file 的共享状态，扮演 v4 中 \textbf{FileAggregator} 的角色——chunk 任务在全局队列中乱序完成，但 manifest entry 必须在\textbf{所有 chunk hash 就绪}后一次性写入 \texttt{result->manifest\_files[index]}。
+
+\begin{structbox}[FilePipelineState 字段]
+\begin{itemize}[nosep]
+  \item \texttt{index}：manifest 槽位；
+  \item \texttt{relative\_path}、\texttt{view}（\texttt{shared\_ptr<FileView>}）；
+  \item \texttt{cfi}：增量锚点索引；
+  \item \texttt{file\_size}、\texttt{total\_chunks}；
+  \item \texttt{chunk\_hashes\_hex}：按 \texttt{chunk\_index} 预分配，Store 阶段填充；
+  \item \texttt{chunks\_done}（atomic）：已完成 store 的 chunk 数；
+  \item \texttt{chunking\_complete}（atomic）：Chunker 已推送全部 \texttt{ChunkTask}；
+  \item \texttt{finalize\_mu}：保护 hash 向量与 finalize 竞态；
+  \item \texttt{finalized}（atomic）：manifest entry 已提交。
+\end{itemize}
+\end{structbox}
+
+\subsection{ChunkTask 与 EncodedChunkTask}
+
+\begin{structbox}[任务载荷]
+\textbf{ChunkTask}（chunk\_q）：
+\begin{itemize}[nosep]
+  \item \texttt{file}：\texttt{shared\_ptr<FilePipelineState>}；
+  \item \texttt{chunk\_index}、\texttt{descriptor}（offset/length/hash）；
+  \item \texttt{store\_exists}：增量模式下 \texttt{ExistsMany} 预检结果。
+\end{itemize}
+
+\textbf{EncodedChunkTask}（encoded\_q）：
+\begin{itemize}[nosep]
+  \item 同上 file/chunk\_index/descriptor；
+  \item \texttt{payload}、\texttt{codec}、\texttt{uncompressed\_len}；
+  \item \texttt{skip\_store}：\texttt{store\_exists==true} 时跳过 \texttt{PutPrecompressed}。
+\end{itemize}
+\end{structbox}
+
+\subsection{PipelineShared 共享上下文}
+
+\texttt{PipelineShared} 贯穿所有 stage/worker，持有：
+\begin{itemize}[nosep]
+  \item 模式与 prior manifest：\texttt{mode}、\texttt{prior}；
+  \item 存储与统计：\texttt{store}、\texttt{stats}、\texttt{result}；
+  \item 选项与回调：\texttt{options}、\texttt{progress\_cb}、\texttt{phase\_stats}；
+  \item 错误状态：\texttt{error}（atomic StatusCode）、\texttt{error\_message}；
+  \item 进度计数：\texttt{files\_read/chunked/encoded/stored}；
+  \item 队列关闭协调：\texttt{compressors\_remaining}、\texttt{chunkers\_remaining}；
+  \item 全局队列指针：\texttt{chunk\_q}、\texttt{encoded\_q}。
+\end{itemize}
+
+\texttt{MergeContentClassStats}、\texttt{RecordFileProcessed}、\texttt{RecordChunkStored}、\texttt{RecordCfiReuse} 均在 \texttt{stats\_mu} 下更新，避免与引擎层统计竞争。
+
+\section{Pipeline v4 完整 DAG}
+
+\subsection{拓扑概览}
+
+v4 为每个 \texttt{file\_workers} 槽位创建\textbf{一对} per-worker 队列（\texttt{FileInput} $\rightarrow$ \texttt{FileData}），再汇入\textbf{全局} \texttt{chunk\_q} 与 \texttt{encoded\_q}。Compressor 与 Store worker 共享全局 encoded/chunk 队列。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=0.55cm and 0.9cm,
+  worker/.style={rectangle, rounded corners=2pt, draw=blue!60!black,
+    fill=blue!5, minimum width=2.2cm, minimum height=0.75cm, font=\scriptsize, align=center},
+  queue/.style={rectangle, draw=StructGreen!70!black, fill=green!6,
+    minimum width=2.4cm, minimum height=0.65cm, font=\scriptsize, align=center},
+  stage/.style={rectangle, draw=orange!70!black, fill=orange!8,
+    minimum width=2.6cm, minimum height=0.8cm, font=\small, align=center}
+]
+  % File workers column
+  \foreach \i in {0,1,2} {
+    \node[worker] (fw\i) at (-4.5, -1.2*\i) {file\_q[\i]};
+    \node[stage, right=0.7cm of fw\i] (rd\i) {ReaderStage};
+    \node[queue, right=0.7cm of rd\i] (rq\i) {read\_q[\i]};
+    \node[stage, right=0.7cm of rq\i] (ch\i) {ChunkerStage};
+    \draw[arrow] (fw\i) -- (rd\i);
+    \draw[arrow] (rd\i) -- (rq\i);
+    \draw[arrow] (rq\i) -- (ch\i);
+  }
+  \node[font=\scriptsize, below=0.1cm of fw2] {$\times$ \texttt{file\_workers}};
+
+  % Global queues
+  \node[queue, right=1.8cm of ch1] (cq) {chunk\_q\\(global)};
+  \node[queue, right=1.4cm of cq] (eq) {encoded\_q\\(global)};
+
+  \foreach \i in {0,1,2} {
+    \draw[arrow] (ch\i.east) -- ++(0.4,0) |- (cq.west);
+  }
+
+  % Compressor / Store workers
+  \node[stage, above=0.9cm of eq] (comp0) {CompressorWorker};
+  \node[stage, below=0.9cm of eq] (comp1) {CompressorWorker};
+  \node[font=\scriptsize, right=0.05cm of comp1] {$\times$ \texttt{compressor\_workers}};
+
+  \node[stage, right=1.5cm of eq] (store) {StoreWorker};
+  \node[font=\scriptsize, below=0.1cm of store] {$\times$ \texttt{store\_workers}};
+
+  \draw[arrow] (cq.east) -- ++(0.3,0) |- (comp0.west);
+  \draw[arrow] (cq.east) -- ++(0.3,0) |- (comp1.west);
+  \draw[arrow] (comp0.east) -- ++(0.25,0) |- (eq.north);
+  \draw[arrow] (comp1.east) -- ++(0.25,0) |- (eq.south);
+  \draw[arrow] (eq) -- (store);
+
+  % FileAggregator
+  \node[flowdata, below=2.8cm of store] (agg) {FileAggregator\\(MaybeFinalizeFileLocked)};
+  \draw[arrow, dashed] (store.south) -- ++(0,-0.3) -| (agg.north);
+
+  % ScheduleFilesByColor input
+  \node[flowstep, left=3.2cm of fw1] (sched) {ScheduleFilesByColor};
+  \draw[arrow] (sched.east) -- (fw1.west);
+\end{tikzpicture}
+\caption{Pipeline v4 完整 DAG：N$\times$(Reader+Chunker) + M Compressor + K Store + FileAggregator}
+\label{fig:pipeline-v4-dag}
+\end{figure}
+
+\subsection{ReaderStage}
+
+每个 Reader worker 从 per-worker \texttt{BoundedQueue<FileInput>} 取路径，mmap 或 ifstream 读入 \texttt{FileData}，推入 \texttt{read\_q}。计时写入 \texttt{phase\_stats->read\_ns}。进度回调：\texttt{50 + files\_read * 100 / total\_files}（permille 刻度）。
+
+\subsection{ChunkerStage}
+
+Chunker 从 \texttt{read\_q} 取 \texttt{FileData}，按文件大小与模式选择：
+\begin{itemize}[nosep]
+  \item full 且 $>$32\,MB：\texttt{ChunkFileStreaming}（内部可路由 FastSlice）；
+  \item 其余：\texttt{ChunkFileFull}（HCRBO full/incremental）。
+\end{itemize}
+产出 \texttt{ChunkTask} 推入全局 \texttt{chunk\_q}。最后一个 chunker 退出时 \texttt{chunk\_q->Close()}。
+
+\subsection{CompressorWorker}
+
+从 \texttt{chunk\_q} Pop \texttt{ChunkTask}。若 \texttt{store\_exists}，设置 \texttt{skip\_store=true} 跳过 \texttt{ContentClassEncode}；否则调用 \texttt{EncodeChunkPayload}（LZ4/Zstd/auto + cpu\_budget）。最后一个 compressor 退出时 \texttt{encoded\_q->Close()}。
+
+\subsection{StoreWorker}
+
+从 \texttt{encoded\_q} Pop，可选 AES-GCM 加密后 \texttt{PutPrecompressed}，再 \texttt{RecordStoredChunkHash} 写入 hex hash 并尝试 finalize。
+
+\section{Worker 数量公式}
+
+\subsection{ResolvePipelineWorkerCount}
+
+\begin{lstlisting}[caption={ResolvePipelineWorkerCount 逻辑},label={lst:resolve-workers}]
+size_t ResolvePipelineWorkerCount(size_t requested, size_t file_count,
+                                  uint64_t total_bytes) {
+  if (requested > 0) return requested;
+  const char* env = std::getenv("EBBACKUP_PIPELINE_WORKERS");
+  if (env && env[0] != '\0') {
+    const long parsed = std::strtol(env, nullptr, 10);
+    if (parsed > 0) return static_cast<size_t>(parsed);
+  }
+  const unsigned hw = std::thread::hardware_concurrency();
+  const unsigned base = hw > 0 ? hw : 8;
+  if (file_count <= 1 && total_bytes >= 64*1024*1024)
+    return std::max<size_t>(4, std::min<size_t>(16, base / 2));
+  if (file_count <= 1 || total_bytes < 64*1024*1024)
+    return std::max<size_t>(2, base / 4);
+  return std::max<size_t>(4, std::min<size_t>(16, base / 2));
+}
+\end{lstlisting}
+
+\textbf{优先级}：\texttt{options.worker\_count} $>$ \texttt{EBBACKUP\_PIPELINE\_WORKERS} $>$ 硬件启发式。
+
+\textbf{阈值}：\texttt{kSingleFileParallelThreshold = 64\,MB}；\texttt{kLargeFileThreshold = 1\,MB}（用于 ScheduleFilesByColor 大文件标记，值为 $256 \times 4$ KiB）。
+
+\subsection{v4 线程分配}
+
+设 \texttt{pipeline\_workers = ResolvePipelineWorkerCount(...)}，则：
+\begin{align*}
+\texttt{file\_workers} &= \begin{cases}
+  1 & \text{单文件} \\
+  \texttt{pipeline\_workers} & \text{多文件}
+\end{cases} \\
+\texttt{compressor\_workers} &= \texttt{pipeline\_workers} \\
+\texttt{store\_workers} &= \max(2,\ \texttt{store\_shard\_count}/2)\ \text{默认 8}
+\end{align*}
+
+\textbf{小仓库特例}：单文件且 $<$64\,MB 时，\texttt{pipeline\_workers=1}、\texttt{store\_workers=1}，避免线程开销超过收益。
+
+\textbf{队列深度}：
+\begin{itemize}[nosep]
+  \item per-stage：\texttt{queue\_depth}（默认 32）；
+  \item 全局 inter-stage：\texttt{max(queue\_depth * 64, 1024)}。
+\end{itemize}
+
+\section{ScheduleFilesByColor 图着色调度}
+
+\textbf{目标}：将文件列表分配到 \texttt{file\_workers} 条 per-worker 队列，使
+\begin{enumerate}
+  \item 同 worker 上\textbf{连续大文件}（$\geq$\texttt{kLargeFileThreshold}）尽量避免；
+  \item 各队列\textbf{总字节负载}尽量均衡；
+  \item hash 前缀通过 \texttt{HashSpreadBucket} 打散，减少 EbPack shard 热点。
+\end{enumerate}
+
+\subsection{算法步骤}
+
+\begin{enumerate}
+  \item \textbf{打分}：对每个 \texttt{ScheduledFileInput} 计算
+  \[
+  \texttt{preferred} = (\texttt{HashSpreadBucket(path, index)} + index) \bmod worker\_count
+  \]
+  \texttt{HashSpreadBucket} 对 path 字符做 $h = h \times 31 + c$，再 $\bmod 16$。
+  \item \textbf{排序}：按 \texttt{file\_size} 降序，同大小按 \texttt{index} 升序（大文件优先分配）。
+  \item \textbf{贪心放置}：对每个文件，从 \texttt{preferred} 开始扫描所有 worker：
+  \begin{itemize}[nosep]
+    \item 若文件为大文件且该 worker \texttt{last\_was\_large}，\textbf{跳过}（避免 back-to-back 大文件）；
+    \item 选择 \texttt{queue\_bytes} 最小的 worker。
+  \end{itemize}
+  更新 \texttt{queue\_bytes[w]} 与 \texttt{last\_was\_large[w]}。
+  \item \textbf{稳定}：每条队列内按原始 \texttt{index} 升序排序，保证 manifest 槽位可预测。
+\end{enumerate}
+
+L7 基准（32 文件 $\times$ 32\,MB）从此调度受益最大，实测吞吐 $\sim$646--658\,MB/s。
+
+\section{FileAggregator Finalize 协议}
+
+Finalize 由 \texttt{RecordStoredChunkHash}（Store 路径）与 \texttt{TryFinalizeFile}（零 chunk 文件 / chunking 完成）触发。
+
+\subsection{MaybeFinalizeFileLocked 条件}
+
+在持有 \texttt{finalize\_mu} 时，当且仅当：
+\begin{enumerate}
+  \item \texttt{!finalized}；
+  \item \texttt{chunking\_complete == true}；
+  \item \texttt{total\_chunks == 0} \textbf{或} \texttt{chunks\_done >= total\_chunks}；
+\end{enumerate}
+则构建 \texttt{ManifestFileEntry} 写入 \texttt{result->manifest\_files[index]}，调用 \texttt{RecordFileProcessed}，递增 \texttt{files\_stored}，发出进度 \texttt{600 + done*350/total\_files}。
+
+\subsection{并发安全要点（Wave 5）}
+
+\begin{invariantbox}[Finalize 不变量]
+\begin{itemize}[nosep]
+  \item \texttt{chunk\_hashes\_hex} 预分配与 \texttt{total\_chunks} 更新在 \texttt{finalize\_mu} 下；
+  \item \texttt{chunks\_done} 使用 \texttt{memory\_order\_release} 递增；
+  \item \texttt{finalized} 为 \texttt{std::atomic<bool>}，防止 double-finalize；
+  \item Store worker 乱序完成 chunk 不影响 manifest，因 hash 按 \texttt{chunk\_index} 槽位写入。
+\end{itemize}
+\end{invariantbox}
+
+\section{PipelinePhaseStats 全字段参考}
+
+\textbf{头文件}：\filepath{include/ebbackup/pipeline/pipeline\_phase\_stats.h}
+
+\begin{table}[htbp]
+\centering
+\caption{PipelinePhaseStats 字段语义}
+\small
+\begin{tabular}{@{}llp{7.5cm}@{}}
+\toprule
+字段 & 写入者 & 含义 \\
+\midrule
+\texttt{scan\_ns} & BackupEngine scan 阶段 & 目录遍历与 filter 耗时 \\
+\texttt{read\_ns} & ReaderStage / inline read & 文件 mmap/read 耗时 \\
+\texttt{chunk\_ns} & ChunkerStage / inline chunk & CDC + HCRBO + digest 总耗时 \\
+\texttt{encode\_ns} & CompressorWorker / inline & ContentClassEncode 耗时 \\
+\texttt{store\_ns} & StoreWorker / inline & PutPrecompressed + 加密耗时 \\
+\texttt{flush\_ns} & ChunkStore flush & pack/index 刷盘 \\
+\texttt{meta\_ns} & manifest/superblock & 元数据 commit \\
+\texttt{stream\_cdc\_ns} & FastCdcStreamProfile 合并 & 流式 CDC gear 扫描 \\
+\texttt{stream\_digest\_ns} & 同上 & 流式 digest（含 DigestPool 批处理） \\
+\texttt{stream\_carry\_ns} & 同上 & carry 虚拟段拷贝 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{启用方式}：\texttt{EBBACKUP\_PIPELINE\_PROFILE=1} 时 backup 结束打印 \texttt{PrintPipelinePhaseStats}；L5 bench 额外打印 \texttt{profile\_pct} 与 \texttt{stream\_sub} 占比。
+
+\textbf{关系}：\texttt{pipe\_ms = read + chunk + encode + store}；\texttt{stream\_*} 是 \texttt{chunk\_ns} 的子集（仅 Streaming 路径通过 \texttt{MergeStreamProfileToPhaseStats} 累加）。
+
+\section{环境变量 EBBACKUP\_PIPELINE\_WORKERS}
+
+\begin{table}[htbp]
+\centering
+\caption{Pipeline 相关环境变量}
+\begin{tabular}{@{}llp{7cm}@{}}
+\toprule
+变量 & 默认 & 作用 \\
+\midrule
+\texttt{EBBACKUP\_PIPELINE\_WORKERS} & （未设） & 正整数时强制 v4 worker 数；亦使单文件大对象\textbf{不再}走 Streaming \\
+\texttt{EBBACKUP\_PIPELINE\_PROFILE} & 0 & 设为 1 打印 phase 毫秒 breakdown \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+显式设置 \texttt{EBBACKUP\_PIPELINE\_WORKERS} 的副作用：即使单文件 256\,MB full backup，也会进入 v4 而非 StreamingChunkCpuPipeline——通常降低 L5 吞吐，但便于调试多 worker 行为或强制与增量路径一致。
+
+\section{增量模式下的 Exists 批处理}
+
+\texttt{NeedsStoreExistsCheck} 当且仅当 \texttt{mode==kIncremental \&\& prior!=nullptr}。Chunker 在 \texttt{PushChunkTasks} 前调用 \texttt{FillStoreExists} $\rightarrow$ \texttt{BatchExists} $\rightarrow$ \texttt{ChunkStore::ExistsMany}，将结果写入 \texttt{ChunkTask::store\_exists}。Compressor 仍运行（除非 skip），Store 跳过 \texttt{Put} 但\textbf{仍}记录 hash，保证 manifest 完整。
+
+\section{错误传播与优雅关闭}
+
+\texttt{SetError} 采用 first-error-wins：仅当 \texttt{error==kOk} 时记录消息并 Close 全局队列。Worker 循环每轮检查 \texttt{CurrentError()}。主线程 \texttt{join} 所有 worker 后读取最终错误，清理空 manifest slot，恢复 \texttt{SetPipelineDedupTrust(false)}。
+
+\section{与 BackupPipelineOptions 的衔接}
+
+\begin{structbox}[常用 Options 字段（v4 上下文）]
+\begin{itemize}[nosep]
+  \item \texttt{worker\_count}：0=自适应；$>$0 覆盖环境变量与启发式；
+  \item \texttt{queue\_depth}：per-worker 队列容量，默认 32；
+  \item \texttt{store\_shard\_count}：默认 16，决定 \texttt{store\_workers}；
+  \item \texttt{use\_mmap}：ReaderStage 零拷贝；
+  \item \texttt{phase\_stats}：指向引擎的 \texttt{pipeline\_phase\_stats\_}；
+  \item \texttt{digest\_algo}、\texttt{chunk\_profile}：传入 HCRBO/FastCDC；
+  \item \texttt{use\_encryption}、\texttt{content\_key}：StoreWorker AES-GCM。
+\end{itemize}
+\end{structbox}
+
+\section{测试与回归}
+
+\begin{table}[htbp]
+\centering
+\caption{Pipeline v4 相关测试}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+测试文件 & 覆盖点 \\
+\midrule
+\texttt{pipeline\_v4\_test.cc} & 多文件 chunk 边界、phase stats \\
+\texttt{pipeline\_resilience\_test.cc} & 队列关闭、错误传播 \\
+\texttt{pipeline\_encrypt\_filter\_test.cc} & 加密 + filter + v4 \\
+\texttt{file\_scheduler}（间接） & 多 worker 文件分配 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{本章小结}
+
+Pipeline v4 通过全局 \texttt{ChunkTask}/\texttt{EncodedChunkTask} 队列与 FileAggregator finalize 协议，在多文件与增量场景实现 Reader/Chunker/Compressor/Store 四阶段充分并行。\texttt{ScheduleFilesByColor} 降低同目录锁竞争与 EbPack shard 热点；\texttt{ResolvePipelineWorkerCount} 与 \texttt{EBBACKUP\_PIPELINE\_WORKERS} 提供可观测的并发度旋钮。单文件大对象的流式 CDC 与 Sprint 4 优化见 \cref{ch:streaming-cdc}。

@@ -1,0 +1,317 @@
+\chapter{恢复、验证与 Filter}
+\label{ch:restore-verify-v4}
+
+\section{概述}
+
+备份内核提供三条与\textbf{逻辑视图一致性}相关的路径：
+\begin{itemize}[nosep]
+  \item \textbf{Restore}：从 manifest（或 snapshot）重建目标目录文件树；
+  \item \textbf{Verify}：不读源目录，校验 manifest 内部一致性与 chunk 引用；
+  \item \textbf{Recover}：修复\textbf{仓库}中断事务，非文件级恢复。
+\end{itemize}
+
+本章详述 \texttt{RestoreEngine}、\texttt{BackupEngine::Verify}（含 snapshot 即 VerifyAt 语义）、流式内容校验 \texttt{VerifyRestoredFileChunks}，以及 \texttt{BackupFilterOptions} 在 backup/restore 两侧的 glob 语义。
+
+\textbf{实现}：
+\begin{itemize}[nosep]
+  \item \filepath{src/engine/restore\_engine.cc}
+  \item \filepath{src/engine/backup\_engine.cc}（Verify / Restore 委托）
+  \item \filepath{src/scan/backup\_filter.cc}
+  \item \filepath{src/audit/merkle.cc}
+\end{itemize}
+
+\section{RestoreEngine 流程}
+
+\subsection{构造与加密}
+
+\texttt{RestoreEngine(repo\_path, chunk\_store)} 在 \texttt{RunRestore} 开头调用 \texttt{SetupEncryption}：
+\begin{enumerate}
+  \item 若 \filepath{crypto.salt} 不存在，明文仓库，跳过；
+  \item 否则要求 \texttt{RestoreOptions::encryption\_password} 非空；
+  \item \texttt{DeriveContentKey} $\rightarrow$ \texttt{chunk\_store->SetContentKey}。
+\end{enumerate}
+
+\subsection{Manifest 加载}
+
+\begin{lstlisting}[caption={Manifest 来源},label={lst:restore-manifest}]
+if (options.snapshot_txn_id != 0)
+  LoadSnapshotManifest(repo_path_, snapshot_txn_id, &doc);
+else
+  ReadManifestAuto(repo_path_ / "manifest", &doc);
+\end{lstlisting}
+
+对应 CLI \texttt{restore --at TXN}；\texttt{--at latest} 或省略表示当前 committed manifest。
+
+\subsection{Filter 与排序}
+
+若 \texttt{options.filter.HasAnyFilter()}，调用 \texttt{ApplyManifestFilter} 得到文件子集（见 \cref{sec:filter-glob}）。恢复顺序 \texttt{stable\_sort}：目录优先（\texttt{FileTypeOrder}），同类型按 \texttt{relative\_path} 升序，保证父目录先于子文件创建。
+
+\subsection{RestoreEntry 逐文件重建}
+
+对每条 \texttt{ManifestFileEntry}：
+
+\begin{table}[htbp]
+\centering
+\caption{RestoreEntry 按 file\_type 分支}
+\small
+\begin{tabular}{@{}llp{6cm}@{}}
+\toprule
+类型 & 操作 & 元数据 \\
+\midrule
+\texttt{kDirectory} & \texttt{create\_directories} & \texttt{ApplyFileMeta} \\
+\texttt{kSymlink} & \texttt{create\_symlink(target)} & mode/mtime 等 \\
+\texttt{kFifo/kBlock/kChar} & mkfifo/mknod（非 Windows） & 特殊文件 \\
+\texttt{kRegular} & chunk 拼接写入 & 见下文 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Regular 文件}：顺序 \texttt{chunk\_store->Get(hash)} $\rightarrow$ 解密/解压（由 ChunkStore 内部处理 codec）$\rightarrow$ 写入 \texttt{ofstream}。累计 \texttt{total} 必须等于 \texttt{file.size}，否则 \texttt{kCorrupt}。写完 \texttt{FsyncPath} + \texttt{ApplyFileMeta}（mode/uid/gid/mtime/atime）。
+
+\section{Verify 与 VerifyAt}
+
+\subsection{API 映射}
+
+代码层仅有 \texttt{BackupEngine::Verify(const BackupOptions\& options)}；\textbf{VerifyAt} 语义通过 \texttt{options.snapshot\_txn\_id != 0} 实现：
+
+\begin{table}[htbp]
+\centering
+\caption{Verify 模式对比}
+\begin{tabular}{@{}llp{6.5cm}@{}}
+\toprule
+模式 & 触发 & manifest 来源 \\
+\midrule
+Verify（当前） & \texttt{eb verify REPO} & \filepath{manifest} \\
+VerifyAt & \texttt{eb verify REPO --at TXN} & \filepath{snapshots/TXN.manifest} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Verify \textbf{不读取}备份源目录，仅验证仓库自洽性。
+
+\subsection{Verify 主流程}
+
+\begin{enumerate}
+  \item \texttt{EnsureRepoContentKey}（加密仓库需密码）；
+  \item 加载 manifest（当前或 snapshot）；
+  \item \texttt{VerifyManifestDocument(doc, snapshot\_txn\_id)} 深度校验；
+  \item 可选 CARL anchor：\texttt{--require-anchor} 或 \texttt{EBBACKUP\_AUDIT\_KEY} 设置时 \texttt{VerifyCarlAnchorRequired}；
+  \item FSM \texttt{kVerify} 事件（phase 必须为 idle/complete/aborted）。
+\end{enumerate}
+
+\subsection{VerifyManifestDocument 检查项}
+
+\textbf{通用}（当前与 historical 均执行）：
+\begin{itemize}[nosep]
+  \item 非 regular 文件不得有 chunk 列表；regular 非空文件必须有 chunk；
+  \item 每个 chunk hash hex 合法且 \texttt{ChunkStore::Get} 成功；
+  \item 各 chunk 解压后长度之和等于 \texttt{file.size}；
+  \item \texttt{ComputeMerkleRoot(doc)} 计算 manifest Merkle 根。
+\end{itemize}
+
+\textbf{当前 Verify}（\texttt{snapshot\_txn\_id == 0}）：
+\begin{itemize}[nosep]
+  \item manifest \texttt{txn\_id} 与 superblock 一致（若 superblock 非空）；
+  \item Merkle 根与 \texttt{sb\_.ext.merkle\_root} 比对（非零时）；
+  \item 若存在 \filepath{audit/rar.chain}：\texttt{VerifyRarChain} 链完整性 + 末条 \texttt{merkle\_root}/\texttt{txn\_id} 与当前 manifest 一致。
+\end{itemize}
+
+\textbf{VerifyAt}（\texttt{snapshot\_txn\_id != 0}）：
+\begin{itemize}[nosep]
+  \item 要求 RAR 链存在；
+  \item 查找 \texttt{txn\_id == snapshot\_txn\_id} 的 \texttt{RarChainEntry}；
+  \item 比对 \texttt{merkle\_root} 与计算根；
+  \item 读取 snapshot manifest 文件 CRC32，与 RAR entry \texttt{manifest\_crc32} 一致。
+\end{itemize}
+
+Historical verify 因此依赖 backup 时写入的 RAR 审计记录（见 \cref{ch:audit-rar-v4}）。
+
+\section{VerifyRestoredFileChunks 流式内容校验}
+
+\subsection{动机}
+
+Verify 仅证明\textbf{仓库内} chunk 存在且与 manifest 长度一致，不证明\textbf{恢复后的磁盘文件}字节正确。ABI v8+ 可选\textbf{内容 Merkle 校验}：对恢复文件按 manifest chunk 边界顺序读取，逐段 SHA256 与期望 hash 比对。
+
+\subsection{算法}
+
+\texttt{VerifyRestoredFileChunks(restored\_path, manifest, store)}：
+
+\begin{enumerate}
+  \item 打开 \texttt{restored\_path} 二进制只读；
+  \item 对每个 \texttt{manifest.chunk\_hashes\_hex[i]}：
+  \begin{itemize}[nosep]
+    \item \texttt{store->Get(expected\_hash)} 得 \texttt{payload}（确定 chunk\_len）；
+    \item 从文件读取 \texttt{chunk\_len} 字节到 \texttt{segment}；
+    \item \texttt{ContentHash(digest\_algo, segment)} 与 expected 比较；
+  \end{itemize}
+  \item 累计偏移等于 \texttt{manifest.size}。
+\end{enumerate}
+
+\textbf{流式}：每次仅缓冲\textbf{单个 chunk} 解压长度，不全文件 mmap，256\,MB+ 文件安全（M9/v0.1）。
+
+\subsection{CLI 与 C API 开关}
+
+\begin{table}[htbp]
+\centering
+\caption{内容校验开关}
+\begin{tabular}{@{}ll@{}}
+\toprule
+入口 & 行为 \\
+\midrule
+\texttt{restore --verify-content} & \texttt{verify\_restored\_content=true} \\
+\texttt{restore --skip-content-verify} & 跳过 Merkle 与内容校验 \\
+\texttt{EB\_RESTORE\_FLAG\_SKIP\_CONTENT\_VERIFY} & C API 等价跳过 \\
+默认（有过滤器时） & \texttt{verify\_subset\_merkle=true} 自动启用 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{BackupFilterOptions 与 Glob 语义}
+\label{sec:filter-glob}
+
+\subsection{结构字段}
+
+\begin{structbox}[BackupFilterOptions]
+\begin{itemize}[nosep]
+  \item \texttt{include\_paths} / \texttt{exclude\_paths}：路径前缀（\texttt{StartsWithPath}）；
+  \item \texttt{include\_globs} / \texttt{exclude\_globs}：glob 模式；
+  \item \texttt{name\_globs}：\textbf{deprecated}，加载时合并入 \texttt{exclude\_globs}；
+  \item \texttt{extensions}：扩展名（不区分大小写，可写 \texttt{.txt} 或 \texttt{txt}）；
+  \item \texttt{min\_size} / \texttt{max\_size}：仅 regular 文件；
+  \item \texttt{mtime\_after} / \texttt{mtime\_before}：Unix 时间戳；
+  \item \texttt{uid\_filter}：非零时匹配 uid。
+\end{itemize}
+\end{structbox}
+
+\subsection{Glob 匹配规则 MatchPathGlob}
+
+\begin{designbox}[Glob 语义（关键）]
+\begin{itemize}[nosep]
+  \item 模式含 \texttt{/} 或 \texttt{\textbackslash}：对\textbf{完整 relative\_path} 匹配（先归一化为 \texttt{/}）；
+  \item 模式不含路径分隔符：仅对 \textbf{basename} 匹配；
+  \item 通配符：\texttt{?} 单字符，\texttt{*} 贪婪（标准 backtracking）；
+  \item 示例：\texttt{*.tmp} 排除所有层级的 \texttt{.tmp} 文件；\texttt{src/*.cpp} 仅匹配 \texttt{src/} 下直接子文件。
+\end{itemize}
+\end{designbox}
+
+\subsection{ApplyBackupFilter 求值顺序}
+
+对每个 \texttt{ScanEntry}：
+\begin{enumerate}
+  \item 若有 \texttt{include\_paths}：必须匹配至少一条前缀，否则丢弃；
+  \item \texttt{exclude\_paths}：匹配则丢弃；
+  \item 若有 \texttt{include\_globs}：必须匹配至少一条，否则丢弃；
+  \item \texttt{exclude\_globs}（含 \texttt{name\_globs}）：匹配则丢弃；
+  \item \texttt{extensions}、size、mtime、uid 过滤。
+\end{enumerate}
+
+\subsection{ApplyManifestFilter 与祖先路径}
+
+Restore/verify 子集使用 \texttt{ApplyManifestFilter}：先将 manifest entry 转为 \texttt{ScanEntry} 再 \texttt{ApplyBackupFilter}，然后对保留路径\textbf{自动加入所有祖先目录}（\texttt{AddAncestorPaths}），确保恢复树结构完整。例如 filter 保留 \texttt{a/b/c.txt} 时，\texttt{a/} 与 \texttt{a/b/} 目录 entry 亦保留。
+
+\section{Recover 与 Restore}
+
+\begin{table}[htbp]
+\centering
+\caption{Recover vs Restore 对比}
+\begin{tabular}{@{}llp{6.8cm}@{}}
+\toprule
+操作 & 对象 & 效果 \\
+\midrule
+\texttt{Recover} & \textbf{仓库} & 检测 superblock phase 中断，将 txn 标记 \texttt{kAborted}，回滚至上一 committed snapshot；\textbf{不写}用户文件 \\
+\texttt{Restore} & \textbf{源$\rightarrow$目标} & 从 manifest 读取 chunk，解密解压，重建目标目录树与元数据 \\
+\texttt{Verify} & \textbf{仓库} & 只读校验 manifest/chunk/RAR/Merkle，无 IO 写入 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Recover 通过 C API \texttt{eb\_backup\_recover} 或 CLI \texttt{eb recover REPO}；适用于 backup 进程 crash 后清理 in-flight txn，而非用户误删文件恢复（后者用 Restore）。
+
+\section{选择性恢复与内容 Merkle}
+
+\subsection{子集 Merkle 预检}
+
+当 \texttt{do\_content\_verify = verify\_restored\_content || (verify\_subset\_merkle \&\& filter.HasAnyFilter())}：
+
+\begin{enumerate}
+  \item \textbf{恢复前}：\texttt{ComputeMerkleRootForFiles(filtered\_files, subset\_root)}——按路径排序的 chunk hash 叶子 Merkle；
+  \item 预 flight：对每个 filtered entry 的每个 chunk 执行 \texttt{Get}，确保仓库可达；
+  \item 逐文件 \texttt{RestoreEntry}；
+  \item \textbf{恢复后}：\texttt{ComputeMerkleRootFromRestoredFiles(dest, files, store, actual\_root)}——内部对每个 regular 文件调用 \texttt{VerifyRestoredFileChunks} 并重建 leaf 列表；
+  \item \texttt{memcmp(subset\_root, actual\_root)} 必须为零，否则 \texttt{kCorrupt("restored content merkle mismatch")}。
+\end{enumerate}
+
+\subsection{设计意图}
+
+选择性 restore 只写子集文件，无法与全仓库 superblock \texttt{merkle\_root} 直接比对。子集 Merkle 在\textbf{filter 定义的视图}上提供内容完整性保证，防止 chunk 串台或 restore 写错文件。
+
+无 filter 时 \texttt{--verify-content} 仍逐文件 \texttt{VerifyRestoredFileChunks}，但不与子集根比对（全量 Merkle 由 Verify 路径覆盖）。
+
+\section{时间旅行恢复}
+
+\texttt{restore --at 42} / \texttt{verify --at 42}：
+\begin{enumerate}
+  \item \texttt{SnapshotStore} 加载 txn=42 的 manifest 快照；
+  \item Restore 后续与常规相同；
+  \item GC \texttt{GcOrphans} 引用 hash 取自\textbf{所有保留 snapshot} 的并集，非仅 latest——避免误删历史 snapshot 仍引用的 chunk。
+\end{enumerate}
+
+\section{Filter 文件格式示例}
+
+键值行格式（\texttt{key=value}，\texttt{\#} 注释），与 \texttt{LoadBackupFilterFromFile} / CLI \texttt{--filter-file} 共用：
+
+\begin{lstlisting}[caption={filter.conf 示例},label={lst:filter-example}]
+# 排除构建产物与 VCS
+exclude_glob=*.o
+exclude_glob=*.obj
+exclude_path=node_modules
+exclude_path=.git
+
+# 仅备份 src 下 C++（restore 时同样生效）
+include_path=src
+include_glob=*.cpp
+include_glob=*.h
+
+# 大小与时间窗口
+min_size=1024
+max_size=104857600
+mtime_after=1700000000
+
+# 扩展名（等价 ext=）
+extension=log
+\end{lstlisting}
+
+CLI 亦可内联：\texttt{--include PATH}、\texttt{--exclude-glob GLOB} 等，由 \texttt{LoadFilterFromCli} 合并到 \texttt{BackupFilterOptions}。
+
+\section{错误码与常见失败}
+
+\begin{table}[htbp]
+\centering
+\caption{Restore/Verify 典型错误}
+\small
+\begin{tabular}{@{}llp{6cm}@{}}
+\toprule
+Status & 场景 & 含义 \\
+\midrule
+\texttt{kCorrupt} & Verify & Merkle/RAR/chunk 长度不一致 \\
+\texttt{kCorrupt} & Restore & 写盘后 size 不符 \\
+\texttt{kCorrupt} & Content verify & 磁盘 chunk hash mismatch \\
+\texttt{kNotFound} & VerifyAt & RAR 无对应 txn entry \\
+\texttt{kInvalidArgument} & Restore & 加密仓库未提供密码 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{测试覆盖}
+
+\begin{itemize}[nosep]
+  \item \filepath{tests/engine/restore\_test.cc}、\texttt{restore\_encrypt\_test.cc}、\texttt{restore\_meta\_test.cc}
+  \item \filepath{tests/engine/selective\_restore\_test.cc}：filter + 子集 Merkle
+  \item \filepath{tests/audit/merkle\_test.cc}：\texttt{VerifyRestoredFileChunks} round-trip
+  \item \filepath{tests/scan/backup\_filter\_test.cc}：glob 边界
+  \item \filepath{tests/engine/snapshot\_verify\_test.cc}：VerifyAt
+\end{itemize}
+
+\section{本章小结}
+
+\texttt{RestoreEngine} 从 manifest 重建文件树并可选流式内容校验；\texttt{Verify}/VerifyAt 在仓库侧验证 manifest-chunk-RAR-Merkle 链条而不触碰源目录。\texttt{BackupFilterOptions} 的 glob 语义区分 basename 与 full path，restore 时自动保留祖先目录。Recover 修复仓库事务状态，与 Restore 对象与语义均不同。RAR 链与 Merkle 算法细节见 \cref{ch:audit-rar-v4}。

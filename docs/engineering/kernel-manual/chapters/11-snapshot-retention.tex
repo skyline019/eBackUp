@@ -1,0 +1,312 @@
+\chapter{Snapshot 与 GFS 保留策略}
+\label{ch:snapshot-retention}
+
+Snapshot 将每次成功 commit 的 manifest 归档至 \filepath{snapshots/}，并在 \filepath{snapshots/index} 维护元数据索引。本章详述 SNAP 索引格式、\texttt{ArchiveSnapshot} 提交协议、\texttt{RetentionPolicy} / \texttt{ComputeKeepSet} GFS 算法、CLI \texttt{--at} 时间点恢复，以及跨 snapshot 的 GC hash 并集。
+
+\section{Snapshot 在备份生命周期中的位置}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=\flowdistance]
+  \node[flowstep] (flush) {ChunkStore::Flush};
+  \node[flowstep, below=of flush] (wm) {WriteManifestAuto};
+  \node[flowstep, below=of wm] (sb) {SuperBlock::Commit};
+  \node[flowstep, below=of sb] (arch) {ArchiveSnapshot};
+  \node[flowdata, below=of arch] (idx) {snapshots/index\\+ txn.manifest};
+
+  \draw[arrow] (flush)--(wm)--(sb)--(arch)--(idx);
+\end{tikzpicture}
+\caption{Commit 成功后归档 snapshot（Feature \texttt{0x80}）}
+\label{fig:snapshot-commit}
+\end{figure}
+
+Feature \texttt{kBackupFeatureSnapshots}（0x80）：\texttt{eb init} 默认启用（非 \texttt{--legacy-init}）。无 snapshot 的仓库仍可通过 \filepath{manifest} 恢复最新状态；snapshot 提供历史时间点与 retention/GC 语义。
+
+\section{snapshots/index：SNAP 索引}
+
+\subsection{路径与 Magic}
+
+\begin{itemize}[nosep]
+  \item 目录：\filepath{<repo>/snapshots/}（\texttt{SnapshotsDir}）；
+  \item 索引：\filepath{snapshots/index}；
+  \item Magic：\texttt{0x50414E53}（ASCII \textbf{SNAP}）。
+\end{itemize}
+
+\subsection{SnapshotIndexHeader}
+
+\begin{longtable}{@{}rrll@{}}
+\caption{SnapshotIndexHeader（20B）} \\
+\toprule
+偏移 & 长度 & 字段 & 说明 \\
+\midrule
+0 & 4 & \texttt{magic} & \texttt{kSnapshotIndexMagic} \\
+4 & 4 & \texttt{version} & 恒为 1 \\
+8 & 8 & \texttt{entry\_count} & 记录条数 \\
+16 & 4 & \texttt{header\_crc32} & header CRC（crc 字段置零后计算） \\
+\bottomrule
+\end{longtable}
+
+\subsection{SnapshotIndexRecord（120B）}
+
+\texttt{manifest\_rel\_path} 字段宽度 \textbf{64B}（\texttt{kSnapshotPathWidth}）；整条 record 固定 120B：
+
+\begin{longtable}{@{}rrlp{5.5cm}@{}}
+\caption{SnapshotIndexRecord 字节布局} \\
+\toprule
+偏移 & 长度 & 字段 & 说明 \\
+\midrule
+0 & 8 & \texttt{txn\_id} & 事务 ID \\
+8 & 8 & \texttt{created\_at\_unix} & 归档 wall-clock 秒 \\
+16 & 4 & \texttt{manifest\_crc32} & 对应 manifest body CRC \\
+20 & 32 & \texttt{merkle\_root[32]} & 可选内容 Merkle 根 \\
+52 & 4 & \texttt{file\_count} & manifest 文件条目数 \\
+56 & 64 & \texttt{manifest\_rel\_path[64]} & 如 \texttt{snapshots/00000000000000000001.manifest} \\
+\bottomrule
+\end{longtable}
+
+Load 后按 \texttt{txn\_id} 排序。\texttt{ListSnapshots} 即 \texttt{LoadSnapshotIndex}。
+
+\section{ArchiveSnapshot 提交协议}
+
+\texttt{ArchiveSnapshot}（\filepath{snapshot\_store.cc}）在 superblock commit 成功后调用：
+
+\begin{enumerate}
+  \item \texttt{copy\_file(committed\_manifest $\rightarrow$ dest.new)}，\texttt{FsyncPath(temp)}；
+  \item \texttt{rename(temp, snapshots/<txn>.manifest)}，\texttt{FsyncPath(dest)}；
+  \item \texttt{LoadSnapshotIndex}，移除同 \texttt{txn\_id} 旧条目（幂等）；
+  \item 追加新 \texttt{SnapshotEntry}（含 \texttt{manifest\_crc32}、\texttt{merkle\_root}、\texttt{file\_count}）；
+  \item \texttt{SaveSnapshotIndex} — 写 \filepath{index.new} $\rightarrow$ fsync $\rightarrow$ rename $\rightarrow$ fsync。
+\end{enumerate}
+
+\begin{invariantbox}[I-SN1：Snapshot manifest 不可变]
+归档后的 \filepath{snapshots/<txn>.manifest} 视为\textbf{不可变}；后续 backup 只更新 \filepath{manifest} 活跃文件。Restore \texttt{--at TXN} 读取 snapshot 副本，不回写。
+\end{invariantbox}
+
+\texttt{SnapshotManifestRelPath(txn\_id)} 格式：\texttt{snapshots/\%020llu.manifest}（20 位零填充 txn）。
+
+\section{RetentionPolicy 与 DefaultRetentionPolicy}
+
+\begin{structbox}[RetentionPolicy]
+\begin{itemize}[nosep]
+  \item \texttt{retain\_min}：至少保留最近 $N$ 个 snapshot（按 txn\_id 序）；
+  \item \texttt{tiers[]}：GFS 风格 \texttt{RetentionTier\{bucket\_seconds, keep\_count\}} 列表。
+\end{itemize}
+\end{structbox}
+
+\subsection{默认 tiers 表}
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{DefaultRetentionPolicy()} 默认 tier}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Tier & \texttt{bucket\_seconds} & \texttt{keep\_count} \\
+\midrule
+hourly & 3600（1h） & 24 \\
+daily & 86400（1d） & 7 \\
+weekly & 604800（7d） & 4 \\
+monthly & 2592000（30d） & 6 \\
+\midrule
+\multicolumn{3}{l}{\texttt{retain\_min = 3}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+另：\textbf{始终保留} \texttt{entries.back()}（最新 snapshot 的 txn\_id），即使 tier 未选中。
+
+\section{ParseRetentionTiers 字符串格式}
+
+CLI/daemon 可通过 \texttt{retention\_tiers} 配置覆盖默认：
+
+\begin{designbox}[语法]
+逗号分隔的 \texttt{<bucket\_seconds>:<keep\_count>} token 列表。\\
+示例：\texttt{3600:24,86400:7,604800:4,2592000:6}\\
+空字符串 $\rightarrow$ 恢复 \texttt{DefaultRetentionPolicy()}。\\
+非法 token（无冒号、非正整数）$\rightarrow$ \texttt{InvalidArgument} 并回退默认。
+\end{designbox}
+
+解析实现（\filepath{retention\_policy.cc}）：\texttt{strtoll} 解析 bucket，\texttt{atoi} 解析 keep\_count；逐 token 推入 \texttt{parsed.tiers}。
+
+\section{ComputeKeepSet 算法}
+
+输入：按 \texttt{txn\_id} 排序的 \texttt{SnapshotEntry} 列表、\texttt{RetentionPolicy}。输出：\texttt{keep} 集合（\texttt{unordered\_set<uint64\_t>}）。
+
+\begin{enumerate}
+  \item \textbf{最新保护}：\texttt{keep\_set.insert(entries.back().txn\_id)}；
+  \item \textbf{对每个 tier}：
+  \begin{enumerate}[nosep]
+    \item 对每个 snapshot $e$，计算 $b = \lfloor e.created\_at\_unix / tier.bucket\_seconds \rfloor$；
+    \item 每桶保留 \texttt{txn\_id} 最大（最新）的 snapshot；
+    \item 将所有 bucket key 降序排序，取前 \texttt{min(keep\_count, bucket\_count)} 个 bucket 的代表 txn 加入 \texttt{keep\_set}；
+  \end{enumerate}
+  \item \textbf{retain\_min}：按 \texttt{txn\_id} 升序取最后 \texttt{retain\_min} 个 txn 加入 \texttt{keep\_set}；
+  \item 输出 \texttt{keep} = \texttt{keep\_set} 内容。
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=\flowdistance]
+  \node[flowstep] (in) {entries + policy};
+  \node[flowstep, below=of in] (last) {保留最新 txn};
+  \node[flowstep, below=of last] (tier) {每 tier：bucket $\rightarrow$ max txn};
+  \node[flowstep, below=of tier] (topk) {每 tier 取 top-K bucket};
+  \node[flowstep, below=of topk] (min) {union retain\_min 最近 N};
+  \node[flowdata, below=of min] (out) {keep set};
+
+  \draw[arrow] (in)--(last)--(tier)--(topk)--(min)--(out);
+\end{tikzpicture}
+\caption{ComputeKeepSet 数据流}
+\label{fig:compute-keep-set}
+\end{figure}
+
+\texttt{PruneSnapshots(repo, policy, dry\_run)}：计算 keep set，对不在 keep 中的 snapshot 调用 \texttt{DeleteSnapshot}（删除 manifest 文件 + 更新 index）。\texttt{IsKeptByPolicy} 为 membership 查询包装。
+
+\section{restore / verify 的 \texttt{--at} 语义}
+
+CLI（\filepath{eb\_main.cc}）：
+
+\begin{lstlisting}[caption={ParseAtTxn},label={lst:parse-at}]
+uint64_t ParseAtTxn(int argc, char** argv) {
+  if (const char* at = GetFlagValue(argc, argv, "--at")) {
+    if (std::strcmp(at, "latest") == 0) return 0;
+    return std::strtoull(at, nullptr, 10);
+  }
+  return 0;
+}
+\end{lstlisting}
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{--at} 行为}
+\begin{tabular}{@{}ll@{}}
+\toprule
+取值 & 行为 \\
+\midrule
+省略 / \texttt{0} & 使用活跃 \filepath{manifest} \\
+\texttt{latest} & 同 0 \\
+\texttt{<txn\_id>} & \texttt{LoadSnapshotManifest(repo, txn)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+C API：\texttt{eb\_backup\_restore\_at(eng, dest, txn, flags)}。Verify 同样支持 \texttt{--at TXN} 校验历史 snapshot 的 chunk 引用与 anchor。
+
+\section{GC hash 并集（跨保留 snapshot）}
+
+Orphan GC 默认可引用\textbf{所有仍存在的 snapshot} manifest 中的 chunk hash，而非仅 latest：
+
+\begin{lstlisting}[caption={CollectReferencedHashesRetained（节选）},label={lst:gc-retained}]
+// 1. merge latest manifest
+ReadManifestAuto(repo/manifest, &latest);
+MergeManifestHashes(latest, out);
+// 2. merge each snapshot manifest
+for (const auto& snap : snapshots) {
+  LoadSnapshotManifest(repo, snap.txn_id, &doc);
+  MergeManifestHashes(doc, out);
+}
+\end{lstlisting}
+
+\begin{invariantbox}[I-GC1：Prune 与 GC 顺序]
+\textbf{PruneSnapshots} 删除过期 snapshot 文件后，未被任何保留 snapshot 或 latest manifest 引用的 chunk 方可被 \texttt{GcOrphans} tombstone。\\
+推荐运维顺序：先 \texttt{prune-snapshots}，再 \texttt{gc}（或 \texttt{GcOrphans(false, ..., latest\_only=false)}）。\\
+\texttt{latest\_only=true} 时仅 merge 活跃 manifest（危险：可能误删仅存在于旧 snapshot 的 chunk）。
+\end{invariantbox}
+
+\texttt{BackupEngine::GcOrphans} 在 \texttt{latest\_only=false}（默认 daemon/集成测试路径）调用 \texttt{CollectReferencedHashesRetained}，与 retention 正交——retention 决定 snapshot \textbf{文件}去留，GC 决定 chunk store 中 unreferenced hash 的 tombstone。
+
+\section{DeleteSnapshot 与索引一致性}
+
+\texttt{DeleteSnapshot}：
+\begin{enumerate}[nosep]
+  \item 从 index 定位 \texttt{manifest\_rel\_path}；
+  \item 删除 manifest 文件；
+  \item 自 index 移除条目并 \texttt{SaveSnapshotIndex}。
+\end{enumerate}
+
+不自动触发 chunk GC；删除 snapshot 后相关 chunk 可能变为 orphan，需后续 \texttt{gc} 回收。
+
+\section{Daemon 集成}
+
+\texttt{backup\_daemon.cc} 在 schedule backup 成功后可选 \texttt{PruneSnapshots} + \texttt{GcOrphans(false, nullptr, false)}，形成 backup $\rightarrow$ retain $\rightarrow$ gc 闭环。retention spec 来自 daemon JSON 配置的 \texttt{retention\_tiers} 字段。
+
+\section{测试覆盖}
+
+\begin{table}[htbp]
+\centering
+\caption{Snapshot / retention 测试（节选）}
+\begin{tabular}{@{}ll@{}}
+\toprule
+文件 & 覆盖 \\
+\midrule
+\texttt{snapshot\_store\_test.cc} & index round-trip、Archive \\
+\texttt{snapshot\_restore\_test.cc} & \texttt{--at} restore \\
+\texttt{snapshot\_gc\_test.cc} & prune + GC 并集 \\
+\texttt{schedule\_snapshot\_test.cc} & daemon retention \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{SnapshotEntry 与索引记录映射}
+
+\texttt{FromRecord} / \texttt{ToRecord} 在 \texttt{SnapshotIndexRecord} 与 \texttt{SnapshotEntry} 间转换；\texttt{manifest\_rel\_path} 从固定 64B buffer 用 \texttt{strnlen} 取有效长度。索引不存储 manifest 全文，仅指针 + 摘要（CRC、merkle、file\_count）。
+
+\section{SaveSnapshotIndex 原子协议}
+
+与 \texttt{chunk.idx} 相同：\filepath{index.new} $\rightarrow$ write header + records $\rightarrow$ fsync $\rightarrow$ rename $\rightarrow$ fsync 目录项。并发读者始终见旧 index 或新 index 完整版，无中间态。
+
+\section{ComputeKeepSet 工作示例}
+
+假设 5 个 snapshot（txn 100--104），\texttt{created\_at} 均匀分布在 24h 内，tier \texttt{3600:24}：
+\begin{itemize}[nosep]
+  \item 每桶（1h）保留该桶内最大 txn；
+  \item 最多取 24 个 bucket 代表；
+  \item 再 union \texttt{retain\_min=3} $\rightarrow$ txn 102,103,104；
+  \item 再 union 最新 104（可能已包含）。
+\end{itemize}
+
+若 tier 与 \texttt{retain\_min} 冲突，取\textbf{并集}而非交集——满足任一规则即保留。
+
+\section{restore 引擎路径}
+
+\texttt{RestoreEngine}（\filepath{restore\_engine.cc}）在 \texttt{txn\_id>0} 时：
+\begin{enumerate}[nosep]
+  \item \texttt{LoadSnapshotManifest(repo, txn\_id, \&doc)}；
+  \item 按 manifest 文件列表还原至 dest；
+  \item 可选 content verify（Merkle / per-chunk hash）。
+\end{enumerate}
+
+\texttt{txn\_id==0} 读取 \filepath{manifest} 活跃文件。Filter 选项（glob include/exclude）在 manifest 文件列表上应用，与 txn 选择正交。
+
+\section{PruneSnapshots dry-run}
+
+\texttt{dry\_run=true} 时填充 \texttt{PruneReport::pruned\_txn\_ids} 但不调用 \texttt{DeleteSnapshot}。CLI \texttt{eb prune-snapshots --dry-run} 用于预览 GFS 裁剪结果。
+
+\section{与 superblock merkle\_root 的关系}
+
+\texttt{ArchiveSnapshot} 接收 commit 时计算的 \texttt{merkle\_root[32]} 写入 index record；verify 可选对比 snapshot 元数据与重算 Merkle。空 Merkle（全零）表示未启用 content Merkle 审计。
+
+\section{GC 与 snapshot 删除的时序}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=\flowdistance]
+  \node[flowstep] (prune) {PruneSnapshots};
+  \node[flowstep, below=of prune] (gc) {GcOrphans\\latest\_only=false};
+  \node[flowstep, below=of gc] (compact) {Compact / EbPack compact};
+  \node[flowdata, below=of compact] (done) {空间回收};
+
+  \draw[arrow] (prune)--(gc)--(compact)--(done);
+\end{tikzpicture}
+\caption{推荐运维顺序：先裁剪 snapshot 再 GC}
+\label{fig:prune-gc-order}
+\end{figure}
+
+若在 prune 前 GC 且 \texttt{latest\_only=true}，仅被旧 snapshot 引用的 chunk 可能被误 tombstone——生产环境 daemon 使用 \texttt{latest\_only=false}。
+
+\section{kBackupFeatureSnapshots}
+
+Feature \texttt{0x80}：\texttt{InitRepoEx} 默认 \texttt{snapshots=true}（非 legacy-init）。关闭 snapshot 的仓库无 \filepath{snapshots/index}；\texttt{ArchiveSnapshot} 跳过；GC 仅 merge latest manifest。
+
+\section{本章小结}
+
+Snapshot 通过 SNAP 索引与不可变 manifest 副本提供时间点恢复；\texttt{ComputeKeepSet} 实现 GFS 多 tier 保留并与 \texttt{retain\_min}、最新 snapshot 保护组合。\texttt{restore --at TXN} 与 verify 读取历史 manifest；GC 在 \texttt{latest\_only=false} 时对 latest 与\textbf{全部现存 snapshot} 做 chunk hash 并集，防止 retention prune 后误删仍被历史 snapshot 引用的 chunk。Compact/GC 细节见运维章节 \cref{ch:compact-gc}。

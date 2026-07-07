@@ -1,0 +1,268 @@
+\chapter{附录}
+\label{ch:appendix}
+
+\section{源码文件索引（内核实现，50+ 行）}
+
+\begin{longtable}{@{}lp{9.2cm}@{}}
+\toprule
+文件 & 说明 \\
+\midrule
+\endhead
+\filepath{src/engine/backup\_engine.cc} & BackupEngine FSM、RunBackup、Recover、InitRepoEx \\
+\filepath{src/engine/restore\_engine.cc} & 恢复、filter、Merkle 内容校验 \\
+\filepath{src/engine/manifest.cc} & Manifest v2/v3/v4 读写、CRC \\
+\filepath{src/engine/eb\_backup\_capi.cc} & C API 全部导出函数 \\
+\filepath{src/pipeline/backup\_pipeline.cc} & Pipeline v4 + StreamingChunkCpuPipeline（$\sim$1300 行） \\
+\filepath{src/pipeline/file\_scheduler.cc} & 多文件 graph coloring 调度 \\
+\filepath{src/chunk/fast\_cdc.cc} & FastCDC slice 切块 \\
+\filepath{src/chunk/fast\_cdc\_streaming.cc} & 流式 CDC、Sprint 4 Phase A/B \\
+\filepath{src/chunk/fast\_cdc\_simd.cc} & Gear table AVX2/标量 \\
+\filepath{src/chunk/fast\_cdc\_carry\_buffer.cc} & Carry ring buffer（header 实现） \\
+\filepath{src/chunk/eb\_hcrbo.cc} & HCRBO 增量、CFI 锚点 \\
+\filepath{src/chunk/cfi\_rolling.cc} & CFI rolling checksum 复用 \\
+\filepath{src/chunk/cfi\_bloom.cc} & CFI Bloom 预过滤 \\
+\filepath{src/chunk/chunk\_profile.cc} & 分块参数 profile \\
+\filepath{src/chunk/rabin\_anchor.cc} & Rabin 强锚 \\
+\filepath{src/chunk/rolling\_checksum.cc} & 滚动校验和 \\
+\filepath{src/common/digest.cc} & Digest 分发 \\
+\filepath{src/common/digest\_legacy.cc} & Legacy SHA256 \\
+\filepath{src/common/digest\_standard.cc} & Standard SHA256 \\
+\filepath{src/common/digest\_pool.cc} & 并行 digest worker pool \\
+\filepath{src/common/digest\_sha\_ni.cc} & SHA-NI dispatch + self-test \\
+\filepath{src/common/fsync.cc} & \texttt{FsyncPath}、\texttt{FsyncFile} \\
+\filepath{src/common/status.cc} & Status 类型 \\
+\filepath{src/common/crc32.cc} & CRC32 \\
+\filepath{src/common/path\_util.cc} & 路径规范化 \\
+\filepath{src/store/chunk\_store.cc} & ChunkStore 核心、shard 锁 \\
+\filepath{src/store/eb\_pack.cc} & EbPack writer/reader、16-shard \\
+\filepath{src/store/chunk\_index.cc} & HXID 持久化索引 \\
+\filepath{src/store/snapshot\_store.cc} & Snapshot 归档 \\
+\filepath{src/store/retention\_policy.cc} & GFS 保留解析 \\
+\filepath{src/store/chunk\_compactor.cc} & Legacy compact \\
+\filepath{src/store/eb\_pack\_compactor.cc} & EbPack compact \\
+\filepath{src/store/orphan\_gc.cc} & Orphan GC \\
+\filepath{src/store/repo\_stats.cc} & RepoStats 计算 \\
+\filepath{src/codec/content\_class.cc} & ContentClass 路由 \\
+\filepath{src/codec/lz4\_codec.cc} & LZ4 \\
+\filepath{src/codec/zstd\_codec.cc} & zstd \\
+\filepath{src/crypto/aes\_gcm.cc} & AES-256-GCM \\
+\filepath{src/crypto/aes\_block.cc} & AES block \\
+\filepath{src/crypto/gcm\_portable.cc} & GCM portable \\
+\filepath{src/audit/rar\_chain.cc} & RAR 审计链 \\
+\filepath{src/audit/merkle.cc} & Manifest Merkle \\
+\filepath{src/audit/carl\_anchor.cc} & CARL anchor \\
+\filepath{src/audit/rar\_sign.cc} & RAR 签名 \\
+\filepath{src/scan/backup\_filter.cc} & Include/exclude filter \\
+\filepath{src/scan/filter\_loader.cc} & Filter 文件加载 \\
+\filepath{src/scan/scan\_entry.cc} & 目录扫描 \\
+\filepath{src/io/mmap\_reader.cc} & Mmap 读 \\
+\filepath{src/io/fs\_watch.cc} & 目录 watch \\
+\filepath{src/io/file\_meta.cc} & 文件元数据 \\
+\filepath{src/state/superblock.cc} & SuperBlock Load/Commit \\
+\filepath{src/state/sync\_executor.cc} & BackupSyncExecutor \\
+\filepath{src/daemon/backup\_daemon.cc} & Schedule/watch \\
+\filepath{src/archive/eb\_bundle.cc} & Bundle 归档 \\
+\filepath{cli/eb\_main.cc} & CLI 入口 \\
+\bottomrule
+\end{longtable}
+
+\section{测试与 Bench 源码索引}
+
+\begin{longtable}{@{}lp{9.2cm}@{}}
+\toprule
+文件 & 说明 \\
+\midrule
+\filepath{tests/bench/bench\_check.cc} & L1--L7 硬门禁主程序 \\
+\filepath{tests/bench/bench\_reuse\_gate\_test.cc} & Reuse 单元门禁 \\
+\filepath{tests/pipeline/streaming\_chunk\_pipeline\_test.cc} & Streaming + CDC fast path \\
+\filepath{tests/pipeline/pipeline\_v4\_test.cc} & v4 parity + L7 拓扑 \\
+\filepath{tests/chunk/fast\_cdc\_streaming\_test.cc} & 流式 CDC parity \\
+\filepath{tests/failure/powerfail\_test.cc} & 提交点 kill \\
+\filepath{tests/failure/powerfail\_extended\_test.cc} & Pipeline kill 扩展 \\
+\filepath{tests/failure/chaos\_test.cc} & seed=42 chaos \\
+\filepath{tests/helpers/subprocess\_util.cc} & CLI 子进程 harness \\
+\filepath{tests/helpers/chaos\_util.cc} & Abort 注入 \\
+\filepath{tests/helpers/test\_util.h} & InitV03/V05、TempDir \\
+\filepath{bench/baselines/ci\_floor.json} & Stage 3.1 floors \\
+\filepath{bench/baselines/ci\_floor\_stage32.json} & Stage 3.2 aspirational \\
+\bottomrule
+\end{longtable}
+
+\section{术语表（30+ 条）}
+
+\begin{longtable}{@{}lp{9cm}@{}}
+\toprule
+术语 & 定义 \\
+\midrule
+Content ID & SHA256(明文 chunk content)，全局 dedup 键 \\
+FastCDC & Gear-hash 内容定义分块（min/avg/max size） \\
+HCRBO & Hybrid CDC + Rabin + CFI 增量分块器 \\
+CFI & Content Fingerprint Index，文件内锚点 offset$\rightarrow$hash \\
+EbPack & EBPACK1 格式 8MB pack blob，16-shard 并行 \\
+HXID & \filepath{chunk.idx} magic \texttt{0x44495848}，v2 entry 97B \\
+Coalesced meta & 备份中延迟 superblock 落盘（feature 0x200） \\
+StreamingChunkCpuPipeline & 32MB feed + 2 encode + 1 store worker \\
+Pipeline v4 & 全局 ChunkTask/EncodedChunkTask 队列多 worker \\
+Commit-point & manifest commit 前 \texttt{ChunkStore::Flush()} \\
+DurabilityMode & strict（4MiB/32rec）vs balanced（16MiB/64rec） spill \\
+GFS retention & Grandfather-Father-Son 分层 snapshot 保留 \\
+RAR & Recoverable Audit Record 哈希链 \\
+Merkle root & manifest 文件 Merkle 树根，存 superblock \\
+ampl\_ratio & physical\_bytes / live\_bytes 空间放大比 \\
+Tombstone & 逻辑删除标记，compact 时物理清除 \\
+Orphan chunk & 无 manifest/snapshot 引用的 chunk \\
+Stage 3.1 & CI blocking bench floors（\filepath{ci\_floor.json}） \\
+Stage 3.2 & Aspirational nightly floors \\
+SI MB/s & $10^6$ bytes/s bench 单位 \\
+DigestPool & 持久 worker 线程池并行 SHA256 \\
+SHA-NI & x86 SHA256 硬件加速扩展 \\
+ContentClass & 按路径/熵选择 lz4/zstd/skip \\
+CFI rolling & 增量滚动 checksum 复用跳过 \\
+Gear hash & FastCDC 边界检测哈希 \\
+FileScheduler & Pipeline v4 多文件着色调度 \\
+EbHcrboStats & HCRBO 增量/reuse 细粒度计数 \\
+PipelinePhaseStats & Pipeline 各阶段纳秒计时 \\
+BackupSyncExecutor & FSM 事件同步分发器 \\
+SuperBlock dual-slot & 4096B$\times$2 交替写耐久 \\
+Manifest v4 & \texttt{EBMANIFEST4} 二进制 body + CRC \\
+\bottomrule
+\end{longtable}
+
+\section{环境变量表（15+）}
+
+\begin{longtable}{@{}llp{7.2cm}@{}}
+\toprule
+变量 & 默认 & 说明 \\
+\midrule
+\texttt{EBBACKUP\_PIPELINE\_WORKERS} & 0 & 强制 Pipeline v4 worker 数 \\
+\texttt{EBBACKUP\_PIPELINE\_PROFILE} & off & \texttt{1} 启用完整 phase 毫秒 profile \\
+\texttt{EBBACKUP\_DIGEST\_THREADS} & hw/2（4--16） & DigestPool 线程数 \\
+\texttt{EBBACKUP\_CDC\_FAST\_SLICE} & off & Phase A \texttt{FastCdcSlice::ChunkCuts} \\
+\texttt{EBBACKUP\_FORCE\_STREAM\_CDC} & off & 强制 stream-feed CDC（禁用 fast slice） \\
+\texttt{EB\_BENCH\_FLOOR\_PATH} & \filepath{ci\_floor.json} & Bench floor JSON 覆盖 \\
+\texttt{EBTEST\_ABORT\_AFTER} & — & Powerfail：\texttt{BackupPhase} 枚举值 \\
+\texttt{EBTEST\_TMPDIR} & \filepath{test\_output} & 测试临时目录 \\
+\texttt{EBTEST\_FIXTURE\_DIR} & — & Real-world fixture 根 \\
+\texttt{EBTEST\_ENGINE\_ROOT} & — & 子进程查找 \texttt{eb} 二进制 \\
+\texttt{EBTEST\_CI} & — & \texttt{1} 缩减随机 trial \\
+\texttt{EBTEST\_OUTPUT\_DIR} & compile-time & CMake 定义的输出目录 \\
+\texttt{EBBACKUP\_STORE\_SHARDS} & 16 & Store shard 数（若实现读取） \\
+\texttt{EBBACKUP\_QUEUE\_DEPTH} & 32 & Pipeline 队列深度 override \\
+\texttt{EBBACKUP\_BENCH\_MEASURE\_ONLY} & — & 仅测量不比较 floor（probe） \\
+\bottomrule
+\end{longtable}
+
+\section{Manifest v4 字节布局参考}
+
+文件格式：
+\begin{enumerate}[nosep]
+  \item 文本行：\texttt{EBMANIFEST4} + LF
+  \item 二进制 body（little-endian）；
+  \item 尾部 4B：body CRC32（LE）。
+\end{enumerate}
+
+Body 逻辑结构（\filepath{src/engine/manifest.cc}）：
+\begin{itemize}[nosep]
+  \item \texttt{uint32 inner\_magic = 0xEB4F0001}
+  \item \texttt{uint64 txn\_id}
+  \item \texttt{uint32 file\_count}
+  \item 对每个文件：path len + path bytes + size + chunk count + meta flags + chunks + CFI anchors
+\end{itemize}
+
+Meta flags（\texttt{ManifestV4MetaFlags}）：\texttt{kMetaMode=0x01}、\texttt{kMetaUidGid=0x02}、\texttt{kMetaTimes=0x04}、\texttt{kMetaSymlink=0x08}、\texttt{kMetaDevice=0x10}。
+
+\section{HXID chunk.idx Entry 示例}
+
+Header（\filepath{chunk\_index.h}）：
+\begin{itemize}[nosep]
+  \item magic \texttt{HXID}（\texttt{0x44495848} LE）
+  \item version：1=legacy，2=EbPack
+  \item \texttt{entry\_count}、\texttt{chunks\_file\_size}、\texttt{header\_crc32}
+\end{itemize}
+
+Entry v2（97B）字段顺序：
+\texttt{hash[32]} | \texttt{offset u64} | \texttt{stored\_len u32} | \texttt{uncompressed\_len u32} | \texttt{codec u8} | \texttt{storage\_flags u8} | \texttt{pack\_name[47]}
+
+\textbf{Hex  dump 示例}（单条记录概念示意）：
+
+\begin{verbatim}
+Offset  +0         +8        +16       +24
+hash    aa bb ... (32 bytes SHA256 content id)
++32     00 10 00 00 00 00 00 00   offset in pack (4096)
++40     cd 00 00 00               stored_len (205)
++44     cd 00 00 00               uncompressed_len (205)
++48     01                          codec (lz4)
++49     01                          storage_flags (EbPack)
++50     70 61 63 6b 2d ...          pack_name "pack-0001-s3.ebpack\0..."
+\end{verbatim}
+
+\section{Wave 演进详表}
+
+\begin{table}[htbp]
+\centering
+\caption{Wave 2--5 + Sprint 4}
+\small
+\begin{tabular}{@{}llp{6cm}@{}}
+\toprule
+Wave & 版本 & 主题 \\
+\midrule
+2 & \versiontag{0.5.0} & DigestPool、EbPack、Coalesced meta、CFI Bloom、L4 \\
+3 & \versiontag{0.7.0} & 16-shard EbPack、SHA-NI、Pipeline v3、FastCdcStreamFeed、L6 \\
+4 & \versiontag{0.8.0} & Pipeline v4、L7 multi-file、PipelinePhaseStats、ExistsMany \\
+5 & \versiontag{0.9.0}--.4 & ChunkStore 并发修复、Streaming、Stage 3.1/3.2、L3a/L3b \\
+Sprint 4 & \versiontag{0.9.4} & CDC Phase B seg1 bulk、FastCdcSlice opt-in \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{EbHcrboStats 字段索引}
+
+\begin{longtable}{@{}llp{8cm}@{}}
+\toprule
+字段 & 类型 & 含义 \\
+\midrule
+\texttt{chunks\_reused\_from\_cfi} & \texttt{uint64\_t} & 经 CFI 锚点直接 reuse 的 chunk 数 \\
+\texttt{cfi\_rolling\_skip\_hits} & \texttt{uint64\_t} & CFI rolling 跳过命中 \\
+\texttt{cfi\_rolling\_recompute\_avoided} & \texttt{uint64\_t} & 避免的 rolling 重算次数 \\
+\texttt{cfi\_bloom\_skip\_hits} & \texttt{uint64\_t} & Bloom 预过滤跳过 \\
+\texttt{chunks\_cut\_fastcdc} & \texttt{uint64\_t} & FastCDC 新切 chunk 数 \\
+\texttt{chunks\_cut\_rabin} & \texttt{uint64\_t} & Rabin 强锚切分 chunk 数 \\
+\bottomrule
+\end{longtable}
+
+定义：\filepath{include/ebbackup/chunk/eb\_hcrbo.h}。Bench L2 reuse 与 \texttt{chunks\_reused\_from\_cfi} 相关。
+
+\section{PipelinePhaseStats 字段索引}
+
+\begin{longtable}{@{}llp{8cm}@{}}
+\toprule
+字段 & 类型 & L5 profile 归属 \\
+\midrule
+\texttt{scan\_ns} & \texttt{atomic<uint64\_t>} & scan \\
+\texttt{read\_ns} & \texttt{atomic<uint64\_t>} & read \\
+\texttt{chunk\_ns} & \texttt{atomic<uint64\_t>} & chunk（含 CDC+digest） \\
+\texttt{encode\_ns} & \texttt{atomic<uint64\_t>} & encode \\
+\texttt{store\_ns} & \texttt{atomic<uint64\_t>} & store \\
+\texttt{flush\_ns} & \texttt{atomic<uint64\_t>} & flush \\
+\texttt{meta\_ns} & \texttt{atomic<uint64\_t>} & meta \\
+\texttt{stream\_cdc\_ns} & \texttt{atomic<uint64\_t>} & stream\_sub: cdc \\
+\texttt{stream\_digest\_ns} & \texttt{atomic<uint64\_t>} & stream\_sub: digest \\
+\texttt{stream\_carry\_ns} & \texttt{atomic<uint64\_t>} & stream\_sub: carry \\
+\bottomrule
+\end{longtable}
+
+\texttt{PrintPipelinePhaseStats} 输出 \texttt{pipeline\_profile: ...} 毫秒行（需 \texttt{EBBACKUP\_PIPELINE\_PROFILE=1}）。
+
+\section{Feature Flags 完整表}
+
+见 \cref{ch:overview} §Feature Flags；superblock \texttt{ext.backup\_features} 持久化。
+
+\section{相关 Markdown 文档}
+
+\begin{itemize}
+  \item \filepath{docs/VERSION\_HISTORY.md} — v0.1--v0.9.4 时间线
+  \item \filepath{docs/reference/PERF\_BASELINE.md} — L1--L7 详表与实测
+  \item \filepath{docs/technical/ARCHITECTURE.md} — 架构摘要
+  \item \filepath{CHANGELOG.md} — 逐版本变更
+  \item \filepath{engine\_cpp/README.md} — CLI 速查
+\end{itemize}

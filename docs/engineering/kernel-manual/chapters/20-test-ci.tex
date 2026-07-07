@@ -1,0 +1,132 @@
+\chapter{测试矩阵与 CI}
+\label{ch:test-ci}
+
+\section{测试规模概览（\versiontag{0.9.4}）}
+
+\begin{itemize}[nosep]
+  \item \textbf{232} GoogleTest \texttt{TEST()} 宏（\texttt{ebbackup\_tests} target）；
+  \item \textbf{76} 测试源文件（\filepath{*\_test.cc}）；
+  \item C API：\texttt{eb\_run\_tests\_capi}（8 tests）；
+  \item Bench 门禁：\texttt{ebbackup\_bench\_check}（L1--L7）；
+  \item CI：\filepath{.github/workflows/ebbackup.yml} — Windows + Linux Release + Linux ASan。
+\end{itemize}
+
+\section{232 测试按目录分解}
+
+\begin{longtable}{@{}rlrp{6.5cm}@{}}
+\toprule
+目录 & Tests & 文件数 & 覆盖重点 \\
+\midrule
+\endhead
+\filepath{tests/engine/} & 79 & 24 & E2E、restore、snapshot、manifest、C API、fixture \\
+\filepath{tests/store/} & 23 & 11 & ChunkStore、EbPack、index、compact、GC、repo-stats \\
+\filepath{tests/failure/} & 20 & 4 & powerfail、chaos、balanced durability \\
+\filepath{tests/chunk/} & 20 & 7 & FastCDC、streaming、digest、HCRBO bounds \\
+\filepath{tests/pipeline/} & 20 & 7 & v3/v4、streaming、parity、encrypt \\
+\filepath{tests/crypto/} & 21 & 6 & AES-GCM NIST、PBKDF2、digest 双栈 \\
+\filepath{tests/scan/} & 16 & 3 & backup filter（12）、special files \\
+\filepath{tests/audit/} & 8 & 3 & RAR、Merkle、CARL \\
+\filepath{tests/daemon/} & 9 & 4 & schedule JSON、watch smoke \\
+\filepath{tests/codec/} & 8 & 3 & LZ4、zstd、ContentClass \\
+\filepath{tests/state/} & 5 & 3 & superblock、FSM、sync executor \\
+\filepath{tests/cli/} & 3 & 1 & restore CLI \\
+\filepath{tests/archive/} & 1 & 1 & eb\_bundle \\
+\filepath{tests/bench/} & 1 & 1 & reuse gate \\
+\midrule
+\textbf{合计} & \textbf{232} & \textbf{76} & \\
+\bottomrule
+\end{longtable}
+
+\section{Powerfail：EBTEST\_ABORT\_AFTER}
+
+\texttt{EBTEST\_ABORT\_AFTER=<int>} 设为 \texttt{BackupPhase} 枚举整数值，在对应 phase \texttt{MaybeTestAbortAfter} 返回 \texttt{Internal("test abort after phase")}，模拟 crash。
+
+\begin{table}[htbp]
+\centering
+\caption{BackupPhase 注入值对照}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Phase & 枚举值（十进制） \\
+\midrule
+\texttt{kIdle} & 0 \\
+\texttt{kScanning} & 1 \\
+\texttt{kChunking} & 2 \\
+\texttt{kStoring} & 3 \\
+\texttt{kCommittingMeta} & 4 \\
+\texttt{kAuditing} & 5 \\
+\texttt{kComplete} & 6 \\
+\texttt{kAborted} & 255 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+测试套件：
+\begin{itemize}[nosep]
+  \item \texttt{powerfail\_test.cc}（4）：双 slot corrupt、interrupt recovery、subprocess kill；
+  \item \texttt{powerfail\_extended\_test.cc}（8）：pipeline strict/balanced 多 kill 点；
+  \item 子进程模式：\texttt{RunBackupSubprocessAndKill} 对 CLI \texttt{eb backup} 发 signal。
+\end{itemize}
+
+验证断言：txn $\rightarrow$ \texttt{kAborted}；前一 snapshot \texttt{verify} OK；Recover 后可重新 backup。
+
+\section{Chaos 测试（seed=42）}
+
+\filepath{tests/failure/chaos\_test.cc}（4 tests）：
+
+\begin{itemize}[nosep]
+  \item \texttt{RandomPhaseThenRecover}：\texttt{std::mt19937 gen(42)}；8 trials（\texttt{kChaosTrials=8}）；随机 phase abort + Recover；
+  \item \texttt{RandomChunkBitFlipThenVerify}：chunk 字节翻转 $\rightarrow$ verify corrupt；
+  \item \texttt{chaos\_util}：封装 \texttt{ScopedAbortAfterPhase}、子进程 kill；
+  \item v0.4.2 起固定 seed=42 保证 CI 确定性。
+\end{itemize}
+
+\section{Fixture 清单}
+
+\begin{longtable}{@{}llp{7.5cm}@{}}
+\toprule
+Fixture & 路径/变量 & 内容 \\
+\midrule
+Synthetic & \texttt{MakeSyntheticData(size, seed)} & 确定性伪随机字节 \\
+Real-world & \texttt{EBTEST\_FIXTURE\_DIR}、\texttt{real\_fixture\_test} & 5 层嵌套目录、Unicode 文件名、多类型 \\
+Media & \texttt{tests/fixtures/media/}、\texttt{media\_fixture\_test} & JPEG/WebP/MP4/ZIP 等 $\sim$2MB checked-in \\
+Temp root & \texttt{EBTEST\_TMPDIR} & 默认 \filepath{test\_output/} \\
+Engine root & \texttt{EBTEST\_ENGINE\_ROOT} & 子进程 CLI 查找 \texttt{eb} 二进制 \\
+CI 标记 & \texttt{EBTEST\_CI=1} & 缩减随机 trial（如 powerfail 16$\rightarrow$4） \\
+\bottomrule
+\end{longtable}
+
+Init helpers：\texttt{InitLegacyRepo}、\texttt{InitV03Repo}、\texttt{InitV05Repo}/\texttt{InitDefaultRepo}（见 \cref{ch:architecture}）。
+
+\section{CI Workflow 步骤}
+
+\filepath{.github/workflows/ebbackup.yml}：
+
+\begin{enumerate}
+  \item \textbf{Trigger}：\filepath{engine\_cpp/**}、\filepath{CMakeLists.txt}、\filepath{gtest\_capi/**} push/PR；
+  \item \textbf{test-windows}：\texttt{cmake -DEBBACKUP\_BUILD\_TESTS=ON} $\rightarrow$ Release build $\rightarrow$ \texttt{ctest -C Release}（含 bench gate）；
+  \item \textbf{test-linux}：同上，并行编译 \texttt{-j} 等于 CPU 核数；
+  \item \textbf{test-linux-asan}：\texttt{-fsanitize=address,undefined} 构建 $\rightarrow$ \texttt{ctest}（无 Release 配置）。
+\end{enumerate}
+
+所有 job 设置 \texttt{EBTEST\_CI=1}。
+
+\section{ASan Job 要点}
+
+\begin{itemize}[nosep]
+  \item 检测 ChunkStore 并发 rehash、use-after-free（v0.9.0 修复的 pipeline store race）；
+  \item \texttt{-fno-omit-frame-pointer -g} 保留栈回溯；
+  \item 与 Release bench 互补：ASan 不重跑 L5 绝对吞吐门禁（太慢），但跑全量 232 gtest。
+\end{itemize}
+
+\section{本地等效命令}
+
+\begin{lstlisting}[language=bash,caption={本地 CI 等效}]
+cmake -S . -B build -DEBBACKUP_BUILD_TESTS=ON
+cmake --build build --config Release
+set EBTEST_CI=1
+ctest --test-dir build -C Release --output-on-failure
+\end{lstlisting}
+
+\section{本章小结}
+
+232 gtest + L1--L7 bench + 双平台 CI + ASan 构成 ebbackup 交付质量网。附录提供完整源码索引与环境变量表。

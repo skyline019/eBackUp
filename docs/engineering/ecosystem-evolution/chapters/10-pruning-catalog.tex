@@ -1,0 +1,98 @@
+\chapter{剪枝与止损目录}
+\label{ch:pruning}
+
+\section{剪枝的定义}
+
+「剪枝」在本文中指：\textbf{主动停止、回退或默认关闭}某条技术路径，以避免生态负向恶化。包括：parity 失败回退、性能负向 opt-in、废弃流程/部署模式、defer 未证假设。
+
+\section{完整剪枝表（含量化依据）}
+
+\begin{longtable}{@{}llp{3.2cm}p{3.5cm}@{}}
+\caption{剪枝与止损目录（\versiontag{0.9.4} 前）} \\
+\toprule
+条目 & 类型 & 量化依据 & 处置 \\
+\midrule
+\endfirsthead
+\multicolumn{4}{c}{\tablename\ \thetable{} — 续} \\
+\toprule
+条目 & 类型 & 量化依据 & 处置 \\
+\midrule
+\endhead
+Phase 3C CDC carry-boundary & 代码回退 & parity 失败；L5 增益 0 & v0.9.3 Deferred \\
+AppendCutsFromSeg1 helper & 代码回退 & manifest parity 失败 & Sprint 4 删除 \\
+Phase A FastCdcSlice 默认 & 默认关闭 & 105 vs 172 MB/s（$-$39\%） & opt-in env \\
+Stage 3.2 CI 阻塞 & 流程剪枝 & 171/280=61\%；100\% fail & nightly only \\
+repo-* schedule 轮转 & 部署剪枝 & 单机 1 repo 足够 & 单 current \\
+自动 chunks$\rightarrow$EbPack 迁移 & 功能剪枝 & P5 + 风险 & 只读兼容 \\
+Sprint 计划 SSOT & 流程剪枝 & 计划 vs 172 MB/s 脱节 & CHANGELOG+bench \\
+boundary\_limit 简化 CDC & 设计回退 & cut parity 错误 & seg1 handoff \\
+uint8 feature 截断 & bug 修复 & flag 位丢失 & uint32 ext \\
+L3 绝对吞吐唯一指标 & 指标剪枝 & ratio 0.96 仍过 floor & L3a/L3b 拆分 \\
+whole-file CDC 先于 feed & 架构拒绝 & encode 无 overlap & Sprint 5 hybrid \\
+\bottomrule
+\end{longtable}
+
+\section{剪枝 ROI 表（有数字的条目）}
+
+\begin{table}[htbp]
+\centering
+\caption{「若未剪枝」的量化后果}
+\begin{tabular}{@{}llr@{}}
+\toprule
+决策 & 若未剪枝 & 估算损失 \\
+\midrule
+Phase A 默认开 & L5 从 172 跌至 105 & $-$67 MB/s（$-$39\%） \\
+Stage 3.2 blocking & 当前 171 $<$ 280 & CI 永久红 \\
+Phase 3C 强推 & parity 破 Content ID & 生态归零（非 MB/s） \\
+L3 只看 ratio & Phase A ratio$\geq$0.90 & 用户仍感「慢 39\%」 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{负向但未剪枝（技术债）}
+
+\begin{table}[htbp]
+\centering
+\caption{已知负向：监控中（含数据）}
+\begin{tabular}{@{}llp{5.5cm}@{}}
+\toprule
+项 & 数据 & 策略 \\
+\midrule
+Pipeline 拓扑复杂度 & \filepath{backup\_pipeline.cc} 1300+ 行 & 文档化 + 路由测试 \\
+L5 vs Stage 3.2 & 172 vs 280（61\%） & Sprint 5；不降 floor 105 \\
+cdc 仍占 chunk 82\% & v0.9.4 profile & feed-timed replay \\
+CMake vs CHANGELOG & 0.6.0 vs 0.9.4 & CHANGELOG 为准 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{止损决策树（我实际使用的）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1cm]
+  \node[evt] (q1) {bench/parity 失败？};
+  \node[evt, below=of q1] (q2) {是否触及 immutable floor？};
+  \node[evt, below left=1.2cm and 0.5cm of q2] (r1) {立即回退/修复};
+  \node[evt, below=1.2cm of q2] (q3) {绝对吞吐下降？};
+  \node[evt, below left=1.2cm and 0.5cm of q3] (r2) {opt-in 或放弃默认};
+  \node[evt, below right=1.2cm and 0.5cm of q3] (r3) {合并若 ratio/reuse OK};
+
+  \draw[arrow](q1)-- node[right,font=\scriptsize]{Y}(q2);
+  \draw[arrow](q2.west)-- node[above,font=\scriptsize]{Y}(r1);
+  \draw[arrow](q2)-- node[right,font=\scriptsize]{N}(q3);
+  \draw[arrow](q3)-- node[left,font=\scriptsize]{Y \& $>$10\%}(r2);
+  \draw[arrow](q3)-- node[right,font=\scriptsize]{N}(r3);
+\end{tikzpicture}
+\caption{止损决策树（Phase A $-$39\% 走左支）}
+\end{figure}
+
+\section{案例深读：Phase A 为何不「再优化一下再默认」}
+
+\begin{prunebox}[典型错误路径]
+「105 MB/s 只是实现问题，再加线程/overlap 就能上 220」——数据不支持：Phase B 已在同 workload 上 172 MB/s；Phase A 损失 \textbf{65--67 MB/s} 且 L3b ratio 仍可能 $\geq$0.90。Sprint 4 窗口内，\textbf{未经验证的 overlap 重构}会同时威胁 parity 与 P5。正确做法：默认 172 的 stream 路径，ChunkCuts 留给 Sprint 5（目标 +109 MB/s 至 Stage 3.2）。
+\end{prunebox}
+
+\section{本章小结}
+
+剪枝不是失败，而是\textbf{生态信用管理}. 在单人内核项目中，\textbf{少做一条错误默认路径（$-$39\% L5）}比\textbf{多做一个 Plan 文档}重要一个数量级。全量数据见 \cref{ch:measured-data}。

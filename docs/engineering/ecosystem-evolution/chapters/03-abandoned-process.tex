@@ -1,0 +1,84 @@
+\chapter{我为何废弃传统软件工程流程}
+\label{ch:abandoned}
+
+\section{「传统流程」在我项目中的指代}
+
+本文所称「传统软件工程那套流程」，并非否定工程纪律，而是指\textbf{在单人/极小团队、内核型产品、高频性能迭代}语境下，成本远大于收益的仪式集合：
+
+\begin{longtable}{@{}lp{9cm}@{}}
+\toprule
+传统环节 & 我观察到的问题 \\
+\midrule
+重型需求/设计评审链 & 无独立 BA/Architect；决策在 bench 与 parity 前无法「纸面定稿」 \\
+Scrum Sprint 计划文件 & 性能 sprint 中，瓶颈每日变化（profile 驱动），计划常次日过时 \\
+长期 feature 分支 + 大合并 & Pipeline 拓扑改动冲突极高；我偏好 main 上短迭代 + ctest 门禁 \\
+Enterprise 发布列车 & 版本号与 CMake project version 已不同步；以 CHANGELOG 为准更诚实 \\
+「先写完整设计再编码」 & CDC carry handoff、encode overlap 等必须原型+parity 才能知道对错 \\
+100\% 文档先行 & 技术手册在 v0.9.4 后集中补全；演进中靠 CHANGELOG + bench 更真实 \\
+JIRA 级任务分解 & 232 测试 + L1--L7 已是机器可执行的「任务完成定义」 \\
+\bottomrule
+\end{longtable}
+
+\textbf{数字对比}：传统流程的「完成定义」常是文档签字；我的完成定义是 \texttt{ebbackup\_bench\_check} 通过——当前 11 个 floor 键（Stage 3.1）+ 232 gtest，任一失败即不可合并。
+
+\section{我保留什么（不是反工程）}
+
+\begin{philobox}[我实际采用的「轻量纪律」]
+\begin{enumerate}[nosep]
+  \item \textbf{ctest 硬门禁}：\texttt{ebbackup\_tests} + \texttt{ebbackup\_bench\_check}；
+  \item \textbf{Immutable floors}：reuse/ratio 永不可降——比任何 Code Review checklist 更硬；
+  \item \textbf{Parity 黄金参考}：\texttt{FastCdcSlice::Chunk} vs stream feed bit-identical；
+  \item \textbf{Powerfail/chaos}：提交点语义用 kill 注入验证，而非文档承诺；
+  \item \textbf{CHANGELOG + 文档归档}：事后结构化，而非事前预测；
+  \item \textbf{Opt-in 实验}：\texttt{EBBACKUP\_CDC\_FAST\_SLICE=1} 等，默认路径保守。
+\end{enumerate}
+\end{philobox}
+
+\section{替代流程：测量驱动的适应性环}
+
+我用下图替代「需求 $\rightarrow$ 设计 $\rightarrow$ 开发 $\rightarrow$ 测试 $\rightarrow$ 发布」长链：
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.1cm]
+  \node[evt] (b) {Bench/Profile 或 Bug 信号（P1--P5）};
+  \node[evt, below=of b] (h) {假设：改 X 可缓解（不改 Content ID）};
+  \node[evt, below=of h] (i) {实现 + parity/powerfail};
+  \node[evt, below=of i] (g) {ctest + bench\_check};
+  \node[evt, below=of g] (d) {默认开 or opt-in？文档/CHANGELOG};
+  \node[evt, below=of d] (p) {负向？剪枝回退};
+
+  \draw[arrow] (b)--(h)--(i)--(g)--(d);
+  \draw[arrow] (d)--(p);
+  \draw[arrow] (p.west) -- ++(-1.5,0) |- (b.west);
+\end{tikzpicture}
+\caption{我的实际工程环：短、可重复、可回滚}
+\label{fig:adapt-loop}
+\end{figure}
+
+\section{具体废弃项与本土替代}
+
+\begin{table}[htbp]
+\centering
+\caption{废弃 vs 替代}
+\small
+\begin{tabular}{@{}llp{5.5cm}@{}}
+\toprule
+废弃 & 替代 & 原因 \\
+\midrule
+Sprint 计划 MD 为 SSOT & CHANGELOG + bench 表 & 计划文件在 Sprint 4 已证明易过期 \\
+repo-* 目录轮转 & 单 \filepath{current} + snapshot & schedule 真实部署更简单（v0.3.1） \\
+Stage 3.2 作 CI 阻塞 & Stage 3.1 blocking / 3.2 nightly & L5 171 vs 280 目标仅 61\%——100\% 会红（v0.9.1） \\
+未测即默认开启 fast path & opt-in env + 默认 stream & Phase A 105 vs B 172 MB/s（$-$39\%）（v0.9.4） \\
+整文件 CDC 先于 feed 设计 & 先 stream overlap 再 ChunkCuts & 拓扑教训 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{对审查者的一句话}
+
+若用「有没有 Jira、有没有两阶段设计评审」衡量成熟度，我会不及格；若用「immutable 语义是否被测试与 bench 共同守卫、负向优化是否被默认关闭或回退」衡量，我认为这条本土化路径是\textbf{自洽且可审计的}。
+
+\section{本章小结}
+
+废弃的是\textbf{与生态位不匹配的流程成本}，不是废弃\textbf{验证}. 下一章给出 Master 时间线，其后分阶段展开压力--决策--修改--结果--剪枝。

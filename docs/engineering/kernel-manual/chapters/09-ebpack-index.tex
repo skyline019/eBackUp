@@ -1,0 +1,286 @@
+\chapter{EbPack 与 HXID 持久化索引}
+\label{ch:ebpack-index}
+
+本章描述 EbPack 容器格式（4096B 头、append-only record、spill/fsync）、16-shard \texttt{EbPackShardSet}，以及 HXID 持久化索引 \filepath{chunk.idx} 的 v1/v2 条目布局、延迟保存与原子 rename 协议。
+
+\section{EbPack 设计目标}
+
+\begin{designbox}[EbPack vs Legacy 单文件]
+\begin{itemize}[nosep]
+  \item \textbf{并发}：16 个独立 pack writer，按 hash 首字节低 4 bit 分片，移除全局 \texttt{append\_mu\_} 瓶颈；
+  \item \textbf{局部性}：单 pack 目标 8MB（\texttt{kEbPackTargetBytes}），spill 后滚动新文件；
+  \item \textbf{可恢复}：4096B 头在 pack finalize 时 patch \texttt{record\_count}、\texttt{payload\_crc32}、\texttt{pack\_size}；
+  \item \textbf{索引}：HXID v2 条目记录 \texttt{pack\_name} + offset，Open 无需全量扫 pack。
+\end{itemize}
+\end{designbox}
+
+数据目录：\filepath{<repo>/data/packs/pack-<txn>-<seq>-s<shard>.ebpack}。
+
+\section{EbPackHeader 4096B 布局}
+
+Magic 字符串 \texttt{EBPACK1}（8B，含 trailing \texttt{\textbackslash0}）。
+
+\begin{longtable}{@{}rrlp{5.5cm}@{}}
+\caption{EbPackHeader 字段偏移（总计 4096B）} \\
+\toprule
+偏移 & 长度 & 字段 & 说明 \\
+\midrule
+\endfirsthead
+\multicolumn{4}{c}{\tablename\ \thetable{} — 续} \\
+\toprule
+偏移 & 长度 & 字段 & 说明 \\
+\midrule
+\endhead
+0 & 8 & \texttt{magic[8]} & 字面量 \texttt{EBPACK1} + NUL（8 字节） \\
+8 & 8 & \texttt{txn\_id} & 创建该 pack 的 backup 事务 ID \\
+16 & 4 & \texttt{seq} & 分片内单调 pack 序号 \\
+20 & 4 & \texttt{record\_count} & finalize 前为 0；关闭 pack 时写入 \\
+24 & 4 & \texttt{payload\_crc32} & 自 header 之后全部 payload 的 CRC32 \\
+28 & 4 & \texttt{reserved} & 保留 \\
+32 & 8 & \texttt{pack\_size} & 文件总字节数（含 4096B 头） \\
+40 & 4056 & \texttt{padding[]} & 零填充至 4096B \\
+\bottomrule
+\end{longtable}
+
+\begin{lstlisting}[caption={EbPackHeader（\filepath{eb\_pack.h}）},label={lst:ebpack-header-full}]
+constexpr char kEbPackMagic[8] = {'E','B','P','A','C','K','1','\0'};
+constexpr size_t kEbPackHeaderSize = 4096;
+struct EbPackHeader {
+  char magic[8];
+  uint64_t txn_id;
+  uint32_t seq;
+  uint32_t record_count;
+  uint32_t payload_crc32;
+  uint32_t reserved;
+  uint64_t pack_size;
+  uint8_t padding[kEbPackHeaderSize - 40];
+};
+static_assert(sizeof(EbPackHeader) == 4096);
+\end{lstlisting}
+
+首个 record 的 payload 起始于偏移 \textbf{4096}；record 自身以 \texttt{ChunkRecordHeader v2}（48B）开头。
+
+\section{EbPackWriter 写入协议}
+
+\subsection{AppendRecord}
+
+\begin{enumerate}
+  \item 构造 \texttt{ChunkRecordHeader}，计算 \texttt{record\_crc32}；
+  \item \texttt{MaybeSpillBeforeAppend(record\_size)} — 超 spill 阈值或超过 8MB target 则 \texttt{FinalizeOpenPack(false)}；
+  \item \texttt{EnsureOpenPack} — 创建新文件，写入占位 header（\texttt{record\_count=0}）；
+  \item append header + payload；更新 \texttt{open\_payload\_size\_}、\texttt{open\_records\_}；
+  \item 输出 \texttt{EbPackRecordRef\{pack\_path, offset, stored\_len, ...\}}。
+\end{enumerate}
+
+\subsection{Spill 与 FinalizeOpenPack}
+
+\texttt{SetSpillThresholds} 由 \texttt{ChunkStore} 按 DurabilityMode 注入（strict 4MB/32 条，balanced 16MB/64 条）。\texttt{MaybeSpillBeforeAppend} 额外规则：若追加后总 payload 超过 \texttt{kEbPackTargetBytes}（8MB）亦触发 spill。
+
+\texttt{FinalizeOpenPack}：
+\begin{itemize}[nosep]
+  \item seek 0，patch header（\texttt{record\_count}、\texttt{payload\_crc32}、\texttt{pack\_size}）；
+  \item 可选 \texttt{FsyncPath}；记录 \texttt{written\_paths\_}；
+  \item \texttt{++seq\_}，准备下一个 pack 文件。
+\end{itemize}
+
+\subsection{FsyncAll 去重}
+
+\texttt{FsyncAll} 维护 \texttt{fsynced\_paths\_} 集合：对已 finalize 且 fsync 过的路径跳过重复 fsync；对仍 \texttt{pack\_open\_} 的当前文件 flush + fsync 一次。避免 \texttt{FlushOpenPack(true)} 与 \texttt{FsyncAll} 双重 fsync 同一路径。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=\flowdistance]
+  \node[flowstep] (append) {AppendRecord};
+  \node[flowdec, below=of append] (spill) {超 spill/8MB?};
+  \node[flowstep, below=of spill] (fin) {FinalizeOpenPack\\patch header};
+  \node[flowstep, below=of fin] (open) {EnsureOpenPack\\新 pack 文件};
+  \node[flowstep, below=of open] (write) {写 header+payload};
+  \node[flowstep, below=of write] (flush) {Flush / FsyncAll};
+
+  \draw[arrow] (append)--(spill);
+  \draw[arrow] (spill)-- node[right,font=\scriptsize]{是} (fin);
+  \draw[arrow] (spill.east) -- ++(1.2,0) |- node[near start,right,font=\scriptsize]{否} (open);
+  \draw[arrow] (fin)--(open);
+  \draw[arrow] (open)--(write)--(flush);
+\end{tikzpicture}
+\caption{EbPackWriter append/spill 循环}
+\label{fig:ebpack-spill}
+\end{figure}
+
+\section{EbPackShardSet：16 分片}
+
+\begin{lstlisting}[caption={分片路由},label={lst:ebpack-shard}]
+class EbPackShardSet {
+ public:
+  static constexpr size_t kShardCount = 16;
+  static size_t ShardForHash(const uint8_t hash[32]) {
+    return static_cast<size_t>(hash[0] & 0x0F);
+  }
+  std::array<EbPackWriter, kShardCount> shards_;
+};
+\end{lstlisting}
+
+构造函数为 shard $0\ldots15$ 各创建 \texttt{EbPackWriter(packs\_dir, txn\_id, shard\_id)}，文件名 \texttt{pack-<txn>-<seq>-s<NN>.ebpack}。\texttt{AppendRecord} 无全局锁，仅锁对应 shard 的 \texttt{EbPackWriter::mu\_}。
+
+Pipeline \texttt{store\_shard\_count} 默认 16，与 EbPack shard 对齐，使 store worker 与 pack 分片一一对应（见 \cref{ch:backup-engine}）。
+
+\section{HXID 持久化索引 chunk.idx}
+
+\subsection{文件路径与 Header}
+
+路径：\filepath{<repo>/data/chunk.idx}（\texttt{ChunkIndexFile::PathForStore}）。
+
+Magic \texttt{0x44495848}（ASCII \textbf{HXID}，little-endian 存储为 \texttt{'H','X','I','D'} 的 uint32）。
+
+\begin{longtable}{@{}rrll@{}}
+\caption{ChunkIndexHeader（28B）} \\
+\toprule
+偏移 & 长度 & 字段 & 说明 \\
+\midrule
+0 & 4 & \texttt{magic} & \texttt{0x44495848} \\
+4 & 4 & \texttt{version} & 1=legacy only；2=含 EbPack \\
+8 & 8 & \texttt{entry\_count} & 条目数 \\
+16 & 8 & \texttt{chunks\_file\_size} & legacy \filepath{chunks} 文件大小校验 \\
+24 & 4 & \texttt{header\_crc32} & header CRC（crc 字段置零后计算） \\
+\bottomrule
+\end{longtable}
+
+Load 时校验 \texttt{chunks\_file\_size == expected\_chunks\_size}，防止 index 与数据文件不一致。
+
+\subsection{ChunkIndexEntryV1（52B）}
+
+\begin{longtable}{@{}rrll@{}}
+\caption{HXID v1 条目布局（52B，\texttt{sizeof(ChunkIndexEntryV1)==52}）} \\
+\toprule
+偏移 & 长度 & 字段 & 说明 \\
+\midrule
+0 & 32 & \texttt{hash[32]} & Content ID \\
+32 & 8 & \texttt{offset} & legacy \filepath{chunks} 内偏移 \\
+40 & 4 & \texttt{stored\_len} & payload 长度 \\
+44 & 4 & \texttt{uncompressed\_len} & 明文长度 \\
+48 & 1 & \texttt{codec} & ChunkCodec \\
+49 & 3 & \texttt{reserved[3]} & 保留 \\
+\bottomrule
+\end{longtable}
+
+\subsection{ChunkIndexEntry v2（97B）}
+
+\begin{longtable}{@{}rrlp{5cm}@{}}
+\caption{HXID v2 条目布局（97B，EbPack 扩展）} \\
+\toprule
+偏移 & 长度 & 字段 & 说明 \\
+\midrule
+0 & 32 & \texttt{hash[32]} & Content ID \\
+32 & 8 & \texttt{offset} & pack 或 chunks 内 record 偏移 \\
+40 & 4 & \texttt{stored\_len} & \\
+44 & 4 & \texttt{uncompressed\_len} & \\
+48 & 1 & \texttt{codec} & \\
+49 & 1 & \texttt{storage\_flags} & 0=legacy，1=\texttt{kChunkStorageEbPack} \\
+50 & 47 & \texttt{pack\_name[47]} & 如 \texttt{pack-00000001-0000-s0a.ebpack} \\
+\bottomrule
+\end{longtable}
+
+\texttt{Save} 时若任一 entry \texttt{storage\_flags == kChunkStorageEbPack}，header \texttt{version = 2}，否则写 v1 52B 条目数组。
+
+\section{defer\_persistent\_index\_save}
+
+\begin{designbox}[v0.3.1+ 写放大优化]
+启用 \texttt{kBackupFeaturePersistentIndex} 的仓库，\texttt{BackupEngine::RunBackup} 在开始时：
+\begin{verbatim}
+chunk_store_->SetDeferPersistentIndexSave(persistent_index);
+\end{verbatim}
+backup 过程中每次 \texttt{AppendRecord} 仍 \texttt{TrackIndexEntry} 追加内存 \texttt{index\_entries\_}，但 \texttt{Flush} / legacy append \textbf{不}写 \filepath{chunk.idx}。\\
+正常完成或 abort 清理时 \texttt{SetDeferPersistentIndexSave(false)} 并 \texttt{SavePersistentIndex()}，将整次 txn 的 index 变更合并为一次原子写入。
+\end{designbox}
+
+这降低高频 small backup 的 index 写放大，且与 coalesced meta 正交——chunk 数据仍按 DurabilityMode fsync。
+
+\section{原子 chunk.idx.new rename}
+
+\texttt{ChunkIndexFile::Save} 协议（与 \filepath{snapshots/index} 同构）：
+
+\begin{enumerate}[nosep]
+  \item 写入 \filepath{chunk.idx.new}（truncate）；
+  \item 写 header + entries；
+  \item \texttt{FsyncPath(temp)}；
+  \item \texttt{rename(temp, chunk.idx)}；
+  \item \texttt{FsyncPath(chunk.idx)}（目录项耐久）。
+\end{enumerate}
+
+读路径始终打开 \filepath{chunk.idx}；crash 期间仅 \filepath{.new} 存在时不切换，下次 Save 覆盖。Load 失败且 \texttt{use\_ebpack\_ \&\& use\_persistent\_index\_} 时 \texttt{ChunkStore::LoadIndex} 返回错误，避免 silent 空 index 导致 dedup 失效。
+
+\section{RebuildFromScan}
+
+\texttt{ChunkIndexFile::RebuildFromScan(chunks\_path)} 顺序扫描 legacy \filepath{chunks}，v1/v2 record header 探测，遇 corrupt tail 截断。用于运维从单文件重建 v1 index（不含 EbPack pack\_name；EbPack 仓库需在线 backup 重写 index 或专用工具）。
+
+\section{与 ChunkStore 的协作}
+
+\begin{table}[htbp]
+\centering
+\caption{索引更新时机}
+\begin{tabular}{@{}ll@{}}
+\toprule
+事件 & 动作 \\
+\midrule
+\texttt{AppendRecordInternal} & 更新 \texttt{shard\_index\_} + \texttt{TrackIndexEntry} \\
+\texttt{Flush}（非 defer） & \texttt{SavePersistentIndex} \\
+backup 结束 & \texttt{defer=false} + \texttt{SavePersistentIndex} \\
+\texttt{Open} & \texttt{LoadIndex} $\rightarrow$ 填充 shard map \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{EbPack compact 与 pack 生命周期}
+
+\texttt{eb\_pack\_compactor.cc} 在 compact 时读取 live hash 集合，按 pack 重写存活 record 至新 txn pack，删除空 pack 或全 orphan pack。\texttt{FsyncAll} 去重在 compact 多阶段 fsync 中同样生效——避免对同一 \texttt{written\_paths\_} 条目重复 syscall。
+
+单 pack 内 record 顺序为 append 顺序；无 intra-pack 按 hash 排序。索引 \texttt{offset} 指向 record header 起始位置（含 48B header）。
+
+\section{Load 失败与运维恢复}
+
+\begin{table}[htbp]
+\centering
+\caption{chunk.idx 故障模式}
+\begin{tabular}{@{}llp{6cm}@{}}
+\toprule
+症状 & 原因 & 建议 \\
+\midrule
+header CRC mismatch &  torn write & 删除 index，自 legacy scan 重建（仅 legacy） \\
+size mismatch & chunks 截断与 index 不一致 & 重新 backup 或 RebuildFromScan \\
+ebpack missing index & 首次 ebpack 无 idx & 完成一次 backup 写 index \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+EbPack 仓库\textbf{不可}仅靠 scan 重建 pack 索引（Open 不读 pack 内容）；必须保证 \texttt{SavePersistentIndex} 在 commit 前成功。
+
+\section{pack\_name 字段约束}
+
+\texttt{pack\_name[47]} 以 NUL 终止；\texttt{TrackIndexEntry} 使用 \texttt{strncpy(..., sizeof-1)}。文件名最长 46 可见字符 + NUL。当前命名 \texttt{pack-<8hex txn>-<4hex seq>-s<2hex shard>.ebpack} 远低于上限。
+
+\section{Feature flag 关联}
+
+\begin{longtable}{@{}lll@{}}
+\caption{存储相关 backup feature flags} \\
+\toprule
+Flag & 值 & 关联 \\
+\midrule
+\endfirsthead
+\multicolumn{3}{c}{\tablename\ \thetable{} — 续} \\
+\toprule
+Flag & 值 & 关联 \\
+\midrule
+\endhead
+\texttt{kBackupFeaturePersistentIndex} & 0x10 & chunk.idx + defer save \\
+\texttt{kBackupFeatureEbPack} & 0x100 & packs/ 后端 \\
+\texttt{kBackupFeatureBalancedDurability} & 0x40 & spill 16MB/64 \\
+\bottomrule
+\end{longtable}
+
+\section{测试覆盖}
+
+\texttt{eb\_pack\_test.cc}、\texttt{eb\_pack\_shard\_test.cc} 验证 append/spill/shard 路由；\texttt{chunk\_index\_test}（如有）覆盖 v1/v2 round-trip。Powerfail 测试验证 commit 前 crash 后 index 与 pack 一致或 txn aborted。
+
+\section{本章小结}
+
+EbPack 以 4096B 头 + append-only v2 record 组织 pack 文件，16-shard writer 与 ChunkStore 内存分片对齐。HXID 索引 v2 条目携带 \texttt{pack\_name} 与 \texttt{storage\_flags}，配合 \texttt{defer\_persistent\_index\_save} 与 \texttt{chunk.idx.new} 原子 rename 实现高效、可恢复的持久化索引。Manifest 格式见 \cref{ch:manifest-format}。

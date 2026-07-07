@@ -1,0 +1,254 @@
+\chapter{RAR 链与 Merkle 树}
+\label{ch:audit-rar-v4}
+
+\section{审计层概述}
+
+ebbackup 在每次\textbf{成功 backup commit} 后追加 RAR（Recoverable Audit Record）链条目，形成可验证的\textbf{备份历史}。RAR 链与 superblock \texttt{merkle\_root}、manifest CRC32 协同，支持：
+\begin{itemize}[nosep]
+  \item 当前仓库 \texttt{verify} 时 Merkle 与 RAR 末条一致性检查；
+  \item \texttt{verify --at TXN} 历史 snapshot 与 RAR entry 交叉验证；
+  \item 可选 CARL anchor 签名（开发/测试路径，依赖 \texttt{EBBACKUP\_AUDIT\_KEY}）。
+\end{itemize}
+
+\textbf{实现}：
+\begin{itemize}[nosep]
+  \item \filepath{src/audit/rar\_chain.cc}、\filepath{include/ebbackup/audit/rar\_chain.h}
+  \item \filepath{src/audit/merkle.cc}、\filepath{include/ebbackup/audit/merkle.h}
+  \item \filepath{src/audit/carl\_anchor.cc}（CARL Signed Tree Head）
+\end{itemize}
+
+审计层\textbf{不改变} Content ID 或 chunk 物理布局；仅追加 \filepath{audit/rar.chain} 与 superblock 扩展字段。
+
+\section{RarChainEntry JSON 字段}
+
+每条 RAR 记录为\textbf{单行 JSON}（NDJSON），追加写入 \filepath{<repo>/audit/rar.chain}。
+
+\begin{table}[htbp]
+\centering
+\caption{RarChainEntry 字段说明}
+\small
+\begin{tabular}{@{}llp{6.5cm}@{}}
+\toprule
+JSON 字段 & 类型 & 含义 \\
+\midrule
+\texttt{sequence} & uint64 & 从 1 单调递增的链序号 \\
+\texttt{txn\_id} & uint64 & 对应 backup 事务 ID \\
+\texttt{manifest\_crc32} & string & manifest body CRC32，8 位 hex（如 \texttt{"a1b2c3d4"}） \\
+\texttt{merkle\_root} & string & manifest Merkle 根，64 字符 hex \\
+\texttt{rar\_sha256} & string & 本条 body 的 SHA256 hex \\
+\texttt{prev\_rar\_sha256} & string & 前一条的 \texttt{rar\_sha256}（首条为空） \\
+\texttt{generated\_at\_unix} & int64 & 记录生成 Unix 时间戳 \\
+\texttt{body\_json} & string & 嵌套 JSON 字符串（见下节） \\
+\texttt{signature} & string & 可选 Ed25519 签名（CARL 路径） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+C++ 结构 \texttt{audit::RarChainEntry} 与 JSON 字段一一对应。\texttt{ReadLastRarChainEntry} 自文件尾反向扫描最后一行，用于增量追加时获取 \texttt{prev\_rar\_sha256} 与下一 \texttt{sequence}。
+
+\section{BuildRarBodyJson 与 ComputeRarSha256}
+
+\subsection{Body JSON 格式}
+
+\texttt{BuildRarBodyJson(txn\_id, manifest\_crc32, merkle\_root[32])} 产出紧凑 JSON：
+
+\begin{lstlisting}[caption={RAR body 示例},label={lst:rar-body}]
+{"txn_id":42,"manifest_crc32":"deadbeef","merkle_root":"<64 hex chars>"}
+\end{lstlisting}
+
+\begin{itemize}[nosep]
+  \item \texttt{manifest\_crc32}：\texttt{snprintf("\%08x", crc32)} 小写 8 hex；
+  \item \texttt{merkle\_root}：\texttt{BytesToHex(merkle\_root, 32)}；
+  \item 字段顺序固定，保证 hash 确定性。
+\end{itemize}
+
+\subsection{RAR SHA256}
+
+\texttt{ComputeRarSha256(body\_json, digest\_algo)} 对 \textbf{body\_json 原始 UTF-8 字节} 做 \texttt{ContentHash}（Legacy 或 Standard，与仓库 digest feature 一致），返回 64 字符 hex 写入 \texttt{rar\_sha256}。
+
+\textbf{哈希对象}是 \texttt{body\_json} 字符串本身，而非外层 NDJSON 整行——Verify 时用存储的 \texttt{body\_json} 字段重算比对 \texttt{rar\_sha256}。
+
+\section{AppendRarChainEntry 与持久化}
+
+\texttt{AppendRarChainEntry(chain\_path, entry)}：
+\begin{enumerate}
+  \item \texttt{create\_directories} 父目录 \filepath{audit/}；
+  \item 以 append 模式打开 \filepath{rar.chain}；
+  \item 写入单行 JSON（字符串字段 \texttt{JsonEscape}）+ 换行；
+  \item \texttt{FsyncPath} 保证 durability。
+\end{enumerate}
+
+BackupEngine 在 \texttt{kAppendAudit} phase 构建 entry：\texttt{sequence = RarChainNextSequence}，\texttt{prev\_rar\_sha256 = RarChainLastSha256}，随后 append。
+
+\section{VerifyRarChain 链完整性}
+
+\texttt{VerifyRarChain(chain\_path, \&report, algo)} 顺序读取全部 entry，检查：
+
+\begin{enumerate}
+  \item \textbf{Sequence 连续}：期望 \texttt{1, 2, 3, ...}，缺口则 \texttt{consistent=false}；
+  \item \textbf{Prev hash 链接}：每条 \texttt{prev\_rar\_sha256} 必须等于前一条 \texttt{rar\_sha256}（首条 prev 为空）；
+  \item \textbf{Body 重算}：\texttt{ComputeRarSha256(entry.body\_json)} 与存储 \texttt{rar\_sha256} 一致。
+\end{enumerate}
+
+输出 \texttt{RarChainVerifyReport}：\texttt{entry\_count}、\texttt{last\_sequence}、\texttt{last\_rar\_sha256}、\texttt{errors[]}。
+
+当前 \texttt{Verify()} 在链存在时调用 \texttt{VerifyRarChain}，并额外比对\textbf{末条} \texttt{merkle\_root}、\texttt{txn\_id} 与当前 manifest。
+
+\section{Merkle Manifest 根算法}
+
+\subsection{叶子构造规则}
+
+\begin{designbox}[Merkle 叶子顺序（必须严格遵守）]
+\begin{enumerate}[nosep]
+  \item 取 manifest 全部 \texttt{ManifestFileEntry}；
+  \item 按 \texttt{relative\_path} \textbf{字典序升序}排序；
+  \item 对每个文件，按 \texttt{chunk\_hashes\_hex} \textbf{数组顺序}依次追加叶子；
+  \item 每个叶子为 \textbf{32 字节原始 hash}（由 64 字符 hex 解码），非 hex 字符串本身。
+\end{enumerate}
+\end{designbox}
+
+\subsection{二叉树合并}
+
+\texttt{MerkleFromLeafBytes}：
+\begin{itemize}[nosep]
+  \item 层内两两 \texttt{HashPair(left, right)}：拼接 64 字节（left$\|$right）再 SHA256；
+  \item \textbf{奇数节点}：最右节点无 sibling 时，\texttt{right = left}（duplicate odd node）；
+  \item 重复直至剩 1 个 32 字节根；
+  \item 空 manifest：根为 32 字节零。
+\end{itemize}
+
+\begin{lstlisting}[caption={HashPair},label={lst:hash-pair}]
+void HashPair(DigestAlgo algo, const uint8_t left[32], const uint8_t right[32],
+              uint8_t out[32]) {
+  uint8_t buf[64];
+  memcpy(buf, left, 32);
+  memcpy(buf + 32, right, 32);
+  ContentHash(algo, buf, 64, out);
+}
+\end{lstlisting}
+
+\subsection{公开 API}
+
+\begin{table}[htbp]
+\centering
+\caption{Merkle 计算入口}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+函数 & 输入 \\
+\midrule
+\texttt{ComputeMerkleRoot} & 完整 \texttt{ManifestDocument} \\
+\texttt{ComputeMerkleRootForFiles} & 文件子向量（选择性 restore） \\
+\texttt{ComputeMerkleRootFromHashes} & 已排序 leaf hex 列表 \\
+\texttt{ComputeMerkleRootFromRestoredFiles} & 恢复目录 + manifest 子集 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Commit 时将 \texttt{ComputeMerkleRoot} 结果写入 \texttt{BackupSuperBlockExtension::merkle\_root[32]}。
+
+\section{VerifyRestoredFileChunks 与 Merkle 衔接}
+
+\texttt{VerifyRestoredFileChunks}（\filepath{merkle.cc}）按 manifest chunk 顺序流式读取恢复文件，逐 chunk \texttt{ContentHash} 与期望 hash 比对（详见 \cref{ch:restore-verify-v4}）。
+
+\texttt{ComputeMerkleRootFromRestoredFiles}：
+\begin{enumerate}
+  \item 对 sorted regular files 逐个 \texttt{VerifyRestoredFileChunks}；
+  \item 验证通过后，将 manifest 中的 chunk hex \textbf{原样}作为 leaf（不再从磁盘 re-hash 叶子——内容校验已保证一致）；
+  \item \texttt{ComputeMerkleRootFromHashes} 得根。
+\end{enumerate}
+
+选择性 restore 用此根与 \texttt{ComputeMerkleRootForFiles} 预计算 \texttt{subset\_root} 比对。
+
+\section{SuperBlock 与 Verify 中的 Merkle}
+
+\begin{itemize}[nosep]
+  \item \textbf{Backup commit}：\texttt{merkle\_root} 写入 superblock extension；
+  \item \textbf{Verify 当前}：重算 manifest Merkle，与 superblock 比对（\texttt{merkle\_root[0]!=0} 时）；
+  \item \textbf{VerifyAt}：与 RAR entry 中 \texttt{merkle\_root} 字符串比对，不读 superblock 当前值。
+\end{itemize}
+
+\section{CARL Anchor 与 EBBACKUP\_AUDIT\_KEY}
+
+CARL（Commitment Anchor for RAR Ledger）在 \filepath{audit/carl/} 目录维护 Signed Tree Head（STH），将 RAR 链 tip 签名锚定到外部目录。
+
+\subsection{EBBACKUP\_AUDIT\_KEY}
+
+环境变量 \texttt{EBBACKUP\_AUDIT\_KEY} 设置对称/签名密钥材料（测试常用 \texttt{test-secret-key}）：
+
+\begin{table}[htbp]
+\centering
+\caption{AUDIT\_KEY 触发的行为}
+\begin{tabular}{@{}llp{6.5cm}@{}}
+\toprule
+场景 & 条件 & 行为 \\
+\midrule
+Verify & 变量已设置 & 调用 \texttt{VerifyCarlAnchorRequired} \\
+CARL 签名验证 & 无 \texttt{--require-anchor} & 仍需 \texttt{EBBACKUP\_AUDIT\_KEY} 验证 STH 签名 \\
+Backup append & 开发路径 & 可选写入签名 RAR entry \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+CLI \texttt{eb verify --require-anchor} 强制 CARL anchor 存在且有效，不依赖环境变量。
+
+\subsection{STH JSON 字段（简述）}
+
+\texttt{CarlSignedTreeHead} 单行 JSON 含 \texttt{chain\_sequence}、\texttt{root\_hash}（RAR tip hash）、\texttt{published\_at\_unix}、\texttt{signature}、\texttt{chain\_path}。Verify 时比对 \texttt{root\_hash} 与 \texttt{RarChainLastSha256} 一致。
+
+\section{RAR 与 Manifest CRC32 关系}
+
+\texttt{manifest\_crc32} 来自 manifest 文件 body 的 CRC32（非 chunk 内容）。VerifyAt 时：
+\begin{enumerate}
+  \item 从 \filepath{snapshots/<txn>.manifest} 读取 body CRC32；
+  \item 格式化为 8 hex 与 RAR entry \texttt{manifest\_crc32} 字符串比较。
+\end{enumerate}
+
+三者（Merkle 根、CRC32、txn\_id）在 RAR body 与外层 entry 中交叉冗余，防止单字段篡改。
+
+\section{工作示例：链式追加}
+
+假设 txn=41 已成功，最后 RAR：
+\begin{lstlisting}[caption={RAR chain 行示例（简化）},label={lst:rar-line}]
+{"sequence":41,"txn_id":41,"manifest_crc32":"cafebabe",
+ "merkle_root":"<root41>","rar_sha256":"<hash41>",
+ "prev_rar_sha256":"<hash40>","generated_at_unix":1710000000,
+ "body_json":"{\"txn_id\":41,...}"}
+\end{lstlisting}
+
+txn=42 backup 成功时：
+\begin{itemize}[nosep]
+  \item \texttt{sequence=42}，\texttt{prev\_rar\_sha256="<hash41>"}；
+  \item 新 body 含 txn=42 的 CRC 与 Merkle 根；
+  \item \texttt{rar\_sha256 = SHA256(body\_json)}。
+\end{itemize}
+
+\section{测试与不变量}
+
+\begin{table}[htbp]
+\centering
+\caption{审计层测试}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+测试 & 覆盖 \\
+\midrule
+\texttt{rar\_chain\_test.cc} & Append/Verify/sequence/prev link \\
+\texttt{merkle\_test.cc} & 排序、odd node、VerifyRestoredFileChunks \\
+\texttt{carl\_anchor\_test.cc} & EBBACKUP\_AUDIT\_KEY + verify anchor \\
+\texttt{selective\_restore\_test.cc} & 子集 Merkle end-to-end \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{invariantbox}[审计不变量]
+\begin{itemize}[nosep]
+  \item Merkle 叶子顺序仅依赖 path 排序 + chunk 数组顺序，与 backup pipeline 无关；
+  \item RAR \texttt{rar\_sha256} 仅覆盖 \texttt{body\_json}，覆盖外层字段需破坏 prev 链；
+  \item 修改 \filepath{merkle.cc} 或 \filepath{rar\_chain.cc} 必须跑全量 audit/engine 测试。
+\end{itemize}
+\end{invariantbox}
+
+\section{本章小结}
+
+RAR 链以 NDJSON 追加方式记录每次 backup 的 txn、manifest CRC、Merkle 根与 SHA256 链式哈希；\texttt{VerifyRarChain} 验证 sequence 与 prev 链接。\texttt{ComputeMerkleRoot} 对 path 排序后的 raw 32B chunk hash 构建 Merkle 树，奇节点 duplicate 规则与 Bitcoin 风格一致。CARL anchor 与 \texttt{EBBACKUP\_AUDIT\_KEY} 提供可选签名验证路径。CLI/daemon 操作面见 \cref{ch:daemon-cli-v4}。
