@@ -7,5 +7,6 @@
 namespace ebbackup {
 
 Status FsyncPath(const std::string& path);
+Status FsyncFd(int fd);
 
 }  // namespace ebbackup

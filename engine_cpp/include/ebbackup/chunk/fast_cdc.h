@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "ebbackup/chunk/chunk_descriptor.h"
+#include "ebbackup/common/digest.h"
 #include "ebbackup/common/status.h"
 
 namespace ebbackup {
@@ -14,6 +15,7 @@ struct FastCdcConfig {
   uint32_t avg_size{256 * 1024};
   uint32_t max_size{1024 * 1024};
   uint32_t window_size{64};
+  DigestAlgo digest_algo{DigestAlgo::kLegacy};
 };
 
 class FastCdcSlice {
@@ -21,7 +23,10 @@ class FastCdcSlice {
   explicit FastCdcSlice(FastCdcConfig config = {});
 
   Status Chunk(const uint8_t* data, size_t len,
-                 std::vector<ChunkDescriptor>* out) const;
+               std::vector<ChunkDescriptor>* out) const;
+
+  Status ChunkCuts(const uint8_t* data, size_t len, std::vector<size_t>* offsets,
+                   std::vector<uint32_t>* lengths) const;
 
   const FastCdcConfig& config() const { return config_; }
 

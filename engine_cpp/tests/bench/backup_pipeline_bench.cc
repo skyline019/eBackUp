@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "ebbackup/bench/throughput.h"
 #include "ebbackup/engine/backup_engine.h"
 #include "test_util.h"
 
@@ -49,11 +50,12 @@ int main(int argc, char** argv) {
     out.write(data.data(), static_cast<std::streamsize>(data.size()));
   }
 
-  ebbackup::BackupEngine::InitRepo(repo_seq);
-  ebbackup::BackupEngine::InitRepo(repo_pipe);
-  ebbackup::BackupEngine::InitRepo(repo_lz4);
+  ebbackup::test::InitDefaultRepo(repo_seq);
+  ebbackup::test::InitDefaultRepo(repo_pipe);
+  ebbackup::test::InitDefaultRepo(repo_lz4);
 
   ebbackup::BackupOptions seq_opts{};
+  seq_opts.disable_pipeline = true;
   ebbackup::BackupOptions pipe_opts{};
   pipe_opts.use_pipeline = true;
   ebbackup::BackupOptions lz4_opts{};
@@ -64,16 +66,17 @@ int main(int argc, char** argv) {
   const double pipe_sec = RunBackup(repo_pipe, source, pipe_opts);
   const double lz4_sec = RunBackup(repo_lz4, source, lz4_opts);
 
-  const double mb = static_cast<double>(file_size) / (1024.0 * 1024.0);
-  const double seq_mbps = seq_sec > 0 ? mb / seq_sec : 0.0;
-  const double pipe_mbps = pipe_sec > 0 ? mb / pipe_sec : 0.0;
-  const double lz4_mbps = lz4_sec > 0 ? mb / lz4_sec : 0.0;
-  const double ratio = seq_mbps > 0 ? pipe_mbps / seq_mbps : 0.0;
+  const uint64_t nbytes = static_cast<uint64_t>(file_size);
+  const double seq_MBps = ebbackup::bench::ThroughputMBps(nbytes, seq_sec);
+  const double pipe_MBps = ebbackup::bench::ThroughputMBps(nbytes, pipe_sec);
+  const double lz4_MBps = ebbackup::bench::ThroughputMBps(nbytes, lz4_sec);
+  const double ratio = seq_MBps > 0 ? pipe_MBps / seq_MBps : 0.0;
+  const double file_mb = static_cast<double>(file_size) / ebbackup::bench::kBytesPerMB;
 
   std::printf(
-      "bench pipeline: file_mb=%.2f sequential=%.2f MB/s pipeline=%.2f MB/s "
+      "bench pipeline: file_MB=%.2f sequential=%.2f MB/s pipeline=%.2f MB/s "
       "lz4_pipeline=%.2f MB/s pipeline_ratio=%.2f\n",
-      mb, seq_mbps, pipe_mbps, lz4_mbps, ratio);
+      file_mb, seq_MBps, pipe_MBps, lz4_MBps, ratio);
 
   if (ratio > 0 && ratio < 0.90) {
     std::fprintf(stderr, "pipeline throughput below 90%% of sequential\n");

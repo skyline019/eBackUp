@@ -1,0 +1,2 @@
+PNG fixture stub with recognizable header bytes.
+Not a valid image; used for binary roundtrip testing only.

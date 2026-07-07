@@ -3,9 +3,11 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <vector>
 
 #include "ebbackup/chunk/cfi_index.h"
 #include "ebbackup/common/status.h"
+#include "ebbackup/state/superblock.h"
 
 namespace ebbackup {
 
@@ -21,6 +23,38 @@ enum class FileType : uint8_t {
 constexpr uint32_t kBackupFeatureMeta = 0x01;
 constexpr uint32_t kBackupFeatureSpecialFiles = 0x02;
 constexpr uint32_t kBackupFeatureEncrypted = 0x04;
+constexpr uint32_t kBackupFeatureDigestStandard = 0x08;
+constexpr uint32_t kBackupFeaturePersistentIndex = 0x10;
+constexpr uint32_t kBackupFeatureManifestBinary = 0x20;
+constexpr uint32_t kBackupFeatureBalancedDurability = 0x40;
+
+constexpr uint32_t kBackupFeatureCoalescedMeta = 0x200;
+constexpr uint32_t kBackupFeatureEbPack = 0x100;
+
+inline bool RepoUsesCoalescedMeta(const BackupSuperBlock& sb) {
+  return (sb.ext.backup_features & kBackupFeatureCoalescedMeta) != 0;
+}
+
+inline bool RepoUsesEbPack(const BackupSuperBlock& sb) {
+  return (sb.ext.backup_features & kBackupFeatureEbPack) != 0;
+}
+
+constexpr uint8_t kDefaultCodecOff = 0;
+constexpr uint8_t kDefaultCodecLz4 = 1;
+constexpr uint8_t kDefaultCodecZstd = 2;
+constexpr uint8_t kDefaultCodecAuto = 3;
+
+inline bool RepoUsesPersistentIndex(const BackupSuperBlock& sb) {
+  return (sb.ext.backup_features & kBackupFeaturePersistentIndex) != 0;
+}
+
+inline bool RepoUsesManifestBinary(const BackupSuperBlock& sb) {
+  return (sb.ext.backup_features & kBackupFeatureManifestBinary) != 0;
+}
+
+inline bool RepoUsesBalancedDurability(const BackupSuperBlock& sb) {
+  return (sb.ext.backup_features & kBackupFeatureBalancedDurability) != 0;
+}
 
 struct ManifestFileEntry {
   std::string relative_path;
@@ -56,9 +90,12 @@ FileType FileTypeFromString(const std::string& s);
 
 Status WriteManifestV2(const std::string& path, const ManifestDocument& doc);
 Status WriteManifestV3(const std::string& path, const ManifestDocument& doc);
-Status WriteManifestAuto(const std::string& path, const ManifestDocument& doc);
+Status WriteManifestV4(const std::string& path, const ManifestDocument& doc);
+Status WriteManifestAuto(const std::string& path, const ManifestDocument& doc,
+                         bool prefer_binary = false);
 Status ReadManifestAuto(const std::string& path, ManifestDocument* out);
 Status ComputeManifestBodyCrc32(const std::string& body, uint32_t* out);
+Status ComputeManifestV4BodyCrc32(const std::vector<uint8_t>& body, uint32_t* out);
 
 ManifestFileEntry ManifestEntryFromScanMeta(const std::string& relative_path,
                                             FileType type, uint64_t size,

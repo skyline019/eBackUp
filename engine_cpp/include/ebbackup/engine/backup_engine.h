@@ -8,17 +8,26 @@
 
 #include "ebbackup/chunk/chunk_descriptor.h"
 #include "ebbackup/chunk/cfi_index.h"
+#include "ebbackup/chunk/chunk_profile.h"
 #include "ebbackup/chunk/eb_hcrbo.h"
+#include "ebbackup/codec/codec_types.h"
+#include "ebbackup/codec/content_class.h"
+#include "ebbackup/common/digest.h"
 #include "ebbackup/common/status.h"
 #include "ebbackup/engine/manifest.h"
 #include "ebbackup/engine/restore_engine.h"
+#include "ebbackup/pipeline/pipeline_phase_stats.h"
 #include "ebbackup/scan/backup_filter.h"
 #include "ebbackup/scan/scan_entry.h"
 #include "ebbackup/state/backup_phase.h"
 #include "ebbackup/state/superblock.h"
 #include "ebbackup/state/sync_executor.h"
+#include "ebbackup/store/chunk_compactor.h"
 #include "ebbackup/store/chunk_store.h"
 #include "ebbackup/store/orphan_gc.h"
+#include "ebbackup/store/repo_stats.h"
+#include "ebbackup/store/retention_policy.h"
+#include "ebbackup/store/snapshot_store.h"
 
 namespace ebbackup {
 
@@ -26,13 +35,31 @@ enum class BackupMode { kFull, kIncremental };
 
 using ProgressCallback = std::function<void(uint64_t pct_permille, void* user_data)>;
 
+struct RepoInitOptions {
+  bool standard_digest{false};
+  bool persistent_index{false};
+  bool manifest_binary{false};
+  bool snapshots{false};
+  bool ebpack{false};
+  bool coalesced_meta{false};
+};
+
 struct BackupOptions {
   bool use_pipeline{false};
+  bool disable_pipeline{false};
   bool use_lz4{false};
   bool require_anchor{false};
   bool use_encryption{false};
   std::string encryption_password;
   BackupFilterOptions filter;
+  CompressMode compress_mode{CompressMode::kOff};
+  uint32_t cpu_budget_permille{1000};
+  DurabilityMode durability{DurabilityMode::kStrict};
+  ChunkProfileMode chunk_profile{ChunkProfileMode::kAuto};
+  uint64_t snapshot_txn_id{0};
+  bool gc_latest_manifest_only{false};
+  size_t worker_count{0};
+  size_t store_shard_count{16};
 };
 
 struct BackupStats {
@@ -43,13 +70,17 @@ struct BackupStats {
   uint64_t bytes_processed{0};
   uint64_t unexpected_transitions{0};
   uint64_t orphan_chunks_hint{0};
+  ContentClassStats content_class{};
 };
 
 class BackupEngine {
  public:
   explicit BackupEngine(std::string repo_path);
 
-  static Status InitRepo(const std::string& repo_path);
+  static Status InitRepo(const std::string& repo_path,
+                         bool standard_digest = false);
+  static Status InitRepoEx(const std::string& repo_path,
+                           const RepoInitOptions& options);
 
   Status Open();
   Status Recover();
@@ -59,13 +90,23 @@ class BackupEngine {
   Status Verify(const BackupOptions& options = BackupOptions{});
   Status Restore(const std::string& dest_path,
                  const RestoreOptions& options = RestoreOptions{});
-  Status GcOrphans(bool dry_run, OrphanGcReport* report = nullptr);
+  Status Compact(bool dry_run, CompactReport* report = nullptr);
+  Status GcOrphans(bool dry_run, OrphanGcReport* report = nullptr,
+                   bool latest_manifest_only = false);
+  Status GetRepoStats(RepoStats* out) const;
+  Status ListSnapshots(std::vector<SnapshotEntry>* out) const;
+  Status PruneSnapshots(const RetentionPolicy& policy, bool dry_run,
+                        PruneReport* report);
 
   void SetProgressCallback(ProgressCallback cb, void* user_data);
 
   const BackupSuperBlock& superblock() const { return sb_; }
   const BackupStats& stats() const { return stats_; }
+  const PipelinePhaseStats& pipeline_phase_stats() const {
+    return pipeline_phase_stats_;
+  }
   BackupPhase phase() const { return phase_; }
+  DigestAlgo digest_algo() const { return digest_algo_; }
 
   BackupSyncExecutor* sync() { return &sync_; }
   ChunkStore* chunk_store() { return chunk_store_.get(); }
@@ -76,13 +117,14 @@ class BackupEngine {
   Status PersistSuperBlock(BackupPhase phase);
   Status DispatchTransition(BackupEvent event);
   Status ScanFiles(const std::string& source_path, const BackupOptions& options);
-  Status ChunkPendingFiles(BackupMode mode);
+  Status ChunkPendingFiles(BackupMode mode, const BackupOptions& options);
   Status StorePendingChunks(const BackupOptions& options);
   Status RunPipelineBackup(BackupMode mode, const BackupOptions& options);
   Status MergeMetaManifestEntries();
   Status CommitManifestFile();
   Status AppendAuditEntry();
-  Status VerifyManifestDocument(const ManifestDocument& doc);
+  Status VerifyManifestDocument(const ManifestDocument& doc,
+                                uint64_t snapshot_txn_id = 0);
   Status LoadPriorManifest(ManifestDocument* out) const;
   Status SetupEncryption(const BackupOptions& options);
   Status EnsureRepoContentKey(const std::string& password);
@@ -94,6 +136,7 @@ class BackupEngine {
   BackupSuperBlock sb_{};
   BackupPhase phase_{BackupPhase::kIdle};
   BackupStats stats_{};
+  PipelinePhaseStats pipeline_phase_stats_{};
   mutable BackupSyncExecutor sync_{};
   std::unique_ptr<BackupSuperBlockStore> superblock_store_;
   std::unique_ptr<ChunkStore> chunk_store_;
@@ -114,6 +157,7 @@ class BackupEngine {
 
   ProgressCallback progress_cb_;
   void* progress_user_{nullptr};
+  DigestAlgo digest_algo_{DigestAlgo::kLegacy};
 };
 
 void RegisterBackupSyncRules(BackupSyncExecutor* exec, BackupEngine* engine);

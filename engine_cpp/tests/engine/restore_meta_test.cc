@@ -21,7 +21,7 @@ TEST(RestoreMetaTest, MtimeAndModeRoundTrip) {
   const std::string repo = test::TempDir("meta_repo");
   const std::string source = test::TempDir("meta_source");
   const std::string dest = test::TempDir("meta_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   test::WriteFile(source + "/meta.txt", "meta-payload");
 #ifndef _WIN32

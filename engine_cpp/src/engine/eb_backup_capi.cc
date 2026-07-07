@@ -1,8 +1,10 @@
 #include "ebbackup/eb_backup.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "ebbackup/engine/backup_engine.h"
 #include "ebbackup/scan/backup_filter.h"
@@ -51,7 +53,17 @@ EbStatus RunWithMode(EbBackupEngine* eng, const char* source_path,
   ebbackup::BackupOptions options{};
   options.use_lz4 = (flags & EB_BACKUP_FLAG_LZ4) != 0;
   options.use_pipeline = (flags & EB_BACKUP_FLAG_PIPELINE) != 0;
+  options.disable_pipeline = (flags & EB_BACKUP_FLAG_NO_PIPELINE) != 0;
   options.use_encryption = (flags & EB_BACKUP_FLAG_ENCRYPT) != 0;
+  if (flags & EB_BACKUP_FLAG_COMPRESS_AUTO) {
+    options.compress_mode = ebbackup::CompressMode::kAuto;
+    options.cpu_budget_permille = 600;
+  } else if (flags & EB_BACKUP_FLAG_COMPRESS_ZSTD) {
+    options.compress_mode = ebbackup::CompressMode::kZstd;
+  }
+  if (flags & EB_BACKUP_FLAG_BALANCED_DURABILITY) {
+    options.durability = ebbackup::DurabilityMode::kBalanced;
+  }
   options.encryption_password = impl->password;
   options.filter = impl->filter;
   const ebbackup::Status st =
@@ -95,8 +107,21 @@ void eb_backup_close(EbBackupEngine* eng) {
 }
 
 EbStatus eb_backup_init_repo(const char* repo_path) {
+  return eb_backup_init_repo_ex(repo_path, 0);
+}
+
+EbStatus eb_backup_init_repo_ex(const char* repo_path, uint32_t flags) {
   if (!repo_path) return EB_ERROR_INVALID_ARGUMENT;
-  return ToEbStatus(ebbackup::BackupEngine::InitRepo(repo_path));
+  ebbackup::RepoInitOptions opts{};
+  opts.standard_digest = (flags & EB_BACKUP_FLAG_LEGACY_DIGEST) == 0;
+  if ((flags & EB_BACKUP_INIT_LEGACY) == 0) {
+    opts.persistent_index = true;
+    opts.manifest_binary = true;
+    opts.snapshots = true;
+    opts.ebpack = true;
+    opts.coalesced_meta = true;
+  }
+  return ToEbStatus(ebbackup::BackupEngine::InitRepoEx(repo_path, opts));
 }
 
 EbStatus eb_backup_run(EbBackupEngine* eng, const char* source_path) {
@@ -197,6 +222,51 @@ EbStatus eb_backup_get_stats(EbBackupEngine* eng, EbBackupStats* out) {
   out->chunks_reused_from_cfi = s.chunks_reused_from_cfi;
   out->bytes_processed = s.bytes_processed;
   out->orphan_chunks_hint = s.orphan_chunks_hint;
+  out->content_incompressible_skips = s.content_class.incompressible_skips;
+  out->content_lz4_only = s.content_class.lz4_only;
+  out->content_zstd_attempts = s.content_class.zstd_attempts;
+  out->content_zstd_wins = s.content_class.zstd_wins;
+  return EB_OK;
+}
+
+EbStatus eb_backup_compact(EbBackupEngine* eng, int dry_run,
+                           EbCompactReport* report) {
+  if (!eng) return EB_ERROR_INVALID_ARGUMENT;
+  auto* impl = reinterpret_cast<EbBackupEngineImpl*>(eng);
+  ebbackup::CompactReport local{};
+  const ebbackup::Status st =
+      impl->engine->Compact(dry_run != 0, report ? &local : nullptr);
+  if (!st.ok()) {
+    impl->last_error = st.message();
+    return ToEbStatus(st);
+  }
+  if (report) {
+    report->physical_before = local.physical_before;
+    report->physical_after = local.physical_after;
+    report->live_bytes = local.live_bytes;
+    report->records_copied = local.records_copied;
+    report->ampl_ratio_before = local.ampl_ratio_before;
+    report->ampl_ratio_after = local.ampl_ratio_after;
+  }
+  return EB_OK;
+}
+
+EbStatus eb_backup_repo_stats(EbBackupEngine* eng, EbRepoStats* out) {
+  if (!eng || !out) return EB_ERROR_INVALID_ARGUMENT;
+  auto* impl = reinterpret_cast<EbBackupEngineImpl*>(eng);
+  ebbackup::RepoStats stats{};
+  const ebbackup::Status st = impl->engine->GetRepoStats(&stats);
+  if (!st.ok()) {
+    impl->last_error = st.message();
+    return ToEbStatus(st);
+  }
+  out->physical_bytes = stats.physical_bytes;
+  out->live_bytes = stats.live_bytes;
+  out->orphan_bytes = stats.orphan_bytes;
+  out->manifest_bytes = stats.manifest_bytes;
+  out->unique_chunks = stats.unique_chunks;
+  out->tombstoned_chunks = stats.tombstoned_chunks;
+  out->ampl_ratio = stats.ampl_ratio;
   return EB_OK;
 }
 
@@ -220,5 +290,90 @@ char* eb_backup_last_error(EbBackupEngine* eng) {
 }
 
 void eb_backup_free_string(char* s) { std::free(s); }
+
+EbStatus eb_backup_verify_at(EbBackupEngine* eng, uint64_t txn_id) {
+  if (!eng) return EB_ERROR_INVALID_ARGUMENT;
+  auto* impl = reinterpret_cast<EbBackupEngineImpl*>(eng);
+  ebbackup::BackupOptions opts{};
+  opts.snapshot_txn_id = txn_id;
+  const ebbackup::Status st = impl->engine->Verify(opts);
+  if (!st.ok()) impl->last_error = st.message();
+  return ToEbStatus(st);
+}
+
+EbStatus eb_backup_restore_at(EbBackupEngine* eng, const char* dest_path,
+                              uint64_t txn_id, uint32_t flags) {
+  if (!eng || !dest_path) return EB_ERROR_INVALID_ARGUMENT;
+  auto* impl = reinterpret_cast<EbBackupEngineImpl*>(eng);
+  ebbackup::RestoreOptions opts{};
+  opts.encryption_password = impl->password;
+  opts.filter = impl->filter;
+  opts.snapshot_txn_id = txn_id;
+  if (flags & EB_RESTORE_FLAG_SKIP_CONTENT_VERIFY) {
+    opts.verify_subset_merkle = false;
+    opts.verify_restored_content = false;
+  }
+  const ebbackup::Status st = impl->engine->Restore(dest_path, opts);
+  if (!st.ok()) impl->last_error = st.message();
+  return ToEbStatus(st);
+}
+
+EbStatus eb_backup_list_snapshots(EbBackupEngine* eng, EbSnapshotInfo** out,
+                                  size_t* count) {
+  if (!eng || !out || !count) return EB_ERROR_INVALID_ARGUMENT;
+  *out = nullptr;
+  *count = 0;
+  auto* impl = reinterpret_cast<EbBackupEngineImpl*>(eng);
+  std::vector<ebbackup::SnapshotEntry> entries;
+  const ebbackup::Status st = impl->engine->ListSnapshots(&entries);
+  if (!st.ok()) {
+    impl->last_error = st.message();
+    return ToEbStatus(st);
+  }
+  if (entries.empty()) return EB_OK;
+  auto* arr = static_cast<EbSnapshotInfo*>(
+      std::malloc(entries.size() * sizeof(EbSnapshotInfo)));
+  if (!arr) return EB_ERROR_INTERNAL;
+  for (size_t i = 0; i < entries.size(); ++i) {
+    arr[i].txn_id = entries[i].txn_id;
+    arr[i].created_at_unix = entries[i].created_at_unix;
+    arr[i].manifest_crc32 = entries[i].manifest_crc32;
+    arr[i].file_count = entries[i].file_count;
+  }
+  *out = arr;
+  *count = entries.size();
+  return EB_OK;
+}
+
+void eb_backup_free_snapshots(EbSnapshotInfo* snapshots) { std::free(snapshots); }
+
+EbStatus eb_backup_prune_snapshots(EbBackupEngine* eng,
+                                   const char* retention_tiers, int retain_min,
+                                   int dry_run, EbPruneReport* report) {
+  if (!eng) return EB_ERROR_INVALID_ARGUMENT;
+  auto* impl = reinterpret_cast<EbBackupEngineImpl*>(eng);
+  ebbackup::RetentionPolicy policy = ebbackup::DefaultRetentionPolicy();
+  if (retention_tiers && retention_tiers[0] != '\0') {
+    const ebbackup::Status parse_st =
+        ebbackup::ParseRetentionTiers(retention_tiers, &policy);
+    if (!parse_st.ok()) {
+      impl->last_error = parse_st.message();
+      return ToEbStatus(parse_st);
+    }
+  }
+  if (retain_min > 0) policy.retain_min = retain_min;
+  ebbackup::PruneReport local{};
+  const ebbackup::Status st =
+      impl->engine->PruneSnapshots(policy, dry_run != 0, &local);
+  if (!st.ok()) {
+    impl->last_error = st.message();
+    return ToEbStatus(st);
+  }
+  if (report) {
+    report->kept_count = local.kept_count;
+    report->pruned_count = local.pruned_count;
+  }
+  return EB_OK;
+}
 
 }  // extern "C"

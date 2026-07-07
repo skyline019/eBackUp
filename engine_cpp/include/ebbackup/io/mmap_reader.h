@@ -15,6 +15,8 @@ class MmapReader {
 
   MmapReader(const MmapReader&) = delete;
   MmapReader& operator=(const MmapReader&) = delete;
+  MmapReader(MmapReader&& other) noexcept;
+  MmapReader& operator=(MmapReader&& other) noexcept;
 
   Status Open(const std::string& path);
   void Close();

@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "ebbackup/chunk/cfi_bloom.h"
+#include "ebbackup/chunk/cfi_rolling.h"
 #include "ebbackup/chunk/rabin_anchor.h"
 #include "ebbackup/chunk/rolling_checksum.h"
 #include "ebbackup/common/digest.h"
@@ -49,8 +51,10 @@ size_t LowerBoundAnchorPos(const CfiAnchorIndex& index,
 
 }  // namespace
 
-EbHcrboChunker::EbHcrboChunker(EbHcrboConfig config)
-    : config_(config), fast_(config.fast) {}
+EbHcrboChunker::EbHcrboChunker(EbHcrboConfig config) : config_(std::move(config)) {
+  config_.fast.digest_algo = config_.digest_algo;
+  fast_ = FastCdcSlice(config_.fast);
+}
 
 Status EbHcrboChunker::ChunkRegion(const uint8_t* data, size_t len,
                                    size_t region_start, size_t region_end,
@@ -64,7 +68,7 @@ Status EbHcrboChunker::ChunkRegion(const uint8_t* data, size_t len,
     ChunkDescriptor desc{};
     desc.offset = region_start;
     desc.length = static_cast<uint32_t>(region_len);
-    Sha256(data + region_start, region_len, desc.hash);
+    ContentHash(config_.digest_algo, data + region_start, region_len, desc.hash);
     out->push_back(desc);
     if (cfi_out) {
       ChunkAnchor a{};
@@ -89,7 +93,7 @@ Status EbHcrboChunker::ChunkRegion(const uint8_t* data, size_t len,
       ChunkDescriptor desc{};
       desc.offset = region_start;
       desc.length = static_cast<uint32_t>(left_cut - region_start);
-      Sha256(data + desc.offset, desc.length, desc.hash);
+      ContentHash(config_.digest_algo, data + desc.offset, desc.length, desc.hash);
       out->push_back(desc);
       if (stats) ++stats->chunks_cut_rabin;
       if (cfi_out) {
@@ -135,7 +139,7 @@ Status EbHcrboChunker::ChunkRegion(const uint8_t* data, size_t len,
     ChunkDescriptor desc{};
     desc.offset = inner_end;
     desc.length = static_cast<uint32_t>(region_end - inner_end);
-    Sha256(data + desc.offset, desc.length, desc.hash);
+    ContentHash(config_.digest_algo, data + desc.offset, desc.length, desc.hash);
     out->push_back(desc);
     if (stats) ++stats->chunks_cut_rabin;
     if (cfi_out) {
@@ -174,6 +178,8 @@ Status EbHcrboChunker::ChunkIncremental(const uint8_t* data, size_t len,
 
   CfiAnchorIndex index;
   BuildCfiAnchorIndex(history, &index);
+  const CfiBloomFilter bloom = CfiBloomFilter::BuildFromCfi(history);
+  CfiRollingVerifier rolling;
   size_t sorted_pos = 0;
   size_t pos = 0;
   while (pos < len && sorted_pos < index.by_offset.size()) {
@@ -198,18 +204,27 @@ Status EbHcrboChunker::ChunkIncremental(const uint8_t* data, size_t len,
     bool hash_match = false;
     bool rolling_mismatch = false;
     if (anchor.rolling_checksum != 0) {
-      const uint32_t rc = RollingChecksum(data + anchor.offset, anchor.length);
+      const uint32_t rc =
+          rolling.VerifyAnchor(data, anchor.offset, anchor.length,
+                               anchor.rolling_checksum);
       if (rc == anchor.rolling_checksum) {
-        uint8_t current_hash[32];
-        Sha256(data + anchor.offset, anchor.length, current_hash);
-        hash_match = std::memcmp(current_hash, anchor.hash, 32) == 0;
+        if (!bloom.MightContain(anchor.hash)) {
+          hash_match = false;
+          if (stats) ++stats->cfi_bloom_skip_hits;
+        } else {
+          uint8_t current_hash[32];
+          ContentHash(config_.digest_algo, data + anchor.offset, anchor.length,
+                      current_hash);
+          hash_match = std::memcmp(current_hash, anchor.hash, 32) == 0;
+        }
       } else {
         rolling_mismatch = true;
         ++index.rolling_skip_hits;
       }
     } else {
       uint8_t current_hash[32];
-      Sha256(data + anchor.offset, anchor.length, current_hash);
+      ContentHash(config_.digest_algo, data + anchor.offset, anchor.length,
+                  current_hash);
       hash_match = std::memcmp(current_hash, anchor.hash, 32) == 0;
     }
     if (hash_match) {
@@ -243,8 +258,9 @@ Status EbHcrboChunker::ChunkIncremental(const uint8_t* data, size_t len,
             next_anchor.offset + next_anchor.length > len) {
           break;
         }
-        const uint32_t next_rc =
-            RollingChecksum(data + next_anchor.offset, next_anchor.length);
+        const uint32_t next_rc = rolling.VerifyAnchor(
+            data, next_anchor.offset, next_anchor.length,
+            next_anchor.rolling_checksum);
         if (next_rc == next_anchor.rolling_checksum) {
           change_end = next_anchor.offset;
           break;
@@ -269,7 +285,10 @@ Status EbHcrboChunker::ChunkIncremental(const uint8_t* data, size_t len,
     const Status st = ChunkRegion(data, len, pos, len, false, out, cfi_out, stats);
     if (!st.ok()) return st;
   }
-  if (stats) stats->cfi_rolling_skip_hits = index.rolling_skip_hits;
+  if (stats) {
+    stats->cfi_rolling_skip_hits = index.rolling_skip_hits;
+    stats->cfi_rolling_recompute_avoided = rolling.recompute_avoided();
+  }
   return Status::Ok();
 }
 

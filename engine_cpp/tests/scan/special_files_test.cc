@@ -14,7 +14,7 @@ TEST(SpecialFilesTest, DirectoryTreeRestore) {
   const std::string repo = test::TempDir("special_dir_repo");
   const std::string source = test::TempDir("special_dir_source");
   const std::string dest = test::TempDir("special_dir_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   std::error_code ec;
   std::filesystem::create_directories(source + "/nested/empty", ec);
@@ -38,7 +38,7 @@ TEST(SpecialFilesTest, SymlinkRestore) {
   const std::string repo = test::TempDir("special_link_repo");
   const std::string source = test::TempDir("special_link_source");
   const std::string dest = test::TempDir("special_link_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   test::WriteFile(source + "/target.txt", "target-data");
   std::error_code ec;
@@ -60,7 +60,7 @@ TEST(SpecialFilesTest, JunctionRestore) {
   const std::string repo = test::TempDir("special_junc_repo");
   const std::string source = test::TempDir("special_junc_source");
   const std::string dest = test::TempDir("special_junc_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   std::error_code ec;
   std::filesystem::create_directories(source + "/real_dir", ec);

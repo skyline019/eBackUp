@@ -37,8 +37,8 @@ struct BackupSuperBlockExtension {
   uint32_t last_manifest_crc32{0};
   uint8_t merkle_root[32]{};
   uint8_t default_codec{0};
-  uint8_t backup_features{0};
-  uint8_t ext_padding[3526]{};
+  uint32_t backup_features{0};
+  uint8_t ext_padding[3523]{};
 };
 #pragma pack(pop)
 

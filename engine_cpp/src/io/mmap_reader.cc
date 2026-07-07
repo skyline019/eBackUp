@@ -15,6 +15,42 @@ namespace ebbackup {
 
 MmapReader::~MmapReader() { Close(); }
 
+MmapReader::MmapReader(MmapReader&& other) noexcept {
+  data_ = other.data_;
+  size_ = other.size_;
+#ifdef _WIN32
+  file_handle_ = other.file_handle_;
+  mapping_handle_ = other.mapping_handle_;
+  other.file_handle_ = nullptr;
+  other.mapping_handle_ = nullptr;
+#else
+  fd_ = other.fd_;
+  other.fd_ = -1;
+#endif
+  other.data_ = nullptr;
+  other.size_ = 0;
+}
+
+MmapReader& MmapReader::operator=(MmapReader&& other) noexcept {
+  if (this != &other) {
+    Close();
+    data_ = other.data_;
+    size_ = other.size_;
+#ifdef _WIN32
+    file_handle_ = other.file_handle_;
+    mapping_handle_ = other.mapping_handle_;
+    other.file_handle_ = nullptr;
+    other.mapping_handle_ = nullptr;
+#else
+    fd_ = other.fd_;
+    other.fd_ = -1;
+#endif
+    other.data_ = nullptr;
+    other.size_ = 0;
+  }
+  return *this;
+}
+
 Status MmapReader::Open(const std::string& path) {
   Close();
 #ifdef _WIN32

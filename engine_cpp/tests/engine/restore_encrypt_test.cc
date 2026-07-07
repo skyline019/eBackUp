@@ -12,7 +12,7 @@ TEST(RestoreEncryptTest, EncryptedBackupRoundTrip) {
   const std::string repo = test::TempDir("enc_repo");
   const std::string source = test::TempDir("enc_source");
   const std::string dest = test::TempDir("enc_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
   test::WriteFile(source + "/secret.bin", test::MakeSyntheticData(1024 * 1024, 9));
 
   BackupOptions opts{};
@@ -39,7 +39,7 @@ TEST(RestoreEncryptTest, EncryptedBackupRoundTrip) {
 TEST(RestoreEncryptTest, WrongPasswordVerifyFails) {
   const std::string repo = test::TempDir("enc_bad_repo");
   const std::string source = test::TempDir("enc_bad_source");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
   test::WriteFile(source + "/x.bin", "abc");
 
   BackupOptions opts{};

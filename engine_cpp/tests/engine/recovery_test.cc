@@ -7,10 +7,10 @@
 namespace ebbackup {
 namespace {
 
-TEST(BackupEngineTest, RecoverAfterInterruptedBackup) {
+TEST(RecoveryTest, RecoverAfterInterruptedBackup) {
   const std::string repo = test::TempDir("backup_recover_repo");
   const std::string source = test::TempDir("backup_recover_source");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
   test::WriteFile(source + "/data.bin", test::MakeSyntheticData(1024 * 1024, 3));
 
   {

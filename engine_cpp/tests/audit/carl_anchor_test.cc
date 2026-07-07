@@ -13,7 +13,7 @@ namespace {
 TEST(CarlAnchorTest, PublishLoadVerifyRoundtrip) {
   const std::string repo = test::TempDir("carl_anchor_repo");
   const std::string source = test::TempDir("carl_anchor_source");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
   test::WriteFile(source + "/file.txt", test::MakeSyntheticData(4096, 1));
 
   BackupEngine engine(repo);
@@ -38,7 +38,7 @@ TEST(CarlAnchorTest, PublishLoadVerifyRoundtrip) {
 TEST(CarlAnchorTest, SignedAnchorWithKey) {
   const std::string repo = test::TempDir("carl_anchor_sign_repo");
   const std::string source = test::TempDir("carl_anchor_sign_source");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
   test::WriteFile(source + "/file.txt", "signed-anchor");
 
 #ifdef _WIN32

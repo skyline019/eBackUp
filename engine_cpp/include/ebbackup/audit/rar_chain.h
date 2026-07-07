@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "ebbackup/common/digest.h"
 #include "ebbackup/common/status.h"
 
 namespace ebbackup {
@@ -38,7 +39,8 @@ Status ReadRarChainEntries(const std::string& chain_path,
 Status ReadLastRarChainEntry(const std::string& chain_path, RarChainEntry* out,
                              bool* found);
 
-Status VerifyRarChain(const std::string& chain_path, RarChainVerifyReport* out);
+Status VerifyRarChain(const std::string& chain_path, RarChainVerifyReport* out,
+                      DigestAlgo algo = DigestAlgo::kLegacy);
 
 std::string RarChainLastSha256(const std::string& chain_path);
 
@@ -47,7 +49,7 @@ uint64_t RarChainNextSequence(const std::string& chain_path);
 std::string BuildRarBodyJson(uint64_t txn_id, uint32_t manifest_crc32,
                              const uint8_t merkle_root[32]);
 
-std::string ComputeRarSha256(const std::string& body_json);
+std::string ComputeRarSha256(const std::string& body_json, DigestAlgo algo);
 
 }  // namespace audit
 }  // namespace ebbackup

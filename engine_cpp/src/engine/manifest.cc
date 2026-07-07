@@ -1,8 +1,10 @@
 #include "ebbackup/engine/manifest.h"
 
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 #include "ebbackup/common/crc32.h"
 #include "ebbackup/common/digest.h"
@@ -11,6 +13,58 @@
 namespace ebbackup {
 
 namespace {
+
+constexpr uint32_t kManifestV4InnerMagic = 0xEB4F0001u;
+
+enum ManifestV4MetaFlags : uint32_t {
+  kMetaMode = 0x01u,
+  kMetaUidGid = 0x02u,
+  kMetaTimes = 0x04u,
+  kMetaSymlink = 0x08u,
+  kMetaDevice = 0x10u,
+};
+
+void WriteU32(std::vector<uint8_t>& out, uint32_t v) {
+  out.push_back(static_cast<uint8_t>(v));
+  out.push_back(static_cast<uint8_t>(v >> 8));
+  out.push_back(static_cast<uint8_t>(v >> 16));
+  out.push_back(static_cast<uint8_t>(v >> 24));
+}
+
+void WriteU64(std::vector<uint8_t>& out, uint64_t v) {
+  for (int i = 0; i < 8; ++i) {
+    out.push_back(static_cast<uint8_t>(v >> (8 * i)));
+  }
+}
+
+bool ReadU32(const uint8_t*& p, const uint8_t* end, uint32_t* out) {
+  if (p + 4 > end) return false;
+  *out = static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+         (static_cast<uint32_t>(p[2]) << 16) |
+         (static_cast<uint32_t>(p[3]) << 24);
+  p += 4;
+  return true;
+}
+
+bool ReadU64(const uint8_t*& p, const uint8_t* end, uint64_t* out) {
+  if (p + 8 > end) return false;
+  *out = 0;
+  for (int i = 0; i < 8; ++i) {
+    *out |= static_cast<uint64_t>(p[i]) << (8 * i);
+  }
+  p += 8;
+  return true;
+}
+
+uint32_t BuildV4MetaFlags(const ManifestFileEntry& f) {
+  uint32_t flags = 0;
+  if (f.mode != 0) flags |= kMetaMode;
+  if (f.uid != 0xFFFFFFFFu || f.gid != 0xFFFFFFFFu) flags |= kMetaUidGid;
+  if (f.mtime_unix != 0 || f.atime_unix != 0) flags |= kMetaTimes;
+  if (!f.symlink_target.empty()) flags |= kMetaSymlink;
+  if (f.device_major != 0 || f.device_minor != 0) flags |= kMetaDevice;
+  return flags;
+}
 
 void AppendMetaLines(std::ostringstream& body, const ManifestFileEntry& f) {
   if (f.file_type != FileType::kRegular || f.has_extended_meta() ||
@@ -165,7 +219,164 @@ Status ParseBodyV2(std::istream& body_in, ManifestDocument* out) {
   return Status::Ok();
 }
 
+std::vector<uint8_t> BuildBodyV4(const ManifestDocument& doc) {
+  std::vector<uint8_t> body;
+  WriteU32(body, kManifestV4InnerMagic);
+  WriteU64(body, doc.txn_id);
+  WriteU32(body, static_cast<uint32_t>(doc.files.size()));
+  for (const auto& f : doc.files) {
+    WriteU32(body, static_cast<uint32_t>(f.relative_path.size()));
+    body.insert(body.end(), f.relative_path.begin(), f.relative_path.end());
+    body.push_back(static_cast<uint8_t>(f.file_type));
+    const uint32_t meta_flags = BuildV4MetaFlags(f);
+    WriteU32(body, meta_flags);
+    WriteU64(body, f.size);
+    if (meta_flags & kMetaMode) WriteU32(body, f.mode);
+    if (meta_flags & kMetaUidGid) {
+      WriteU32(body, f.uid);
+      WriteU32(body, f.gid);
+    }
+    if (meta_flags & kMetaTimes) {
+      WriteU64(body, static_cast<uint64_t>(f.mtime_unix));
+      WriteU64(body, static_cast<uint64_t>(f.atime_unix));
+    }
+    if (meta_flags & kMetaSymlink) {
+      WriteU32(body, static_cast<uint32_t>(f.symlink_target.size()));
+      body.insert(body.end(), f.symlink_target.begin(), f.symlink_target.end());
+    }
+    if (meta_flags & kMetaDevice) {
+      WriteU32(body, f.device_major);
+      WriteU32(body, f.device_minor);
+    }
+    WriteU32(body, static_cast<uint32_t>(f.chunk_hashes_hex.size()));
+    for (const auto& hex : f.chunk_hashes_hex) {
+      uint8_t hash[32];
+      if (!HexToBytes(hex, hash, 32)) continue;
+      body.insert(body.end(), hash, hash + 32);
+    }
+    WriteU32(body, static_cast<uint32_t>(f.cfi.anchors.size()));
+    for (const auto& a : f.cfi.anchors) {
+      WriteU64(body, a.offset);
+      WriteU32(body, a.length);
+      body.push_back(static_cast<uint8_t>(a.strength));
+      body.push_back(0);
+      body.push_back(0);
+      body.push_back(0);
+      body.insert(body.end(), a.hash, a.hash + 32);
+      WriteU32(body, a.rolling_checksum);
+    }
+  }
+  return body;
+}
+
+Status ParseBodyV4(const std::vector<uint8_t>& body, ManifestDocument* out) {
+  const uint8_t* p = body.data();
+  const uint8_t* end = body.data() + body.size();
+  uint32_t magic = 0;
+  if (!ReadU32(p, end, &magic) || magic != kManifestV4InnerMagic) {
+    return Status::Corrupt("manifest v4 inner magic mismatch");
+  }
+  if (!ReadU64(p, end, &out->txn_id)) {
+    return Status::Corrupt("manifest v4 txn_id missing");
+  }
+  uint32_t file_count = 0;
+  if (!ReadU32(p, end, &file_count)) {
+    return Status::Corrupt("manifest v4 file_count missing");
+  }
+  out->files.clear();
+  out->files.reserve(file_count);
+  for (uint32_t fi = 0; fi < file_count; ++fi) {
+    ManifestFileEntry entry{};
+    uint32_t path_len = 0;
+    if (!ReadU32(p, end, &path_len) || p + path_len > end) {
+      return Status::Corrupt("manifest v4 path missing");
+    }
+    entry.relative_path.assign(reinterpret_cast<const char*>(p), path_len);
+    p += path_len;
+    if (p >= end) return Status::Corrupt("manifest v4 file_type missing");
+    entry.file_type = static_cast<FileType>(*p++);
+    uint32_t meta_flags = 0;
+    if (!ReadU32(p, end, &meta_flags) || !ReadU64(p, end, &entry.size)) {
+      return Status::Corrupt("manifest v4 file header incomplete");
+    }
+    if (meta_flags & kMetaMode) {
+      if (!ReadU32(p, end, &entry.mode)) {
+        return Status::Corrupt("manifest v4 mode missing");
+      }
+    }
+    if (meta_flags & kMetaUidGid) {
+      if (!ReadU32(p, end, &entry.uid) || !ReadU32(p, end, &entry.gid)) {
+        return Status::Corrupt("manifest v4 uid/gid missing");
+      }
+    }
+    if (meta_flags & kMetaTimes) {
+      uint64_t mtime = 0;
+      uint64_t atime = 0;
+      if (!ReadU64(p, end, &mtime) || !ReadU64(p, end, &atime)) {
+        return Status::Corrupt("manifest v4 times missing");
+      }
+      entry.mtime_unix = static_cast<int64_t>(mtime);
+      entry.atime_unix = static_cast<int64_t>(atime);
+    }
+    if (meta_flags & kMetaSymlink) {
+      uint32_t sym_len = 0;
+      if (!ReadU32(p, end, &sym_len) || p + sym_len > end) {
+        return Status::Corrupt("manifest v4 symlink missing");
+      }
+      entry.symlink_target.assign(reinterpret_cast<const char*>(p), sym_len);
+      p += sym_len;
+    }
+    if (meta_flags & kMetaDevice) {
+      if (!ReadU32(p, end, &entry.device_major) ||
+          !ReadU32(p, end, &entry.device_minor)) {
+        return Status::Corrupt("manifest v4 device missing");
+      }
+    }
+    uint32_t chunk_count = 0;
+    if (!ReadU32(p, end, &chunk_count) || p + chunk_count * 32 > end) {
+      return Status::Corrupt("manifest v4 chunks missing");
+    }
+    entry.chunk_hashes_hex.reserve(chunk_count);
+    for (uint32_t ci = 0; ci < chunk_count; ++ci) {
+      entry.chunk_hashes_hex.push_back(BytesToHex(p, 32));
+      p += 32;
+    }
+    uint32_t anchor_count = 0;
+    if (!ReadU32(p, end, &anchor_count)) {
+      return Status::Corrupt("manifest v4 anchor_count missing");
+    }
+    entry.cfi.anchors.reserve(anchor_count);
+    for (uint32_t ai = 0; ai < anchor_count; ++ai) {
+      ChunkAnchor anchor{};
+      if (!ReadU64(p, end, &anchor.offset) ||
+          !ReadU32(p, end, &anchor.length) || p + 4 > end) {
+        return Status::Corrupt("manifest v4 anchor header missing");
+      }
+      anchor.strength = static_cast<AnchorStrength>(p[0]);
+      p += 4;
+      if (p + 32 + 4 > end) {
+        return Status::Corrupt("manifest v4 anchor payload missing");
+      }
+      std::memcpy(anchor.hash, p, 32);
+      p += 32;
+      if (!ReadU32(p, end, &anchor.rolling_checksum)) {
+        return Status::Corrupt("manifest v4 anchor checksum missing");
+      }
+      entry.cfi.anchors.push_back(anchor);
+    }
+    out->files.push_back(std::move(entry));
+  }
+  return Status::Ok();
+}
+
 }  // namespace
+
+Status ComputeManifestV4BodyCrc32(const std::vector<uint8_t>& body,
+                                  uint32_t* out) {
+  if (!out) return Status::InvalidArgument("out is null");
+  *out = Crc32(body.data(), body.size());
+  return Status::Ok();
+}
 
 const char* FileTypeToString(FileType type) {
   switch (type) {
@@ -227,7 +438,31 @@ Status WriteManifestV3(const std::string& path, const ManifestDocument& doc) {
   return WriteManifestWithHeader(path, "EBMANIFEST3", BuildBodyV2(doc));
 }
 
-Status WriteManifestAuto(const std::string& path, const ManifestDocument& doc) {
+Status WriteManifestV4(const std::string& path, const ManifestDocument& doc) {
+  const std::vector<uint8_t> body = BuildBodyV4(doc);
+  uint32_t crc = 0;
+  const Status crc_st = ComputeManifestV4BodyCrc32(body, &crc);
+  if (!crc_st.ok()) return crc_st;
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) return Status::IoError("cannot write manifest: " + path);
+  out << "EBMANIFEST4\n";
+  out.write(reinterpret_cast<const char*>(body.data()),
+            static_cast<std::streamsize>(body.size()));
+  const uint8_t crc_bytes[4] = {
+      static_cast<uint8_t>(crc), static_cast<uint8_t>(crc >> 8),
+      static_cast<uint8_t>(crc >> 16), static_cast<uint8_t>(crc >> 24)};
+  out.write(reinterpret_cast<const char*>(crc_bytes), 4);
+  out.flush();
+  if (!out.good()) return Status::IoError("manifest write failed");
+  out.close();
+  return FsyncPath(path);
+}
+
+Status WriteManifestAuto(const std::string& path, const ManifestDocument& doc,
+                         bool prefer_binary) {
+  if (prefer_binary) {
+    return WriteManifestV4(path, doc);
+  }
   if (DocumentUsesV3(doc)) {
     return WriteManifestV3(path, doc);
   }
@@ -268,6 +503,23 @@ Status ReadManifestAuto(const std::string& path, ManifestDocument* out) {
     }
     if (have_file) out->files.push_back(current);
     return Status::Ok();
+  }
+
+  if (header == "EBMANIFEST4") {
+    std::vector<uint8_t> raw((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
+    if (raw.size() < 4) return Status::Corrupt("manifest v4 too short");
+    const uint32_t expected =
+        static_cast<uint32_t>(raw[raw.size() - 4]) |
+        (static_cast<uint32_t>(raw[raw.size() - 3]) << 8) |
+        (static_cast<uint32_t>(raw[raw.size() - 2]) << 16) |
+        (static_cast<uint32_t>(raw[raw.size() - 1]) << 24);
+    raw.resize(raw.size() - 4);
+    uint32_t actual = 0;
+    const Status crc_st = ComputeManifestV4BodyCrc32(raw, &actual);
+    if (!crc_st.ok()) return crc_st;
+    if (actual != expected) return Status::Corrupt("manifest v4 crc mismatch");
+    return ParseBodyV4(raw, out);
   }
 
   if (header != "EBMANIFEST2" && header != "EBMANIFEST3") {

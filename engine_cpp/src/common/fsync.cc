@@ -40,4 +40,24 @@ Status FsyncPath(const std::string& path) {
   return Status::Ok();
 }
 
+Status FsyncFd(int fd) {
+  if (fd < 0) return Status::InvalidArgument("invalid fd for fsync");
+#ifdef _WIN32
+  if (_commit(fd) != 0) {
+    return Status::IoError("fsync fd failed");
+  }
+#else
+#if defined(__linux__) || defined(__APPLE__)
+  if (fdatasync(fd) != 0) {
+    return Status::IoError("fdatasync failed");
+  }
+#else
+  if (fsync(fd) != 0) {
+    return Status::IoError("fsync fd failed");
+  }
+#endif
+#endif
+  return Status::Ok();
+}
+
 }  // namespace ebbackup

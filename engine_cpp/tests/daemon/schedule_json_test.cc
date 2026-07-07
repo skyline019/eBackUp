@@ -46,17 +46,11 @@ TEST(ScheduleJsonTest, LoadJsonConfigAndRunOnce) {
   EXPECT_TRUE(cfg.backup_options.use_lz4);
   ASSERT_TRUE(RunScheduledBackup(cfg, 1).ok());
 
-  int repo_count = 0;
-  for (const auto& entry : std::filesystem::directory_iterator(repo_base)) {
-    if (!entry.is_directory()) continue;
-    if (entry.path().filename().string().rfind("repo-", 0) == 0) {
-      ++repo_count;
-      BackupEngine engine(entry.path().string());
-      ASSERT_TRUE(engine.Open().ok());
-      ASSERT_TRUE(engine.Verify().ok());
-    }
-  }
-  EXPECT_EQ(repo_count, 1);
+  const std::string repo = ScheduleRepoPath(repo_base);
+  ASSERT_TRUE(std::filesystem::exists(repo + "/superblock.bin"));
+  BackupEngine engine(repo);
+  ASSERT_TRUE(engine.Open().ok());
+  ASSERT_TRUE(engine.Verify().ok());
 }
 
 TEST(ScheduleJsonTest, FallsBackToKvFormat) {
@@ -100,6 +94,26 @@ TEST(ScheduleJsonTest, FilterGlobInJsonConfig) {
   EXPECT_EQ(cfg.backup_options.filter.include_globs[0], "keep.txt");
   EXPECT_EQ(cfg.backup_options.filter.exclude_globs[0], "*.tmp");
   ASSERT_TRUE(RunScheduledBackup(cfg, 1).ok());
+}
+
+TEST(ScheduleJsonTest, CompressAndDurabilityFields) {
+  const std::string config_path = test::TempDir("json_compress_cfg") + "/schedule.json";
+  const std::string json =
+      "{\n"
+      "  \"interval_seconds\": 1,\n"
+      "  \"source\": \"/tmp/src\",\n"
+      "  \"repo_base\": \"/tmp/repos\",\n"
+      "  \"compress\": \"zstd\",\n"
+      "  \"cpu_budget\": 60,\n"
+      "  \"durability\": \"balanced\"\n"
+      "}\n";
+  test::WriteFile(config_path, json);
+
+  ScheduleConfig cfg{};
+  ASSERT_TRUE(LoadScheduleConfigAuto(config_path, &cfg).ok());
+  EXPECT_EQ(cfg.backup_options.compress_mode, CompressMode::kZstd);
+  EXPECT_EQ(cfg.backup_options.cpu_budget_permille, 600u);
+  EXPECT_EQ(cfg.backup_options.durability, DurabilityMode::kBalanced);
 }
 
 }  // namespace

@@ -153,9 +153,9 @@ Status LoadOrCreateRepoSalt(const std::string& repo_path, uint8_t salt[16]) {
 }
 
 Status DeriveContentKey(const std::string& password, const uint8_t salt[16],
-                        uint8_t cek[32]) {
+                        uint8_t cek[32], DigestAlgo algo) {
   if (password.empty()) return Status::InvalidArgument("empty password");
-  Pbkdf2Sha256(reinterpret_cast<const uint8_t*>(password.data()),
+  Pbkdf2Sha256(algo, reinterpret_cast<const uint8_t*>(password.data()),
                password.size(), salt, 16, 100000, cek);
   return Status::Ok();
 }

@@ -114,8 +114,11 @@ std::string BuildRarBodyJson(uint64_t txn_id, uint32_t manifest_crc32,
   return oss.str();
 }
 
-std::string ComputeRarSha256(const std::string& body_json) {
-  return Sha256HexString(body_json);
+std::string ComputeRarSha256(const std::string& body_json, DigestAlgo algo) {
+  uint8_t hash[32];
+  ContentHash(algo, reinterpret_cast<const uint8_t*>(body_json.data()),
+                body_json.size(), hash);
+  return BytesToHex(hash, 32);
 }
 
 Status AppendRarChainEntry(const std::string& chain_path,
@@ -182,7 +185,8 @@ Status ReadLastRarChainEntry(const std::string& chain_path, RarChainEntry* out,
   return Status::Ok();
 }
 
-Status VerifyRarChain(const std::string& chain_path, RarChainVerifyReport* out) {
+Status VerifyRarChain(const std::string& chain_path, RarChainVerifyReport* out,
+                      DigestAlgo algo) {
   if (!out) return Status::InvalidArgument("out is null");
   out->errors.clear();
   out->consistent = true;
@@ -208,7 +212,7 @@ Status VerifyRarChain(const std::string& chain_path, RarChainVerifyReport* out) 
                             std::to_string(entry.sequence));
     }
     if (!entry.body_json.empty()) {
-      const std::string hash = ComputeRarSha256(entry.body_json);
+      const std::string hash = ComputeRarSha256(entry.body_json, algo);
       if (!entry.rar_sha256.empty() && hash != entry.rar_sha256) {
         out->consistent = false;
         out->errors.push_back("rar_sha256 mismatch at seq " +

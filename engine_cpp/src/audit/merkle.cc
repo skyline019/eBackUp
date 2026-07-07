@@ -12,11 +12,12 @@ namespace audit {
 
 namespace {
 
-void HashPair(const uint8_t left[32], const uint8_t right[32], uint8_t out[32]) {
+void HashPair(DigestAlgo algo, const uint8_t left[32], const uint8_t right[32],
+              uint8_t out[32]) {
   uint8_t buf[64];
   std::memcpy(buf, left, 32);
   std::memcpy(buf + 32, right, 32);
-  Sha256(buf, 64, out);
+  ContentHash(algo, buf, 64, out);
 }
 
 Status BuildLeaves(const ManifestDocument& doc,
@@ -54,7 +55,7 @@ Status BuildLeavesFromFiles(const std::vector<ManifestFileEntry>& files,
 }
 
 Status MerkleFromLeafBytes(const std::vector<std::vector<uint8_t>>& leaves,
-                           uint8_t root_out[32]) {
+                           uint8_t root_out[32], DigestAlgo algo) {
   if (!root_out) return Status::InvalidArgument("root_out is null");
   if (leaves.empty()) {
     std::memset(root_out, 0, 32);
@@ -70,7 +71,7 @@ Status MerkleFromLeafBytes(const std::vector<std::vector<uint8_t>>& leaves,
       if (i + 1 < level.size()) {
         right = level[i + 1].data();
       }
-      HashPair(left, right, combined.data());
+      HashPair(algo, left, right, combined.data());
       next.push_back(std::move(combined));
     }
     level = std::move(next);
@@ -82,7 +83,7 @@ Status MerkleFromLeafBytes(const std::vector<std::vector<uint8_t>>& leaves,
 }  // namespace
 
 Status ComputeMerkleRootFromHashes(const std::vector<std::string>& leaf_hex,
-                                   uint8_t root_out[32]) {
+                                   uint8_t root_out[32], DigestAlgo algo) {
   std::vector<std::vector<uint8_t>> leaves;
   leaves.reserve(leaf_hex.size());
   for (const auto& hex : leaf_hex) {
@@ -95,22 +96,23 @@ Status ComputeMerkleRootFromHashes(const std::vector<std::string>& leaf_hex,
     }
     leaves.push_back(std::move(hash));
   }
-  return MerkleFromLeafBytes(leaves, root_out);
+  return MerkleFromLeafBytes(leaves, root_out, algo);
 }
 
-Status ComputeMerkleRoot(const ManifestDocument& doc, uint8_t root_out[32]) {
+Status ComputeMerkleRoot(const ManifestDocument& doc, uint8_t root_out[32],
+                         DigestAlgo algo) {
   std::vector<std::string> leaf_hex;
   const Status st = BuildLeaves(doc, &leaf_hex);
   if (!st.ok()) return st;
-  return ComputeMerkleRootFromHashes(leaf_hex, root_out);
+  return ComputeMerkleRootFromHashes(leaf_hex, root_out, algo);
 }
 
 Status ComputeMerkleRootForFiles(const std::vector<ManifestFileEntry>& files,
-                                 uint8_t root_out[32]) {
+                                 uint8_t root_out[32], DigestAlgo algo) {
   std::vector<std::string> leaf_hex;
   const Status st = BuildLeavesFromFiles(files, &leaf_hex);
   if (!st.ok()) return st;
-  return ComputeMerkleRootFromHashes(leaf_hex, root_out);
+  return ComputeMerkleRootFromHashes(leaf_hex, root_out, algo);
 }
 
 Status VerifyRestoredFileChunks(const std::string& restored_path,
@@ -139,7 +141,7 @@ Status VerifyRestoredFileChunks(const std::string& restored_path,
       return Status::Corrupt("restored file shorter than manifest chunks");
     }
     uint8_t actual[32];
-    Sha256(segment.data(), chunk_len, actual);
+    ContentHash(store->digest_algo(), segment.data(), chunk_len, actual);
     if (std::memcmp(actual, expected, 32) != 0) {
       return Status::Corrupt("restored chunk hash mismatch");
     }
@@ -173,7 +175,7 @@ Status ComputeMerkleRootFromRestoredFiles(
       leaf_hex.push_back(hex);
     }
   }
-  return ComputeMerkleRootFromHashes(leaf_hex, root_out);
+  return ComputeMerkleRootFromHashes(leaf_hex, root_out, store->digest_algo());
 }
 
 }  // namespace audit

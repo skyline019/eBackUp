@@ -27,10 +27,11 @@ TEST(PipelineParityTest, SequentialMatchesPipeline) {
 
   const std::string repo_seq = test::TempDir("pipeline_parity_seq");
   const std::string repo_pipe = test::TempDir("pipeline_parity_pipe");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo_seq).ok());
-  ASSERT_TRUE(BackupEngine::InitRepo(repo_pipe).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo_seq).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo_pipe).ok());
 
   BackupOptions seq_opts{};
+  seq_opts.disable_pipeline = true;
   BackupOptions pipe_opts{};
   pipe_opts.use_pipeline = true;
 
@@ -58,11 +59,12 @@ TEST(PipelineParityTest, PipelineLz4MatchesSequentialLz4) {
 
   const std::string repo_seq = test::TempDir("pipeline_lz4_seq");
   const std::string repo_pipe = test::TempDir("pipeline_lz4_pipe");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo_seq).ok());
-  ASSERT_TRUE(BackupEngine::InitRepo(repo_pipe).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo_seq).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo_pipe).ok());
 
   BackupOptions seq_opts{};
   seq_opts.use_lz4 = true;
+  seq_opts.disable_pipeline = true;
   BackupOptions pipe_opts{};
   pipe_opts.use_lz4 = true;
   pipe_opts.use_pipeline = true;

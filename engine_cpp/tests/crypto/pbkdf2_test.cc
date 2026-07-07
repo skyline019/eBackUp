@@ -25,7 +25,7 @@ TEST(Pbkdf2Test, HmacSha256Golden) {
   std::memset(key, 0x0b, sizeof(key));
   const uint8_t data[] = "Hi There";
   uint8_t out[32]{};
-  HmacSha256(key, sizeof(key), data, sizeof(data) - 1, out);
+  HmacSha256(DigestAlgo::kLegacy, key, sizeof(key), data, sizeof(data) - 1, out);
   const uint8_t expected[32] = {
       0xb0, 0x34, 0x4c, 0x61, 0xd8, 0xdb, 0x38, 0x53, 0x5c, 0xa8, 0xaf, 0xce,
       0xaf, 0x0b, 0xf1, 0x2b, 0x88, 0x1d, 0xc2, 0x00, 0xc9, 0x83, 0x3d, 0xa7,
@@ -37,7 +37,7 @@ TEST(Pbkdf2Test, OneIterationGolden) {
   const std::string password = "password";
   const std::string salt = "salt";
   uint8_t out[32]{};
-  Pbkdf2Sha256(reinterpret_cast<const uint8_t*>(password.data()),
+  Pbkdf2Sha256(DigestAlgo::kLegacy, reinterpret_cast<const uint8_t*>(password.data()),
                password.size(),
                reinterpret_cast<const uint8_t*>(salt.data()), salt.size(), 1,
                out);
@@ -53,11 +53,25 @@ TEST(Pbkdf2Test, DeriveContentKeyUses100kIterations) {
   uint8_t salt[16]{};
   for (size_t i = 0; i < 16; ++i) salt[i] = static_cast<uint8_t>(i + 1);
   uint8_t via_derive[32]{};
-  ASSERT_TRUE(DeriveContentKey(password, salt, via_derive).ok());
+  ASSERT_TRUE(DeriveContentKey(password, salt, via_derive, DigestAlgo::kLegacy).ok());
   uint8_t direct[32]{};
-  Pbkdf2Sha256(reinterpret_cast<const uint8_t*>(password.data()),
+  Pbkdf2Sha256(DigestAlgo::kLegacy, reinterpret_cast<const uint8_t*>(password.data()),
                password.size(), salt, 16, 100000, direct);
   EXPECT_EQ(std::memcmp(via_derive, direct, 32), 0);
+}
+
+TEST(Pbkdf2Test, LegacyAndStandardKdfMatchForSamePass) {
+  const std::string password = "same-pass";
+  uint8_t salt[16]{};
+  for (size_t i = 0; i < 16; ++i) salt[i] = static_cast<uint8_t>(i + 1);
+  uint8_t legacy[32]{};
+  uint8_t standard[32]{};
+  Pbkdf2Sha256(DigestAlgo::kLegacy, reinterpret_cast<const uint8_t*>(password.data()),
+               password.size(), salt, 16, 100000, legacy);
+  Pbkdf2Sha256(DigestAlgo::kStandard,
+               reinterpret_cast<const uint8_t*>(password.data()), password.size(),
+               salt, 16, 100000, standard);
+  EXPECT_EQ(std::memcmp(legacy, standard, 32), 0);
 }
 
 }  // namespace

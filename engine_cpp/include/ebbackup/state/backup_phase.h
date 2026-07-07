@@ -31,6 +31,7 @@ enum class BackupEvent {
 inline BackupPhase NextPhase(BackupPhase current, BackupEvent event) {
   switch (current) {
     case BackupPhase::kIdle:
+    case BackupPhase::kAborted:
       if (event == BackupEvent::kScanFile) return BackupPhase::kScanning;
       break;
     case BackupPhase::kScanning:

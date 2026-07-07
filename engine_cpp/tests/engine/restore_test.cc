@@ -13,7 +13,7 @@ TEST(RestoreTest, RoundTripHashMatch) {
   const std::string repo = test::TempDir("restore_repo");
   const std::string source = test::TempDir("restore_source");
   const std::string dest = test::TempDir("restore_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   const std::string payload = test::MakeSyntheticData(10 * 1024 * 1024, 4);
   test::WriteFile(source + "/nested/data.bin", payload);
@@ -36,7 +36,7 @@ TEST(RestoreTest, Lz4BackupRoundTrip) {
   const std::string repo = test::TempDir("restore_lz4_repo");
   const std::string source = test::TempDir("restore_lz4_source");
   const std::string dest = test::TempDir("restore_lz4_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   const std::string payload = test::MakeSyntheticData(8 * 1024 * 1024, 6);
   test::WriteFile(source + "/compressed.bin", payload);

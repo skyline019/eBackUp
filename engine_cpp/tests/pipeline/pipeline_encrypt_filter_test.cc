@@ -26,7 +26,7 @@ TEST(PipelineEncryptFilterTest, CombinedOptionsRoundTrip) {
 
   const std::string repo = test::TempDir("combo_repo");
   const std::string dest = test::TempDir("combo_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   BackupOptions opts{};
   opts.use_pipeline = true;

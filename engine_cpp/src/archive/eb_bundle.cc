@@ -220,7 +220,8 @@ Status ExportRepoToBundle(const std::string& repo_path,
       }
       uint8_t salt[16]{};
       uint8_t key[32]{};
-      Pbkdf2Sha256(reinterpret_cast<const uint8_t*>(options.password.data()),
+      Pbkdf2Sha256(DigestAlgo::kLegacy,
+                   reinterpret_cast<const uint8_t*>(options.password.data()),
                    options.password.size(), salt, 16, 100000, key);
       std::vector<uint8_t> encrypted;
       const Status enc_st =

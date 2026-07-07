@@ -17,7 +17,7 @@ TEST(WatchSmokeTest, FileChangeTriggersIncrementalBackup) {
   const std::string repo = test::TempDir("watch_repo");
   test::WriteFile(source + "/seed.txt", "seed");
 
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
   {
     BackupEngine engine(repo);
     ASSERT_TRUE(engine.Open().ok());

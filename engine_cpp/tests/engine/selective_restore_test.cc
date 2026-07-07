@@ -15,7 +15,7 @@ TEST(SelectiveRestoreTest, IncludePathRestoresSubtree) {
   const std::string repo = test::TempDir("sel_repo");
   const std::string source = test::TempDir("sel_source");
   const std::string dest = test::TempDir("sel_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   test::WriteFile(source + "/keep/nested.txt", "keep-data");
   test::WriteFile(source + "/drop/other.txt", "drop-data");
@@ -41,7 +41,7 @@ TEST(SelectiveRestoreTest, ExcludeGlobSkipsTmp) {
   const std::string repo = test::TempDir("sel_glob_repo");
   const std::string source = test::TempDir("sel_glob_source");
   const std::string dest = test::TempDir("sel_glob_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   test::WriteFile(source + "/data.bin", test::MakeSyntheticData(4096, 1));
   test::WriteFile(source + "/cache.tmp", "tmp-data");
@@ -62,7 +62,7 @@ TEST(SelectiveRestoreTest, FullPathGlobInclude) {
   const std::string repo = test::TempDir("sel_pathglob_repo");
   const std::string source = test::TempDir("sel_pathglob_source");
   const std::string dest = test::TempDir("sel_pathglob_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   test::WriteFile(source + "/src/a.cpp", "cpp-data");
   test::WriteFile(source + "/lib/src/a.cpp", "nested-cpp");
@@ -85,7 +85,7 @@ TEST(SelectiveRestoreTest, PostRestoreContentMerkleMatches) {
   const std::string repo = test::TempDir("sel_merkle_repo");
   const std::string source = test::TempDir("sel_merkle_source");
   const std::string dest = test::TempDir("sel_merkle_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   test::WriteFile(source + "/keep/data.bin", test::MakeSyntheticData(8192, 4));
   test::WriteFile(source + "/drop/other.bin", test::MakeSyntheticData(4096, 5));
@@ -105,7 +105,7 @@ TEST(SelectiveRestoreTest, TamperedRestoreFailsContentMerkle) {
   const std::string repo = test::TempDir("sel_tamper_repo");
   const std::string source = test::TempDir("sel_tamper_source");
   const std::string dest = test::TempDir("sel_tamper_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   test::WriteFile(source + "/keep/data.bin", test::MakeSyntheticData(4096, 6));
   test::WriteFile(source + "/drop/other.bin", "other");
@@ -145,7 +145,7 @@ TEST(SelectiveRestoreTest, FullRestoreVerifyContentOptIn) {
   const std::string repo = test::TempDir("sel_full_verify_repo");
   const std::string source = test::TempDir("sel_full_verify_source");
   const std::string dest = test::TempDir("sel_full_verify_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   test::WriteFile(source + "/data.bin", test::MakeSyntheticData(8192, 20));
 
@@ -163,7 +163,7 @@ TEST(SelectiveRestoreTest, FullRestoreSkipVerifyByDefault) {
   const std::string repo = test::TempDir("sel_full_skip_repo");
   const std::string source = test::TempDir("sel_full_skip_source");
   const std::string dest = test::TempDir("sel_full_skip_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   test::WriteFile(source + "/quick.txt", "fast-restore");
 
@@ -180,7 +180,7 @@ TEST(SelectiveRestoreTest, EncryptedSelectiveRestore) {
   const std::string repo = test::TempDir("sel_enc_repo");
   const std::string source = test::TempDir("sel_enc_source");
   const std::string dest = test::TempDir("sel_enc_dest");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   test::WriteFile(source + "/secret.txt", test::MakeSyntheticData(8192, 3));
   test::WriteFile(source + "/public.txt", "public");

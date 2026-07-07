@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ebbackup VERSION 0.1.0 LANGUAGES CXX)
+project(ebbackup VERSION 0.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -25,7 +25,7 @@ add_subdirectory(engine_cpp)
 if(EBBACKUP_BUILD_TESTS)
   enable_testing()
   add_test(NAME ebbackup_tests COMMAND ebbackup_tests)
-  add_test(NAME eb_run_tests_capi COMMAND eb_run_tests_capi "*")
+  add_test(NAME eb_run_tests_capi COMMAND eb_run_tests_capi "EbBackupCapiTest.*")
   add_test(NAME ebbackup_bench_check COMMAND ebbackup_bench_check)
   set_tests_properties(ebbackup_bench_check PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"

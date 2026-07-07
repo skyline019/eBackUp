@@ -21,7 +21,7 @@ TEST(RarChainTest, AppendVerifyChain) {
   e1.manifest_crc32 = "deadbeef";
   e1.merkle_root = BytesToHex(merkle, 32);
   e1.body_json = BuildRarBodyJson(1, 0xDEADBEEFu, merkle);
-  e1.rar_sha256 = ComputeRarSha256(e1.body_json);
+  e1.rar_sha256 = ComputeRarSha256(e1.body_json, DigestAlgo::kLegacy);
   e1.generated_at_unix = 1000;
   ASSERT_TRUE(AppendRarChainEntry(path, e1).ok());
 
@@ -32,7 +32,7 @@ TEST(RarChainTest, AppendVerifyChain) {
   e2.manifest_crc32 = "cafebabe";
   e2.merkle_root = BytesToHex(merkle, 32);
   e2.body_json = BuildRarBodyJson(2, 0xCAFEBABEu, merkle);
-  e2.rar_sha256 = ComputeRarSha256(e2.body_json);
+  e2.rar_sha256 = ComputeRarSha256(e2.body_json, DigestAlgo::kLegacy);
   e2.generated_at_unix = 2000;
   ASSERT_TRUE(AppendRarChainEntry(path, e2).ok());
 

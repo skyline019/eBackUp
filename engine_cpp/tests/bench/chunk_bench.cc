@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "ebbackup/bench/throughput.h"
 #include "ebbackup/chunk/eb_hcrbo.h"
 #include "ebbackup/chunk/fast_cdc.h"
 
@@ -58,16 +59,20 @@ int main(int argc, char** argv) {
       std::chrono::duration<double>(t1 - t0).count();
   const double sec_hcrbo =
       std::chrono::duration<double>(t3 - t2).count();
-  const double mb = static_cast<double>(data.size()) / (1024.0 * 1024.0);
+  const uint64_t nbytes = static_cast<uint64_t>(data.size());
+  const double fast_MBps = ebbackup::bench::ThroughputMBps(nbytes, sec_fast);
+  const double fast_MiBps = ebbackup::bench::ThroughputMiBps(nbytes, sec_fast);
+  const double hcrbo_MBps = ebbackup::bench::ThroughputMBps(nbytes, sec_hcrbo);
+  const double hcrbo_MiBps = ebbackup::bench::ThroughputMiBps(nbytes, sec_hcrbo);
   const double reuse =
       full.empty() ? 0.0 : 100.0 * stats.chunks_reused_from_cfi / full.size();
   std::printf(
-      "bench fastcdc: chunks=%zu throughput=%.2f MB/s\n", fast_chunks.size(),
-      sec_fast > 0 ? mb / sec_fast : 0.0);
+      "bench fastcdc: chunks=%zu throughput=%.2f MB/s (MiBps=%.2f)\n",
+      fast_chunks.size(), fast_MBps, fast_MiBps);
   std::printf(
       "bench hcrbo: chunks=%zu reused=%.1f%% throughput=%.2f MB/s "
-      "rolling_skip_hits=%llu indexed_scan=true\n",
-      incr.size(), reuse, sec_hcrbo > 0 ? mb / sec_hcrbo : 0.0,
+      "(MiBps=%.2f) rolling_skip_hits=%llu indexed_scan=true\n",
+      incr.size(), reuse, hcrbo_MBps, hcrbo_MiBps,
       static_cast<unsigned long long>(stats.cfi_rolling_skip_hits));
   return 0;
 }

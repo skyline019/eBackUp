@@ -78,7 +78,7 @@ TEST(MerkleTest, VerifyRestoredFileChunksRoundTrip) {
   const std::string repo = ebbackup::test::TempDir("merkle_verify_repo");
   const std::string source = ebbackup::test::TempDir("merkle_verify_source");
   const std::string dest = ebbackup::test::TempDir("merkle_verify_dest");
-  ASSERT_TRUE(ebbackup::BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(ebbackup::test::InitDefaultRepo(repo).ok());
   ebbackup::test::WriteFile(source + "/file.bin",
                             ebbackup::test::MakeSyntheticData(2048, 9));
 
@@ -101,7 +101,7 @@ TEST(MerkleTest, VerifyRestoredFileChunksLargeFile) {
   const std::string repo = ebbackup::test::TempDir("merkle_large_repo");
   const std::string source = ebbackup::test::TempDir("merkle_large_source");
   const std::string dest = ebbackup::test::TempDir("merkle_large_dest");
-  ASSERT_TRUE(ebbackup::BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(ebbackup::test::InitDefaultRepo(repo).ok());
   ebbackup::test::WriteFile(source + "/large.bin",
                             ebbackup::test::MakeSyntheticData(5 * 1024 * 1024, 17));
 

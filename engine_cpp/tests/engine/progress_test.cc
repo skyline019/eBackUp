@@ -11,7 +11,7 @@ namespace {
 TEST(ProgressTest, BackupEmitsIncreasingProgress) {
   const std::string repo = test::TempDir("progress_repo");
   const std::string source = test::TempDir("progress_source");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
   test::WriteFile(source + "/file.bin", test::MakeSyntheticData(512 * 1024, 1));
 
   std::vector<uint64_t> samples;

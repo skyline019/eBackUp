@@ -15,11 +15,14 @@ struct EbHcrboConfig {
   FastCdcConfig fast{};
   uint32_t strong_anchor_bytes{64 * 1024};
   uint64_t rabin_mask{0xFFFF};
+  DigestAlgo digest_algo{DigestAlgo::kLegacy};
 };
 
 struct EbHcrboStats {
   uint64_t chunks_reused_from_cfi{0};
   uint64_t cfi_rolling_skip_hits{0};
+  uint64_t cfi_rolling_recompute_avoided{0};
+  uint64_t cfi_bloom_skip_hits{0};
   uint64_t chunks_cut_fastcdc{0};
   uint64_t chunks_cut_rabin{0};
 };

@@ -19,6 +19,21 @@ struct OrphanGcReport {
 Status CollectReferencedHashes(const ManifestDocument& doc,
                                std::unordered_set<std::string>* out);
 
+Status CollectReferencedHashesRetained(const std::string& repo_path,
+                                       std::unordered_set<std::string>* out);
+
+Status CollectReferencedHashesForRepo(const std::string& repo_path,
+                                      bool latest_manifest_only,
+                                      std::unordered_set<std::string>* out);
+
+Status ScanOrphansReferenced(ChunkStore* store,
+                             const std::unordered_set<std::string>& referenced,
+                             OrphanGcReport* report);
+
+Status ExecuteOrphanGcReferenced(
+    ChunkStore* store, const std::unordered_set<std::string>& referenced,
+    bool dry_run, OrphanGcReport* report);
+
 Status ScanOrphans(ChunkStore* store, const ManifestDocument& doc,
                    OrphanGcReport* report);
 

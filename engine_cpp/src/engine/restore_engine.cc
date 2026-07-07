@@ -19,6 +19,7 @@
 #include "ebbackup/engine/manifest.h"
 #include "ebbackup/io/file_meta.h"
 #include "ebbackup/scan/backup_filter.h"
+#include "ebbackup/store/snapshot_store.h"
 
 namespace ebbackup {
 
@@ -50,8 +51,8 @@ Status RestoreEngine::SetupEncryption(const RestoreOptions& options) {
   in.read(reinterpret_cast<char*>(salt), 16);
   if (!in) return Status::Corrupt("salt read short");
   uint8_t key[32];
-  const Status key_st =
-      crypto::DeriveContentKey(options.encryption_password, salt, key);
+  const Status key_st = crypto::DeriveContentKey(
+      options.encryption_password, salt, key, chunk_store_->digest_algo());
   if (!key_st.ok()) return key_st;
   chunk_store_->SetContentKey(key);
   return Status::Ok();
@@ -153,7 +154,12 @@ Status RestoreEngine::RunRestore(const std::string& dest_path,
   if (!enc_st.ok()) return enc_st;
 
   ManifestDocument doc;
-  const Status rd = ReadManifestAuto(RepoJoin(repo_path_, "manifest"), &doc);
+  Status rd;
+  if (options.snapshot_txn_id != 0) {
+    rd = LoadSnapshotManifest(repo_path_, options.snapshot_txn_id, &doc);
+  } else {
+    rd = ReadManifestAuto(RepoJoin(repo_path_, "manifest"), &doc);
+  }
   if (!rd.ok()) return rd;
 
   std::error_code ec;
@@ -173,7 +179,8 @@ Status RestoreEngine::RunRestore(const std::string& dest_path,
       options.verify_restored_content ||
       (options.verify_subset_merkle && options.filter.HasAnyFilter());
   if (do_content_verify) {
-    const Status merkle_st = audit::ComputeMerkleRootForFiles(files, subset_root);
+    const Status merkle_st = audit::ComputeMerkleRootForFiles(
+        files, subset_root, chunk_store_->digest_algo());
     if (!merkle_st.ok()) return merkle_st;
     for (const auto& file : files) {
       for (const auto& hex : file.chunk_hashes_hex) {

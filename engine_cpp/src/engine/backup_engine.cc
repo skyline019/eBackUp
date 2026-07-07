@@ -1,13 +1,18 @@
 #include "ebbackup/engine/backup_engine.h"
+#include <chrono>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <sstream>
+#include <vector>
 
 #include "ebbackup/audit/carl_anchor.h"
 #include "ebbackup/audit/merkle.h"
 #include "ebbackup/audit/rar_chain.h"
+#include "ebbackup/chunk/chunk_profile.h"
 #include "ebbackup/chunk/rolling_checksum.h"
+#include "ebbackup/codec/content_class.h"
 #include "ebbackup/common/digest.h"
 #include "ebbackup/common/fsync.h"
 #include "ebbackup/common/path_util.h"
@@ -15,6 +20,7 @@
 #include "ebbackup/engine/restore_engine.h"
 #include "ebbackup/io/mmap_reader.h"
 #include "ebbackup/pipeline/backup_pipeline.h"
+#include "ebbackup/pipeline/pipeline_phase_stats.h"
 #include "ebbackup/scan/backup_filter.h"
 #include "ebbackup/scan/scan_entry.h"
 
@@ -59,8 +65,23 @@ Status ReadManifestBodyCrc32FromFile(const std::string& path, uint32_t* out) {
   if (!in) return Status::IoError("cannot open manifest: " + path);
   std::string header;
   if (!std::getline(in, header)) return Status::Corrupt("empty manifest");
+  if (header == "EBMANIFEST4") {
+    std::vector<uint8_t> raw((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
+    if (raw.size() < 4) return Status::Corrupt("manifest v4 too short");
+    *out = static_cast<uint32_t>(raw[raw.size() - 4]) |
+           (static_cast<uint32_t>(raw[raw.size() - 3]) << 8) |
+           (static_cast<uint32_t>(raw[raw.size() - 2]) << 16) |
+           (static_cast<uint32_t>(raw[raw.size() - 1]) << 24);
+    raw.resize(raw.size() - 4);
+    uint32_t actual = 0;
+    const Status crc_st = ComputeManifestV4BodyCrc32(raw, &actual);
+    if (!crc_st.ok()) return crc_st;
+    if (actual != *out) return Status::Corrupt("manifest v4 crc mismatch");
+    return Status::Ok();
+  }
   if (header != "EBMANIFEST2" && header != "EBMANIFEST3") {
-    return Status::Corrupt("manifest v2/v3 required for crc");
+    return Status::Corrupt("manifest v2/v3/v4 required for crc");
   }
   std::ostringstream body_stream;
   std::string line;
@@ -81,6 +102,48 @@ Status ReadManifestBodyCrc32FromFile(const std::string& path, uint32_t* out) {
   if (!crc_st.ok()) return crc_st;
   if (actual != *out) return Status::Corrupt("manifest crc mismatch");
   return Status::Ok();
+}
+
+void NormalizeCompressOptions(BackupOptions* opts) {
+  if (!opts) return;
+  if (opts->compress_mode == CompressMode::kOff && opts->use_lz4) {
+    opts->compress_mode = CompressMode::kLz4;
+  }
+}
+
+ChunkStorePutOptions BuildPutOptions(const BackupOptions& options,
+                                     const std::string& path_hint,
+                                     ContentClassStats* stats) {
+  ChunkStorePutOptions put{};
+  put.use_encryption = options.use_encryption;
+  put.compress_mode = options.compress_mode;
+  put.cpu_budget_permille = options.cpu_budget_permille;
+  if (!path_hint.empty()) put.path_hint = path_hint.c_str();
+  put.content_stats = stats;
+  return put;
+}
+
+BackupOptions ResolveBackupOptions(const BackupSuperBlock& sb,
+                                   const BackupOptions& options) {
+  BackupOptions effective = options;
+  NormalizeCompressOptions(&effective);
+  if (effective.compress_mode == CompressMode::kOff && !effective.use_lz4) {
+    if (sb.ext.default_codec == kDefaultCodecAuto) {
+      effective.compress_mode = CompressMode::kAuto;
+      if (effective.cpu_budget_permille == 1000) {
+        effective.cpu_budget_permille = 600;
+      }
+    } else if (sb.ext.default_codec == kDefaultCodecLz4) {
+      effective.use_lz4 = true;
+    } else if (sb.ext.default_codec == kDefaultCodecZstd) {
+      effective.compress_mode = CompressMode::kZstd;
+    }
+  }
+  NormalizeCompressOptions(&effective);
+  if (RepoUsesEbPack(sb) && !options.disable_pipeline) {
+    effective.use_pipeline = true;
+  }
+  return effective;
 }
 
 }  // namespace
@@ -107,7 +170,15 @@ Status BackupEngine::MaybeTestAbortAfter(BackupPhase phase) const {
   return Status::Ok();
 }
 
-Status BackupEngine::InitRepo(const std::string& repo_path) {
+Status BackupEngine::InitRepo(const std::string& repo_path,
+                              bool standard_digest) {
+  RepoInitOptions opts{};
+  opts.standard_digest = standard_digest;
+  return InitRepoEx(repo_path, opts);
+}
+
+Status BackupEngine::InitRepoEx(const std::string& repo_path,
+                                const RepoInitOptions& options) {
   std::error_code ec;
   std::filesystem::create_directories(RepoJoin(repo_path, "data"), ec);
   if (ec) return Status::IoError("cannot create repo data dir");
@@ -118,6 +189,29 @@ Status BackupEngine::InitRepo(const std::string& repo_path) {
   SetPhase(&sb, BackupPhase::kIdle);
   sb.format_version = kBackupSuperBlockFormatV2;
   sb.ext.next_txn_id = 1;
+  if (options.standard_digest) {
+    sb.ext.backup_features |= kBackupFeatureDigestStandard;
+  }
+  if (options.persistent_index) {
+    sb.ext.backup_features |= kBackupFeaturePersistentIndex;
+  }
+  if (options.manifest_binary) {
+    sb.ext.backup_features |= kBackupFeatureManifestBinary;
+  }
+  if (options.snapshots) {
+    sb.ext.backup_features |= kBackupFeatureSnapshots;
+  }
+  if (options.ebpack) {
+    sb.ext.backup_features |= kBackupFeatureEbPack;
+    std::filesystem::create_directories(RepoJoin(repo_path, "data/packs"), ec);
+    if (ec) return Status::IoError("cannot create repo packs dir");
+  }
+  if (options.coalesced_meta) {
+    sb.ext.backup_features |= kBackupFeatureCoalescedMeta;
+  }
+  if (options.persistent_index || options.manifest_binary) {
+    sb.ext.default_codec = kDefaultCodecAuto;
+  }
   return sb_store.Commit(sb);
 }
 
@@ -127,12 +221,46 @@ Status BackupEngine::StartupSelfCheck() {
   if (std::filesystem::exists(temp)) {
     std::filesystem::remove(temp, ec);
   }
-  if (phase_ == BackupPhase::kScanning || phase_ == BackupPhase::kChunking ||
+
+  const std::string manifest_path = RepoJoin(repo_path_, "manifest");
+  const bool has_manifest = std::filesystem::exists(manifest_path);
+
+  const bool in_progress =
+      phase_ == BackupPhase::kScanning || phase_ == BackupPhase::kChunking ||
       phase_ == BackupPhase::kStoring || phase_ == BackupPhase::kCommittingMeta ||
-      phase_ == BackupPhase::kAuditing) {
+      phase_ == BackupPhase::kAuditing;
+
+  if (in_progress) {
+    ManifestDocument manifest{};
+    const Status manifest_st = ReadManifestAuto(manifest_path, &manifest);
+    if (manifest_st.ok() && manifest.txn_id > sb_.critical.txn_id) {
+      sb_.critical.txn_id = manifest.txn_id;
+      SetNextTxnId(&sb_, manifest.txn_id + 1);
+      SetPhase(&sb_, BackupPhase::kIdle);
+      sb_.critical.chunks_written = 0;
+      sb_.critical.bytes_processed = 0;
+      return superblock_store_->Commit(sb_);
+    }
+
     stats_.orphan_chunks_hint = sb_.critical.chunks_written;
     SetPhase(&sb_, BackupPhase::kAborted);
     return superblock_store_->Commit(sb_);
+  }
+
+  if (RepoUsesCoalescedMeta(sb_) && phase_ == BackupPhase::kIdle) {
+    if (!has_manifest && RepoUsesEbPack(sb_)) {
+      const std::string packs_dir = RepoJoin(repo_path_, "data/packs");
+      if (std::filesystem::exists(packs_dir)) {
+        for (const auto& ent : std::filesystem::directory_iterator(packs_dir, ec)) {
+          if (ec) break;
+          if (ent.is_regular_file() && ent.path().extension() == ".ebpack") {
+            stats_.orphan_chunks_hint = sb_.critical.chunks_written;
+            SetPhase(&sb_, BackupPhase::kAborted);
+            return superblock_store_->Commit(sb_);
+          }
+        }
+      }
+    }
   }
   return Status::Ok();
 }
@@ -144,11 +272,25 @@ Status BackupEngine::Open() {
       std::make_unique<ChunkStore>(RepoJoin(repo_path_, "data/chunks"));
   const Status st = superblock_store_->Load(&sb_);
   if (!st.ok()) return st;
+  digest_algo_ = DigestAlgoFromSuperBlock(sb_);
+  chunk_store_->SetDigestAlgo(digest_algo_);
+  if (RepoUsesPersistentIndex(sb_)) {
+    chunk_store_->SetUsePersistentIndex(true);
+  }
+  if (RepoUsesBalancedDurability(sb_)) {
+    chunk_store_->SetDurabilityMode(DurabilityMode::kBalanced);
+  }
+  if (RepoUsesEbPack(sb_)) {
+    chunk_store_->SetUseEbPack(true);
+  }
   const Status cs = chunk_store_->Open();
   if (!cs.ok()) return cs;
   phase_ = GetPhase(sb_);
-  if (phase_ != BackupPhase::kIdle && phase_ != BackupPhase::kComplete &&
-      phase_ != BackupPhase::kAborted) {
+  const bool needs_self_check =
+      (phase_ != BackupPhase::kIdle && phase_ != BackupPhase::kComplete &&
+       phase_ != BackupPhase::kAborted) ||
+      (phase_ == BackupPhase::kIdle && RepoUsesCoalescedMeta(sb_));
+  if (needs_self_check) {
     const Status self = StartupSelfCheck();
     if (!self.ok()) return self;
     const Status reload = superblock_store_->Load(&sb_);
@@ -179,6 +321,10 @@ Status BackupEngine::PersistSuperBlock(BackupPhase phase) {
   sb_.critical.bytes_processed = stats_.bytes_processed;
   sb_.ext.last_manifest_crc32 = last_manifest_crc32_;
   std::memcpy(sb_.ext.merkle_root, last_merkle_root_, 32);
+  if (RepoUsesCoalescedMeta(sb_) && phase != BackupPhase::kAborted &&
+      phase != BackupPhase::kIdle) {
+    return Status::Ok();
+  }
   return superblock_store_->Commit(sb_);
 }
 
@@ -204,7 +350,7 @@ Status BackupEngine::SetupEncryption(const BackupOptions& options) {
   const Status salt_st = crypto::LoadOrCreateRepoSalt(repo_path_, salt);
   if (!salt_st.ok()) return salt_st;
   const Status key_st = crypto::DeriveContentKey(options.encryption_password, salt,
-                                                 content_key_);
+                                                 content_key_, digest_algo_);
   if (!key_st.ok()) return key_st;
   has_content_key_ = true;
   chunk_store_->SetContentKey(content_key_);
@@ -232,7 +378,7 @@ Status BackupEngine::EnsureRepoContentKey(const std::string& password) {
   const Status salt_st = crypto::LoadOrCreateRepoSalt(repo_path_, salt);
   if (!salt_st.ok()) return salt_st;
   const Status key_st =
-      crypto::DeriveContentKey(password, salt, content_key_);
+      crypto::DeriveContentKey(password, salt, content_key_, digest_algo_);
   if (!key_st.ok()) return key_st;
   has_content_key_ = true;
   chunk_store_->SetContentKey(content_key_);
@@ -292,7 +438,8 @@ Status BackupEngine::LoadPriorManifest(ManifestDocument* out) const {
   return ReadManifestAuto(path, out);
 }
 
-Status BackupEngine::ChunkPendingFiles(BackupMode mode) {
+Status BackupEngine::ChunkPendingFiles(BackupMode mode,
+                                       const BackupOptions& options) {
   pending_chunks_.clear();
   pending_cfi_.clear();
   pending_manifest_.clear();
@@ -307,7 +454,8 @@ Status BackupEngine::ChunkPendingFiles(BackupMode mode) {
     if (!st.ok()) return st;
   }
 
-  EbHcrboChunker chunker;
+  EbHcrboConfig hcrbo_cfg{};
+  hcrbo_cfg.digest_algo = digest_algo_;
   const size_t file_count = pending_files_.size();
   for (size_t i = 0; i < file_count; ++i) {
     const auto& file_path = pending_files_[i];
@@ -318,6 +466,9 @@ Status BackupEngine::ChunkPendingFiles(BackupMode mode) {
 
     pending_file_bytes_[i] = ReadFileBytes(file_path);
     const auto& bytes = pending_file_bytes_[i];
+    hcrbo_cfg = EbHcrboConfigForFileSize(bytes.size(), options.chunk_profile,
+                                         digest_algo_);
+    EbHcrboChunker chunker(hcrbo_cfg);
     EbHcrboStats hstats{};
     Status ch_st;
     if (mode == BackupMode::kIncremental) {
@@ -359,15 +510,16 @@ Status BackupEngine::ChunkPendingFiles(BackupMode mode) {
 }
 
 Status BackupEngine::StorePendingChunks(const BackupOptions& options) {
-  ChunkStorePutOptions put_opts{};
-  put_opts.use_lz4 = options.use_lz4;
-  put_opts.use_encryption = options.use_encryption;
-  if (has_content_key_) put_opts.content_key = content_key_;
+  if (has_content_key_) chunk_store_->SetContentKey(content_key_);
+  chunk_store_->SetDurabilityMode(options.durability);
   const size_t file_count = pending_chunks_.size();
   for (size_t fi = 0; fi < file_count; ++fi) {
     const auto& bytes = pending_file_bytes_[fi];
     auto& chunks = pending_chunks_[fi];
     auto& entry = pending_manifest_[fi];
+    ChunkStorePutOptions put_opts =
+        BuildPutOptions(options, entry.relative_path, &stats_.content_class);
+    if (has_content_key_) put_opts.content_key = content_key_;
     entry.chunk_hashes_hex.clear();
     for (const auto& chunk : chunks) {
       entry.chunk_hashes_hex.push_back(BytesToHex(chunk.hash, 32));
@@ -400,6 +552,20 @@ Status BackupEngine::StorePendingChunks(const BackupOptions& options) {
 
 Status BackupEngine::RunPipelineBackup(BackupMode mode,
                                        const BackupOptions& options) {
+  constexpr size_t kSequentialPipelineMaxBytes = 32u * 1024u * 1024u;
+  if (options.worker_count == 0 && pending_files_.size() == 1) {
+    uint64_t total_bytes = 0;
+    for (const auto& fp : pending_files_) {
+      std::error_code ec;
+      total_bytes += std::filesystem::file_size(fp, ec);
+    }
+    if (total_bytes <= kSequentialPipelineMaxBytes) {
+      const Status ch = ChunkPendingFiles(mode, options);
+      if (!ch.ok()) return ch;
+      return StorePendingChunks(options);
+    }
+  }
+
   ManifestDocument prior;
   const ManifestDocument* prior_ptr = nullptr;
   if (mode == BackupMode::kIncremental) {
@@ -410,9 +576,21 @@ Status BackupEngine::RunPipelineBackup(BackupMode mode,
 
   BackupPipelineOptions pipe_opts{};
   pipe_opts.use_lz4 = options.use_lz4;
+  pipe_opts.compress_mode = options.compress_mode;
+  pipe_opts.cpu_budget_permille = options.cpu_budget_permille;
+  pipe_opts.chunk_profile = options.chunk_profile;
+  pipe_opts.durability = options.durability;
   pipe_opts.use_encryption = options.use_encryption;
   pipe_opts.content_key = has_content_key_ ? content_key_ : nullptr;
-  pipe_opts.use_mmap = true;
+  pipe_opts.content_stats = &stats_.content_class;
+  pipe_opts.digest_algo = digest_algo_;
+  pipe_opts.queue_depth = 32;
+  pipe_opts.worker_count = options.worker_count;
+  pipe_opts.store_shard_count = options.store_shard_count;
+  if (pipe_opts.worker_count > 1) {
+    pipe_opts.use_mmap = false;
+  }
+  pipe_opts.phase_stats = &pipeline_phase_stats_;
   BackupPipelineResult pipe_result{};
   const Status pipe_st = RunBackupPipeline(
       pending_files_, source_root_, mode, prior_ptr, chunk_store_.get(),
@@ -427,7 +605,8 @@ Status BackupEngine::CommitManifestFile() {
   doc.txn_id = sb_.critical.txn_id;
   doc.files = pending_manifest_;
   const std::string temp = RepoJoin(repo_path_, "manifest.new");
-  const Status write_st = WriteManifestAuto(temp, doc);
+  const Status write_st =
+      WriteManifestAuto(temp, doc, RepoUsesManifestBinary(sb_));
   if (!write_st.ok()) return write_st;
   std::error_code ec;
   const std::string manifest_path = RepoJoin(repo_path_, "manifest");
@@ -438,9 +617,18 @@ Status BackupEngine::CommitManifestFile() {
 
   const Status crc_st = ReadManifestBodyCrc32FromFile(manifest_path, &last_manifest_crc32_);
   if (!crc_st.ok()) return crc_st;
-  const Status merkle_st = audit::ComputeMerkleRoot(doc, last_merkle_root_);
+  const Status merkle_st =
+      audit::ComputeMerkleRoot(doc, last_merkle_root_, digest_algo_);
   if (!merkle_st.ok()) return merkle_st;
   EmitProgress(960);
+
+  if (RepoUsesSnapshots(sb_)) {
+    const Status arch = ArchiveSnapshot(
+        repo_path_, doc.txn_id, manifest_path,
+        static_cast<int64_t>(std::time(nullptr)), last_manifest_crc32_,
+        last_merkle_root_, static_cast<uint32_t>(doc.files.size()));
+    if (!arch.ok()) return arch;
+  }
   return Status::Ok();
 }
 
@@ -459,7 +647,7 @@ Status BackupEngine::AppendAuditEntry() {
   entry.body_json = audit::BuildRarBodyJson(sb_.critical.txn_id,
                                             last_manifest_crc32_,
                                             last_merkle_root_);
-  entry.rar_sha256 = audit::ComputeRarSha256(entry.body_json);
+  entry.rar_sha256 = audit::ComputeRarSha256(entry.body_json, digest_algo_);
   const Status st = audit::AppendRarChainEntry(chain_path, entry);
   if (!st.ok()) return st;
 
@@ -471,9 +659,12 @@ Status BackupEngine::AppendAuditEntry() {
   return Status::Ok();
 }
 
-Status BackupEngine::VerifyManifestDocument(const ManifestDocument& doc) {
-  if (sb_.critical.txn_id != 0 && doc.txn_id != sb_.critical.txn_id) {
-    return Status::Corrupt("manifest txn_id mismatch with superblock");
+Status BackupEngine::VerifyManifestDocument(const ManifestDocument& doc,
+                                            uint64_t snapshot_txn_id) {
+  if (snapshot_txn_id == 0) {
+    if (sb_.critical.txn_id != 0 && doc.txn_id != sb_.critical.txn_id) {
+      return Status::Corrupt("manifest txn_id mismatch with superblock");
+    }
   }
 
   for (const auto& file : doc.files) {
@@ -505,17 +696,50 @@ Status BackupEngine::VerifyManifestDocument(const ManifestDocument& doc) {
   }
 
   uint8_t merkle[32];
-  const Status merkle_st = audit::ComputeMerkleRoot(doc, merkle);
+  const Status merkle_st = audit::ComputeMerkleRoot(doc, merkle, digest_algo_);
   if (!merkle_st.ok()) return merkle_st;
+
+  const std::string chain_path = RepoJoin(repo_path_, "audit/rar.chain");
+  if (snapshot_txn_id != 0) {
+    if (!std::filesystem::exists(chain_path)) {
+      return Status::Corrupt("missing rar chain for historical verify");
+    }
+    std::vector<audit::RarChainEntry> entries;
+    const Status read_st = audit::ReadRarChainEntries(chain_path, &entries);
+    if (!read_st.ok()) return read_st;
+    const audit::RarChainEntry* match = nullptr;
+    for (const auto& e : entries) {
+      if (e.txn_id == snapshot_txn_id) {
+        match = &e;
+        break;
+      }
+    }
+    if (!match) {
+      return Status::NotFound("rar chain entry not found for snapshot txn");
+    }
+    if (match->merkle_root != BytesToHex(merkle, 32)) {
+      return Status::Corrupt("historical merkle mismatch with rar chain");
+    }
+    uint32_t body_crc = 0;
+    const Status crc_st = ReadManifestBodyCrc32FromFile(
+        SnapshotManifestPath(repo_path_, snapshot_txn_id), &body_crc);
+    if (!crc_st.ok()) return crc_st;
+    char crc_buf[16];
+    snprintf(crc_buf, sizeof(crc_buf), "%08x", static_cast<unsigned>(body_crc));
+    if (match->manifest_crc32 != crc_buf) {
+      return Status::Corrupt("historical manifest crc mismatch with rar chain");
+    }
+    return Status::Ok();
+  }
+
   if (std::memcmp(merkle, sb_.ext.merkle_root, 32) != 0 &&
       sb_.ext.merkle_root[0] != 0) {
     return Status::Corrupt("merkle root mismatch with superblock");
   }
 
-  const std::string chain_path = RepoJoin(repo_path_, "audit/rar.chain");
   if (std::filesystem::exists(chain_path)) {
     audit::RarChainVerifyReport report{};
-    const Status chain_st = audit::VerifyRarChain(chain_path, &report);
+    const Status chain_st = audit::VerifyRarChain(chain_path, &report, digest_algo_);
     if (!chain_st.ok()) return chain_st;
     if (!report.consistent) {
       return Status::Corrupt("rar chain inconsistent");
@@ -559,10 +783,55 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
   source_root_ = source_path;
 
   sb_.critical.txn_id = GetNextTxnId(sb_);
-  if (options.use_lz4) {
-    sb_.ext.default_codec = 1;
+  chunk_store_->SetTxnId(sb_.critical.txn_id);
+  const BackupOptions effective = ResolveBackupOptions(sb_, options);
+  if (effective.compress_mode == CompressMode::kAuto) {
+    sb_.ext.default_codec = kDefaultCodecAuto;
+  } else if (effective.compress_mode == CompressMode::kZstd) {
+    sb_.ext.default_codec = kDefaultCodecZstd;
+  } else if (effective.use_lz4 ||
+             effective.compress_mode == CompressMode::kLz4) {
+    sb_.ext.default_codec = kDefaultCodecLz4;
   }
+  const bool standard_digest = RepoUsesStandardDigest(sb_);
+  const bool persistent_index = RepoUsesPersistentIndex(sb_);
+  const bool manifest_binary = RepoUsesManifestBinary(sb_);
+  const bool snapshots = RepoUsesSnapshots(sb_);
+  const bool ebpack = RepoUsesEbPack(sb_);
+  const bool coalesced_meta = RepoUsesCoalescedMeta(sb_);
   sb_.ext.backup_features = 0;
+  if (standard_digest) {
+    sb_.ext.backup_features |= kBackupFeatureDigestStandard;
+  }
+  if (persistent_index) {
+    sb_.ext.backup_features |= kBackupFeaturePersistentIndex;
+  }
+  if (manifest_binary) {
+    sb_.ext.backup_features |= kBackupFeatureManifestBinary;
+  }
+  if (snapshots) {
+    sb_.ext.backup_features |= kBackupFeatureSnapshots;
+  }
+  if (ebpack) {
+    sb_.ext.backup_features |= kBackupFeatureEbPack;
+    chunk_store_->SetUseEbPack(true);
+  }
+  if (coalesced_meta) {
+    sb_.ext.backup_features |= kBackupFeatureCoalescedMeta;
+  }
+  if (effective.durability == DurabilityMode::kBalanced) {
+    sb_.ext.backup_features |= kBackupFeatureBalancedDurability;
+    chunk_store_->SetDurabilityMode(DurabilityMode::kBalanced);
+  } else {
+    chunk_store_->SetDurabilityMode(DurabilityMode::kStrict);
+  }
+  chunk_store_->SetDeferPersistentIndexSave(persistent_index);
+
+  const bool profile = PipelineProfileEnabled();
+  if (effective.use_pipeline || profile) {
+    ResetPipelinePhaseStats(&pipeline_phase_stats_);
+  }
+  const auto backup_t0 = std::chrono::steady_clock::now();
 
   Status st = SetupEncryption(options);
   if (!st.ok()) return st;
@@ -580,7 +849,16 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
     return st;
   }
 
+  const auto scan_t0 = std::chrono::steady_clock::now();
   st = ScanFiles(source_path, options);
+  if (profile) {
+    const auto scan_t1 = std::chrono::steady_clock::now();
+    pipeline_phase_stats_.scan_ns.fetch_add(
+        static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(scan_t1 - scan_t0)
+                .count()),
+        std::memory_order_relaxed);
+  }
   if (!st.ok()) {
     (void)PersistSuperBlock(BackupPhase::kAborted);
     return st;
@@ -612,10 +890,17 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
     return st;
   }
 
+  chunk_store_->SetDurabilityMode(effective.durability);
+  st = chunk_store_->BeginAppendSession();
+  if (!st.ok()) {
+    (void)PersistSuperBlock(BackupPhase::kAborted);
+    return st;
+  }
+
   if (options.use_pipeline) {
-    st = RunPipelineBackup(mode, options);
+    st = RunPipelineBackup(mode, effective);
   } else {
-    st = ChunkPendingFiles(mode);
+    st = ChunkPendingFiles(mode, effective);
   }
   if (!st.ok()) {
     (void)PersistSuperBlock(BackupPhase::kAborted);
@@ -636,14 +921,36 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
   }
 
   if (!options.use_pipeline) {
-    st = StorePendingChunks(options);
+    st = StorePendingChunks(effective);
     if (!st.ok()) {
       (void)PersistSuperBlock(BackupPhase::kAborted);
       return st;
     }
   }
 
-  st = MergeMetaManifestEntries();
+  const auto flush_t0 = std::chrono::steady_clock::now();
+  std::future<Status> merge_future =
+      std::async(std::launch::async, [this] { return MergeMetaManifestEntries(); });
+  st = chunk_store_->Flush();
+  if (profile) {
+    const auto flush_t1 = std::chrono::steady_clock::now();
+    pipeline_phase_stats_.flush_ns.fetch_add(
+        static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(flush_t1 - flush_t0)
+                .count()),
+        std::memory_order_relaxed);
+  }
+  if (!st.ok()) {
+    (void)PersistSuperBlock(BackupPhase::kAborted);
+    return st;
+  }
+  st = chunk_store_->EndAppendSession();
+  if (!st.ok()) {
+    (void)PersistSuperBlock(BackupPhase::kAborted);
+    return st;
+  }
+
+  st = merge_future.get();
   if (!st.ok()) {
     (void)PersistSuperBlock(BackupPhase::kAborted);
     return st;
@@ -662,6 +969,7 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
     return st;
   }
 
+  const auto meta_t0 = std::chrono::steady_clock::now();
   st = CommitManifestFile();
   if (!st.ok()) {
     (void)PersistSuperBlock(BackupPhase::kAborted);
@@ -677,6 +985,14 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
   if (!st.ok()) return st;
 
   st = AppendAuditEntry();
+  if (profile) {
+    const auto meta_t1 = std::chrono::steady_clock::now();
+    pipeline_phase_stats_.meta_ns.fetch_add(
+        static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(meta_t1 - meta_t0)
+                .count()),
+        std::memory_order_relaxed);
+  }
   if (!st.ok()) {
     (void)PersistSuperBlock(BackupPhase::kAborted);
     return st;
@@ -687,7 +1003,21 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
     (void)PersistSuperBlock(BackupPhase::kAborted);
     return st;
   }
+  chunk_store_->SetDeferPersistentIndexSave(false);
+  if (persistent_index) {
+    st = chunk_store_->SavePersistentIndex();
+    if (!st.ok()) {
+      (void)PersistSuperBlock(BackupPhase::kAborted);
+      return st;
+    }
+  }
   SetNextTxnId(&sb_, sb_.critical.txn_id + 1);
+  if (profile) {
+    const auto backup_t1 = std::chrono::steady_clock::now();
+    const double total_sec =
+        std::chrono::duration<double>(backup_t1 - backup_t0).count();
+    PrintPipelinePhaseStats(pipeline_phase_stats_, total_sec);
+  }
   return PersistSuperBlock(BackupPhase::kIdle);
 }
 
@@ -696,10 +1026,21 @@ Status BackupEngine::Verify(const BackupOptions& options) {
   if (!key_st.ok()) return key_st;
 
   ManifestDocument doc;
-  const Status rd = ReadManifestAuto(RepoJoin(repo_path_, "manifest"), &doc);
+  Status rd;
+  if (options.snapshot_txn_id != 0) {
+    rd = LoadSnapshotManifest(repo_path_, options.snapshot_txn_id, &doc);
+  } else {
+    const std::string manifest_path = RepoJoin(repo_path_, "manifest");
+    if (!std::filesystem::exists(manifest_path)) {
+      if (sb_.critical.txn_id == 0) return Status::Ok();
+      return Status::IoError("cannot open manifest: " + manifest_path);
+    }
+    rd = ReadManifestAuto(manifest_path, &doc);
+  }
   if (!rd.ok()) return rd;
 
-  const Status deep = VerifyManifestDocument(doc);
+  const Status deep =
+      VerifyManifestDocument(doc, options.snapshot_txn_id);
   if (!deep.ok()) return deep;
 
   const std::string chain_path = RepoJoin(repo_path_, "audit/rar.chain");
@@ -723,16 +1064,45 @@ Status BackupEngine::Restore(const std::string& dest_path,
   return restore.RunRestore(dest_path, options);
 }
 
-Status BackupEngine::GcOrphans(bool dry_run, OrphanGcReport* report) {
-  ManifestDocument doc;
-  const Status rd = ReadManifestAuto(RepoJoin(repo_path_, "manifest"), &doc);
-  if (!rd.ok()) return rd;
+Status BackupEngine::GcOrphans(bool dry_run, OrphanGcReport* report,
+                               bool latest_manifest_only) {
   OrphanGcReport local{};
   OrphanGcReport* out = report ? report : &local;
   BackupContext ctx{this, phase_};
   const Status disp = sync_.Dispatch(BackupEvent::kGcOrphans, &ctx);
   if (!disp.ok()) return disp;
-  return ExecuteOrphanGc(chunk_store_.get(), doc, dry_run, out);
+
+  const bool use_retained =
+      RepoUsesSnapshots(sb_) && !latest_manifest_only;
+  std::unordered_set<std::string> referenced;
+  Status coll;
+  if (use_retained) {
+    coll = CollectReferencedHashesRetained(repo_path_, &referenced);
+  } else {
+    ManifestDocument doc;
+    coll = ReadManifestAuto(RepoJoin(repo_path_, "manifest"), &doc);
+    if (!coll.ok()) return coll;
+    coll = CollectReferencedHashes(doc, &referenced);
+  }
+  if (!coll.ok()) return coll;
+  return ExecuteOrphanGcReferenced(chunk_store_.get(), referenced, dry_run, out);
+}
+
+Status BackupEngine::Compact(bool dry_run, CompactReport* report) {
+  return CompactChunkStore(repo_path_, dry_run, report);
+}
+
+Status BackupEngine::GetRepoStats(RepoStats* out) const {
+  return ComputeRepoStats(repo_path_, out);
+}
+
+Status BackupEngine::ListSnapshots(std::vector<SnapshotEntry>* out) const {
+  return ebbackup::ListSnapshots(repo_path_, out);
+}
+
+Status BackupEngine::PruneSnapshots(const RetentionPolicy& policy, bool dry_run,
+                                    PruneReport* report) {
+  return ebbackup::PruneSnapshots(repo_path_, policy, dry_run, report);
 }
 
 void RegisterBackupSyncRules(BackupSyncExecutor* exec, BackupEngine* engine) {

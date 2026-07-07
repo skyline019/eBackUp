@@ -88,7 +88,7 @@ TEST(EbHcrboTest, OneByteEditHighReuse) {
 TEST(EbHcrboTest, IncrementalBackupVerify) {
   const std::string repo = test::TempDir("hcrbo_incr_repo");
   const std::string source = test::TempDir("hcrbo_incr_source");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
 
   std::string payload = test::MakeSyntheticData(10 * 1024 * 1024, 2);
   test::WriteFile(source + "/payload.bin", payload);
@@ -260,6 +260,47 @@ TEST(EbHcrboTest, RollingBatchSkipParity) {
                   .ok());
   EXPECT_EQ(incr_unchanged.size(), full.size());
   EXPECT_EQ(unchanged_stats.chunks_reused_from_cfi, full.size());
+}
+
+TEST(EbHcrboTest, CfiBloomParity) {
+  std::string data = test::MakeSyntheticData(20 * 1024 * 1024, 17);
+  EbHcrboChunker chunker;
+  std::vector<ChunkDescriptor> full;
+  CfiIndex cfi;
+  ASSERT_TRUE(chunker.ChunkFull(reinterpret_cast<const uint8_t*>(data.data()),
+                                data.size(), &full, &cfi, nullptr)
+                  .ok());
+  PopulateRolling(reinterpret_cast<const uint8_t*>(data.data()), data.size(),
+                  &cfi);
+
+  data[5 * 1024 * 1024] ^= 0x42;
+  std::vector<ChunkDescriptor> incr;
+  CfiIndex cfi_out;
+  EbHcrboStats incr_stats{};
+  ASSERT_TRUE(
+      chunker
+          .ChunkIncremental(reinterpret_cast<const uint8_t*>(data.data()),
+                            data.size(), cfi, &incr, &cfi_out, &incr_stats)
+          .ok());
+
+  std::string unchanged = test::MakeSyntheticData(20 * 1024 * 1024, 17);
+  std::vector<ChunkDescriptor> incr_unchanged;
+  CfiIndex cfi_out_unchanged;
+  EbHcrboStats unchanged_stats{};
+  ASSERT_TRUE(chunker
+                  .ChunkIncremental(
+                      reinterpret_cast<const uint8_t*>(unchanged.data()),
+                      unchanged.size(), cfi, &incr_unchanged, &cfi_out_unchanged,
+                      &unchanged_stats)
+                  .ok());
+  EXPECT_EQ(incr_unchanged.size(), full.size());
+  EXPECT_GE(unchanged_stats.chunks_reused_from_cfi,
+            static_cast<uint64_t>(full.size() * 0.9));
+  for (size_t i = 0; i < full.size(); ++i) {
+    EXPECT_EQ(incr_unchanged[i].offset, full[i].offset);
+    EXPECT_EQ(incr_unchanged[i].length, full[i].length);
+    EXPECT_EQ(std::memcmp(incr_unchanged[i].hash, full[i].hash, 32), 0);
+  }
 }
 
 }  // namespace

@@ -1,7 +1,7 @@
 # recoveryProjects / ebbackup
 
 Content-defined backup engine with incremental HCRBO chunking, selective restore,
-LZ4 compression, AES-256-GCM encryption, audit chain, and a stable C API.
+time-travel snapshots, LZ4/zstd compression, AES-256-GCM encryption, audit chain, and a stable C API.
 
 The primary implementation lives in [`engine_cpp/`](engine_cpp/).
 
@@ -9,7 +9,8 @@ The primary implementation lives in [`engine_cpp/`](engine_cpp/).
 
 | Path | Purpose |
 |------|---------|
-| [`engine_cpp/`](engine_cpp/) | Backup kernel, CLI (`eb`), tests, and product documentation |
+| [`engine_cpp/`](engine_cpp/) | Backup kernel, CLI (`eb`), tests, and product manual |
+| [`docs/`](docs/) | Technical archive: version history, architecture, perf baseline (v0.1–v0.9+) |
 | [`gtest_capi/`](gtest_capi/) | Bundled GoogleTest for CI and local builds |
 | [`.github/workflows/ebbackup.yml`](.github/workflows/ebbackup.yml) | Windows + Linux CI (build + ctest) |
 
@@ -33,8 +34,9 @@ e:\recoveryProjects\build\engine_cpp\Release\ebbackup_tests.exe
 
 ## Documentation
 
+- **Technical archive (v0.1–v0.9.4)**: [`docs/README.md`](docs/README.md)
 - Engine, CLI, filters, encryption: [`engine_cpp/README.md`](engine_cpp/README.md)
-- Performance baseline (L1–L3) and CI bench gate: [`engine_cpp/docs/PERF_BASELINE.md`](engine_cpp/docs/PERF_BASELINE.md)
+- Performance baseline (L1–L7) and CI bench gate: [`docs/reference/PERF_BASELINE.md`](docs/reference/PERF_BASELINE.md)
 - Release / ABI notes: [`CHANGELOG.md`](CHANGELOG.md)
 
 ## Quick start
@@ -42,8 +44,10 @@ e:\recoveryProjects\build\engine_cpp\Release\ebbackup_tests.exe
 ```bash
 eb init ./repo
 eb backup ./repo ./source
+eb list-snapshots ./repo
 eb verify ./repo
 eb restore ./repo ./dest
+eb restore ./repo ./dest --at 42
 ```
 
-See [`engine_cpp/README.md`](engine_cpp/README.md) for selective restore, `--verify-content`, and schedule/watch commands.
+See [`engine_cpp/README.md`](engine_cpp/README.md) for selective restore, time-travel snapshots, `--verify-content`, and schedule/watch commands.

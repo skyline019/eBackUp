@@ -1,0 +1,13 @@
+{
+  "fastcdc_MBps_min": 0,
+  "hcrbo_incr_MBps_min": 0,
+  "reuse_pct_min": 0,
+  "pipeline_ratio_min": 0,
+  "pipeline_ratio_256MB_min": 0,
+  "backup_pipeline_MBps_min": 0,
+  "backup_pipeline_256MBps_min": 0,
+  "backup_pipeline_2GBps_min": 0,
+  "backup_pipeline_multi_MBps_min": 0,
+  "ampl_ratio_post_compact_max": 99,
+  "content_auto_vs_lz4_max": 99
+}

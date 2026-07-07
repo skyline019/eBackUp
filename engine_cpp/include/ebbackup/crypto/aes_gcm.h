@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "ebbackup/common/digest.h"
 #include "ebbackup/common/status.h"
 
 namespace ebbackup {
@@ -22,7 +23,7 @@ Status Aes256GcmDecrypt(const uint8_t key[32], const uint8_t* blob,
 
 Status LoadOrCreateRepoSalt(const std::string& repo_path, uint8_t salt[16]);
 Status DeriveContentKey(const std::string& password, const uint8_t salt[16],
-                        uint8_t cek[32]);
+                        uint8_t cek[32], DigestAlgo algo);
 
 }  // namespace crypto
 }  // namespace ebbackup

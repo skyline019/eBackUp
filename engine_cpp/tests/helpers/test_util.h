@@ -6,8 +6,48 @@
 #include <random>
 #include <string>
 
+#include "ebbackup/common/status.h"
+#include "ebbackup/engine/backup_engine.h"
+#include "ebbackup/state/superblock.h"
+
 namespace ebbackup {
 namespace test {
+
+inline Status InitLegacyRepo(const std::string& repo) {
+  return BackupEngine::InitRepo(repo, false);
+}
+
+inline Status InitStandardRepo(const std::string& repo) {
+  return BackupEngine::InitRepo(repo, true);
+}
+
+inline Status InitV03Repo(const std::string& repo) {
+  RepoInitOptions opts{};
+  opts.standard_digest = true;
+  opts.persistent_index = true;
+  opts.manifest_binary = true;
+  opts.snapshots = true;
+  return BackupEngine::InitRepoEx(repo, opts);
+}
+
+inline Status InitV05Repo(const std::string& repo) {
+  RepoInitOptions opts{};
+  opts.standard_digest = true;
+  opts.persistent_index = true;
+  opts.manifest_binary = true;
+  opts.snapshots = true;
+  opts.ebpack = true;
+  opts.coalesced_meta = true;
+  return BackupEngine::InitRepoEx(repo, opts);
+}
+
+inline Status InitLegacyStorageRepo(const std::string& repo) {
+  return InitV03Repo(repo);
+}
+
+inline Status InitDefaultRepo(const std::string& repo) {
+  return InitV05Repo(repo);
+}
 
 inline std::filesystem::path TestOutputRoot() {
   if (const char* env = std::getenv("EBTEST_TMPDIR")) {

@@ -20,7 +20,7 @@ constexpr int kRandomPhaseTrials = 4;
 TEST(PowerfailTest, DualSlotSurvivesCorruptSlotAfterBackup) {
   const std::string repo = test::TempDir("powerfail_dual_slot");
   const std::string source = test::TempDir("powerfail_dual_source");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
   test::WriteFile(source + "/data.bin", test::MakeSyntheticData(256 * 1024, 4));
 
   {
@@ -41,7 +41,7 @@ TEST(PowerfailTest, DualSlotSurvivesCorruptSlotAfterBackup) {
 TEST(PowerfailTest, InterruptedPhaseRecovery) {
   const std::string repo = test::TempDir("powerfail_interrupt");
   const std::string source = test::TempDir("powerfail_interrupt_source");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
   test::WriteFile(source + "/data.bin", test::MakeSyntheticData(512 * 1024, 3));
 
   {
@@ -68,10 +68,10 @@ TEST(PowerfailTest, InterruptedPhaseRecovery) {
 TEST(PowerfailTest, SubprocessKillMidBackup) {
   const std::string repo = test::TempDir("powerfail_subproc");
   const std::string source = test::TempDir("powerfail_subproc_source");
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
-  test::WriteFile(source + "/big.bin", test::MakeSyntheticData(4 * 1024 * 1024, 8));
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
+  test::WriteFile(source + "/big.bin", test::MakeSyntheticData(64 * 1024 * 1024, 8));
 
-  ASSERT_TRUE(test::RunBackupSubprocessAndKill(repo, source, 0).ok());
+  ASSERT_TRUE(test::RunBackupSubprocessAndKill(repo, source, 0x2, 0).ok());
 
   BackupEngine engine(repo);
   ASSERT_TRUE(engine.Open().ok());
@@ -90,7 +90,7 @@ TEST(PowerfailTest, RandomPhaseInjection) {
   for (int trial = 0; trial < kRandomPhaseTrials; ++trial) {
     const std::string repo = test::TempDir("powerfail_rand_" + std::to_string(trial));
     const std::string source = test::TempDir("powerfail_rand_src_" + std::to_string(trial));
-    ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+    ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
     test::WriteFile(source + "/data.bin", test::MakeSyntheticData(128 * 1024, trial));
 
     const BackupPhase target = phases[static_cast<size_t>(trial) % phases.size()];

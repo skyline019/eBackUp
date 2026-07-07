@@ -15,7 +15,7 @@ TEST(EbBundleTest, ExportImportVerifyRestore) {
   const std::string source = test::TempDir("bundle_source");
   const std::string dest = test::TempDir("bundle_dest");
   const std::string bundle = test::TempDir("bundle_out") + "/backup.ebb";
-  ASSERT_TRUE(BackupEngine::InitRepo(repo).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
   test::WriteFile(source + "/bundle.txt", "bundle-data");
 
   BackupEngine engine(repo);

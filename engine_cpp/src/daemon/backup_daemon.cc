@@ -9,6 +9,7 @@
 #include <thread>
 #include <vector>
 
+#include "ebbackup/codec/content_class.h"
 #include "ebbackup/io/fs_watch.h"
 #include "ebbackup/scan/backup_filter.h"
 
@@ -45,6 +46,15 @@ void ApplyScheduleField(const std::string& key, const std::string& value,
     cfg->repo_base = value;
   } else if (key == "retain") {
     cfg->retain_count = std::max(1, std::atoi(value.c_str()));
+    cfg->retention_policy.retain_min = cfg->retain_count;
+  } else if (key == "retain_min") {
+    cfg->retention_policy.retain_min = std::max(1, std::atoi(value.c_str()));
+  } else if (key == "retention_tiers") {
+    (void)ParseRetentionTiers(value, &cfg->retention_policy);
+  } else if (key == "auto_prune") {
+    cfg->auto_prune = ParseBool(value);
+  } else if (key == "auto_gc_after_prune") {
+    cfg->auto_gc_after_prune = ParseBool(value);
   } else if (key == "lz4") {
     cfg->backup_options.use_lz4 = ParseBool(value);
   } else if (key == "pipeline") {
@@ -63,6 +73,27 @@ void ApplyScheduleField(const std::string& key, const std::string& value,
     cfg->backup_options.filter.include_globs.push_back(value);
   } else if (key == "exclude_glob") {
     cfg->backup_options.filter.exclude_globs.push_back(value);
+  } else if (key == "compress") {
+    if (value == "auto") {
+      cfg->backup_options.compress_mode = CompressMode::kAuto;
+    } else if (value == "lz4") {
+      cfg->backup_options.compress_mode = CompressMode::kLz4;
+      cfg->backup_options.use_lz4 = true;
+    } else if (value == "zstd") {
+      cfg->backup_options.compress_mode = CompressMode::kZstd;
+    } else if (value == "off") {
+      cfg->backup_options.compress_mode = CompressMode::kOff;
+    }
+  } else if (key == "cpu_budget") {
+    const int pct = std::max(1, std::min(100, std::atoi(value.c_str())));
+    cfg->backup_options.cpu_budget_permille =
+        static_cast<uint32_t>(pct * 10);
+  } else if (key == "durability") {
+    if (value == "balanced") {
+      cfg->backup_options.durability = DurabilityMode::kBalanced;
+    } else {
+      cfg->backup_options.durability = DurabilityMode::kStrict;
+    }
   }
 }
 
@@ -92,6 +123,7 @@ std::string UnquoteJsonString(const std::string& raw) {
 
 bool ParseJsonSchedule(const std::string& text, ScheduleConfig* out) {
   ScheduleConfig cfg{};
+  cfg.retention_policy = DefaultRetentionPolicy();
   size_t i = 0;
   while (i < text.size()) {
     const size_t key_start = text.find('"', i);
@@ -143,6 +175,7 @@ Status LoadScheduleConfig(const std::string& config_path, ScheduleConfig* out) {
   std::ifstream in(config_path);
   if (!in) return Status::IoError("cannot open config: " + config_path);
   ScheduleConfig cfg{};
+  cfg.retention_policy = DefaultRetentionPolicy();
   std::string line;
   while (std::getline(in, line)) {
     line = Trim(line);
@@ -172,6 +205,7 @@ Status LoadScheduleConfigAuto(const std::string& config_path, ScheduleConfig* ou
   }
   if (content[trim_start] == '{') {
     ScheduleConfig cfg{};
+    cfg.retention_policy = DefaultRetentionPolicy();
     if (!ParseJsonSchedule(content, &cfg)) {
       return Status::InvalidArgument("invalid JSON schedule config");
     }
@@ -179,6 +213,21 @@ Status LoadScheduleConfigAuto(const std::string& config_path, ScheduleConfig* ou
     return Status::Ok();
   }
   return LoadScheduleConfig(config_path, out);
+}
+
+std::string ScheduleRepoPath(const std::string& repo_base) {
+  return (std::filesystem::path(repo_base) / "current").string();
+}
+
+bool HasLegacyRotatedRepoDirs(const std::string& repo_base) {
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::directory_iterator(repo_base, ec)) {
+    if (ec) return false;
+    if (!entry.is_directory()) continue;
+    const auto name = entry.path().filename().string();
+    if (name.rfind("repo-", 0) == 0) return true;
+  }
+  return false;
 }
 
 std::string MakeRotatedRepoPath(const std::string& repo_base) {
@@ -216,17 +265,49 @@ Status RunScheduledBackup(const ScheduleConfig& config, int max_runs) {
   std::error_code ec;
   std::filesystem::create_directories(config.repo_base, ec);
 
+  const std::string repo = ScheduleRepoPath(config.repo_base);
+  const std::string superblock = repo + "/superblock.bin";
+  const bool new_repo = !std::filesystem::exists(superblock);
+  if (new_repo) {
+    RepoInitOptions init{};
+    init.standard_digest = true;
+    init.persistent_index = true;
+    init.manifest_binary = true;
+    init.snapshots = true;
+    init.ebpack = true;
+    init.coalesced_meta = true;
+    const Status init_st = BackupEngine::InitRepoEx(repo, init);
+    if (!init_st.ok()) return init_st;
+  }
+
   int runs = 0;
   while (max_runs < 0 || runs < max_runs) {
-    const std::string repo = MakeRotatedRepoPath(config.repo_base);
-    const Status init_st = BackupEngine::InitRepo(repo);
-    if (!init_st.ok()) return init_st;
     BackupOptions opts = config.backup_options;
     opts.encryption_password = config.encryption_password;
-    const Status st =
-        RunOneBackup(repo, config.source_path, BackupMode::kFull, opts);
+    const BackupMode mode =
+        (new_repo && runs == 0) ? BackupMode::kFull : BackupMode::kIncremental;
+    const Status st = RunOneBackup(repo, config.source_path, mode, opts);
     if (!st.ok()) return st;
-    PruneRotatedRepos(config.repo_base, config.retain_count);
+
+    if (config.auto_prune) {
+      RetentionPolicy policy = config.retention_policy;
+      if (policy.tiers.empty()) policy = DefaultRetentionPolicy();
+      PruneReport prune_report{};
+      const Status prune_st =
+          PruneSnapshots(repo, policy, false, &prune_report);
+      if (!prune_st.ok()) return prune_st;
+      if (config.auto_gc_after_prune) {
+        BackupEngine gc_engine(repo);
+        const Status gc_open = gc_engine.Open();
+        if (!gc_open.ok()) return gc_open;
+        const Status gc_st = gc_engine.GcOrphans(false, nullptr, false);
+        if (!gc_st.ok()) return gc_st;
+      }
+    }
+
+    if (HasLegacyRotatedRepoDirs(config.repo_base)) {
+      PruneRotatedRepos(config.repo_base, config.retain_count);
+    }
     ++runs;
     if (max_runs >= 0 && runs >= max_runs) break;
     std::this_thread::sleep_for(std::chrono::seconds(config.interval_seconds));

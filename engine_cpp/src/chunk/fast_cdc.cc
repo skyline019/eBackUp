@@ -1,54 +1,67 @@
 #include "ebbackup/chunk/fast_cdc.h"
 
-#include "ebbackup/common/digest.h"
-
 #include <algorithm>
 #include <cstring>
+#include <numeric>
+#include <vector>
+
+#include "ebbackup/chunk/fast_cdc_internal.h"
+#include "ebbackup/common/digest_pool.h"
 
 namespace ebbackup {
 
 namespace {
 
-uint32_t BuildMask(uint32_t avg_size) {
-  uint32_t bits = 0;
-  uint32_t v = avg_size;
-  while (v > 1) {
-    v >>= 1;
-    ++bits;
-  }
-  if (bits == 0) bits = 1;
-  if (bits > 31) bits = 31;
-  return (1u << bits) - 1u;
-}
+constexpr size_t kParallelHashMinBytes = 1024 * 1024;
+constexpr size_t kParallelHashMinChunks = 2;
 
-void InitGearTable(uint32_t gear[256]) {
-  for (int i = 0; i < 256; ++i) {
-    uint32_t h = static_cast<uint32_t>(i);
-    for (int j = 0; j < 16; ++j) {
-      h = (h >> 1) ^
-          (static_cast<uint32_t>(-static_cast<int32_t>(h & 1u)) & 0xD0000001u);
+void HashChunkRegions(DigestAlgo algo, const uint8_t* data,
+                      const std::vector<size_t>& offsets,
+                      const std::vector<uint32_t>& lengths,
+                      std::vector<ChunkDescriptor>* out) {
+  out->clear();
+  out->resize(offsets.size());
+  const size_t count = offsets.size();
+  if (count == 0) return;
+
+  const bool use_pool =
+      data && count >= kParallelHashMinChunks &&
+      std::accumulate(lengths.begin(), lengths.end(), size_t{0}) >=
+          kParallelHashMinBytes;
+
+  if (use_pool) {
+    std::vector<DigestSpan> spans(count);
+    for (size_t i = 0; i < count; ++i) {
+      spans[i].offset = offsets[i];
+      spans[i].length = lengths[i];
     }
-    gear[i] = h;
+    std::vector<uint8_t> hashes(count * 32);
+    DigestPool::Shared().HashRegions(algo, data, spans.data(), count,
+                                     hashes.data());
+    for (size_t i = 0; i < count; ++i) {
+      (*out)[i].offset = offsets[i];
+      (*out)[i].length = lengths[i];
+      std::memcpy((*out)[i].hash, hashes.data() + i * 32, 32);
+    }
+    return;
   }
-}
 
-uint32_t InitWindowHash(const uint8_t* data, size_t end, uint32_t w,
-                        const uint32_t gear[256]) {
-  uint32_t h = 0;
-  const size_t start = end - w;
-  for (size_t i = start; i < end; ++i) {
-    h = (h << 1) + gear[data[i]];
+  for (size_t i = 0; i < count; ++i) {
+    (*out)[i].offset = offsets[i];
+    (*out)[i].length = lengths[i];
+    ContentHash(algo, data + offsets[i], lengths[i], (*out)[i].hash);
   }
-  return h;
 }
 
 }  // namespace
 
 FastCdcSlice::FastCdcSlice(FastCdcConfig config) : config_(config) {
-  InitGearTable(gear_);
+  fastcdc_internal::InitGearTable(gear_);
 }
 
-uint32_t FastCdcSlice::Mask() const { return BuildMask(config_.avg_size); }
+uint32_t FastCdcSlice::Mask() const {
+  return fastcdc_internal::BuildMask(config_.avg_size);
+}
 
 Status FastCdcSlice::Chunk(const uint8_t* data, size_t len,
                            std::vector<ChunkDescriptor>* out) const {
@@ -56,27 +69,49 @@ Status FastCdcSlice::Chunk(const uint8_t* data, size_t len,
   out->clear();
   if (len == 0) return Status::Ok();
 
+  std::vector<size_t> offsets;
+  std::vector<uint32_t> lengths;
+  const Status cuts_st = ChunkCuts(data, len, &offsets, &lengths);
+  if (!cuts_st.ok()) return cuts_st;
+
   if (len <= config_.min_size) {
     ChunkDescriptor desc{};
     desc.offset = 0;
     desc.length = static_cast<uint32_t>(len);
-    Sha256(data, len, desc.hash);
+    ContentHash(config_.digest_algo, data, len, desc.hash);
     out->push_back(desc);
+    return Status::Ok();
+  }
+
+  HashChunkRegions(config_.digest_algo, data, offsets, lengths, out);
+  return Status::Ok();
+}
+
+Status FastCdcSlice::ChunkCuts(const uint8_t* data, size_t len,
+                               std::vector<size_t>* offsets,
+                               std::vector<uint32_t>* lengths) const {
+  if (!offsets || !lengths) return Status::InvalidArgument("out is null");
+  offsets->clear();
+  lengths->clear();
+  if (len == 0) return Status::Ok();
+
+  if (len <= config_.min_size) {
+    offsets->push_back(0);
+    lengths->push_back(static_cast<uint32_t>(len));
     return Status::Ok();
   }
 
   const uint32_t mask = Mask();
   const uint32_t w = config_.window_size;
-  size_t pos = 0;
+  offsets->reserve(len / config_.min_size + 1);
+  lengths->reserve(offsets->capacity());
 
+  size_t pos = 0;
   while (pos < len) {
     const size_t remaining = len - pos;
     if (remaining <= config_.min_size) {
-      ChunkDescriptor desc{};
-      desc.offset = pos;
-      desc.length = static_cast<uint32_t>(remaining);
-      Sha256(data + pos, remaining, desc.hash);
-      out->push_back(desc);
+      offsets->push_back(pos);
+      lengths->push_back(static_cast<uint32_t>(remaining));
       break;
     }
 
@@ -85,15 +120,8 @@ Status FastCdcSlice::Chunk(const uint8_t* data, size_t len,
     bool found = false;
 
     if (scan_start >= w && scan_start < cut) {
-      uint32_t h = InitWindowHash(data, scan_start, w, gear_);
-      for (size_t i = scan_start; i < cut; ++i) {
-        if ((h & mask) == 0) {
-          cut = i;
-          found = true;
-          break;
-        }
-        h = (h << 1) + gear_[data[i]] - gear_[data[i - w]];
-      }
+      fastcdc_internal::ScanGearCut(data, scan_start, cut, w, mask, gear_,
+                                    &cut, &found);
     }
 
     if (!found && remaining > config_.max_size) {
@@ -102,15 +130,10 @@ Status FastCdcSlice::Chunk(const uint8_t* data, size_t len,
       cut = len;
     }
 
-    const size_t chunk_len = cut - pos;
-    ChunkDescriptor desc{};
-    desc.offset = pos;
-    desc.length = static_cast<uint32_t>(chunk_len);
-    Sha256(data + pos, chunk_len, desc.hash);
-    out->push_back(desc);
+    offsets->push_back(pos);
+    lengths->push_back(static_cast<uint32_t>(cut - pos));
     pos = cut;
   }
-
   return Status::Ok();
 }
 

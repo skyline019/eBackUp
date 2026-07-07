@@ -15,6 +15,7 @@ struct RestoreOptions {
   BackupFilterOptions filter;
   bool verify_subset_merkle{true};
   bool verify_restored_content{false};
+  uint64_t snapshot_txn_id{0};
 };
 
 class RestoreEngine {
