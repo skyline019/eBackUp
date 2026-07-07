@@ -367,7 +367,7 @@ void BackupEngine::ClearEncryption() {
 
 Status BackupEngine::EnsureRepoContentKey(const std::string& password) {
   const std::string salt_path = RepoJoin(repo_path_, "crypto.salt");
-  if (!std::filesystem::exists(salt_path)) return Status::Ok();
+  if (!std::filesystem::exists(PathFromUtf8(salt_path))) return Status::Ok();
   if (password.empty()) {
     return Status::InvalidArgument("encrypted repo requires password");
   }
@@ -558,7 +558,7 @@ Status BackupEngine::RunPipelineBackup(BackupMode mode,
     uint64_t total_bytes = 0;
     for (const auto& fp : pending_files_) {
       std::error_code ec;
-      total_bytes += std::filesystem::file_size(fp, ec);
+      total_bytes += std::filesystem::file_size(PathFromUtf8(fp), ec);
     }
     if (total_bytes <= kSequentialPipelineMaxBytes) {
       const Status ch = ChunkPendingFiles(mode, options);

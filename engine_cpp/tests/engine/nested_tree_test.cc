@@ -67,6 +67,26 @@ TEST(NestedTreeTest, UnicodeAndSpacePaths) {
   ASSERT_TRUE(test::CompareDirectoryTrees(source, dest).ok());
 }
 
+TEST(NestedTreeTest, UnicodePipelineBackup) {
+  const std::string repo = test::TempDir("nested_unicode_pipe_repo");
+  const std::string source = test::TempDir("nested_unicode_pipe_src");
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
+
+  if (!test::CopyFixtureTree("unicode", source).ok()) {
+    if (!test::BuildUnicodePathTree(source).ok()) {
+      GTEST_SKIP() << "unicode paths unsupported on this platform";
+    }
+  }
+
+  BackupOptions opts{};
+  opts.use_pipeline = true;
+  BackupEngine engine(repo);
+  ASSERT_TRUE(engine.Open().ok());
+  const Status st = engine.RunBackup(source, BackupMode::kFull, opts);
+  ASSERT_TRUE(st.ok()) << st.message();
+  ASSERT_TRUE(engine.Verify().ok());
+}
+
 TEST(NestedTreeTest, SelectiveRestoreNestedAncestors) {
   const std::string repo = test::TempDir("nested_select_repo");
   const std::string source = test::TempDir("nested_select_src");

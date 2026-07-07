@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { verifyRepo, recoverRepo, setAuditKey } from "@/api/ebbackup";
+import { verifyRepo, recoverRepo, setAuditKey, setPassword, pathExists } from "@/api/ebbackup";
 import { useRepoStore } from "@/stores/repoStore";
 import { useUiStore } from "@/stores/uiStore";
 import { setActivityRunner } from "@/composables/useActivityRunners";
@@ -14,7 +14,9 @@ const ui = useUiStore();
 
 const txnId = ref<number | undefined>(undefined);
 const requireAnchor = ref(false);
+const password = ref("");
 const auditKey = ref("");
+const repoEncrypted = ref(false);
 const busy = ref(false);
 
 const FLAG_REQUIRE_ANCHOR = 0x0004;
@@ -27,7 +29,24 @@ let unregRecover: (() => void) | null = null;
 onMounted(() => {
   unregVerify = setActivityRunner("verify-run", verify);
   unregRecover = setActivityRunner("recover-run", recover);
+  void refreshEncryptedFlag();
 });
+
+watch(
+  () => repo.path,
+  () => {
+    void refreshEncryptedFlag();
+  }
+);
+
+async function refreshEncryptedFlag() {
+  if (!repo.isOpen || !repo.path) {
+    repoEncrypted.value = false;
+    return;
+  }
+  const base = repo.path.replace(/[/\\]+$/, "");
+  repoEncrypted.value = await pathExists(`${base}\\crypto.salt`);
+}
 
 onUnmounted(() => {
   unregVerify?.();
@@ -50,8 +69,13 @@ async function verify() {
     ui.pushLog("开启强制锚点验证时，请填写审计密钥", "error");
     return;
   }
+  if (repoEncrypted.value && !password.value.trim()) {
+    ui.pushLog("加密仓库验证须填写备份密码", "error");
+    return;
+  }
   busy.value = true;
   try {
+    if (password.value.trim()) await setPassword(password.value.trim());
     await setAuditKey(auditKey.value.trim());
     const flags = requireAnchor.value ? FLAG_REQUIRE_ANCHOR : 0;
     const res = await verifyRepo(txnId.value || undefined, flags);
@@ -107,6 +131,25 @@ async function recover() {
           <el-input-number v-model="txnId" :min="0" placeholder="留空=最新" />
           <FieldTip content="留空验证最新 manifest；填写数字验证历史快照。" />
         </el-form-item>
+        <el-form-item label="密码">
+          <el-input
+            v-model="password"
+            type="password"
+            show-password
+            placeholder="加密备份时必填"
+            clearable
+          />
+          <FieldTip content="与备份时设置的加密密码一致；仅保存在当前会话。" />
+        </el-form-item>
+        <el-alert
+          v-if="repoEncrypted && !password.trim()"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="此仓库已加密"
+          description="深度块校验需解密 chunk，请填写备份密码后再验证。"
+          class="anchor-alert"
+        />
         <el-form-item label="审计密钥">
           <el-input
             v-model="auditKey"

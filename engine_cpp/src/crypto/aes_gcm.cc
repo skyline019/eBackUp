@@ -7,6 +7,7 @@
 
 #include "ebbackup/common/digest.h"
 #include "ebbackup/common/fsync.h"
+#include "ebbackup/common/path_encoding.h"
 #include "ebbackup/crypto/gcm_portable.h"
 
 #ifdef _WIN32
@@ -133,9 +134,10 @@ Status Aes256GcmDecrypt(const uint8_t key[32], const uint8_t* blob,
 
 Status LoadOrCreateRepoSalt(const std::string& repo_path, uint8_t salt[16]) {
   const std::string path =
-      (std::filesystem::path(repo_path) / "crypto.salt").string();
-  if (std::filesystem::exists(path)) {
-    std::ifstream in(path, std::ios::binary);
+      PathToUtf8(PathFromUtf8(repo_path) / "crypto.salt");
+  const auto fs_path = PathFromUtf8(path);
+  if (std::filesystem::exists(fs_path)) {
+    std::ifstream in(fs_path, std::ios::binary);
     if (!in) return Status::IoError("cannot open salt");
     in.read(reinterpret_cast<char*>(salt), 16);
     if (!in) return Status::Corrupt("salt read short");
@@ -143,7 +145,7 @@ Status LoadOrCreateRepoSalt(const std::string& repo_path, uint8_t salt[16]) {
   }
   std::random_device rd;
   for (size_t i = 0; i < 16; ++i) salt[i] = static_cast<uint8_t>(rd());
-  std::ofstream out(path, std::ios::binary);
+  std::ofstream out(fs_path, std::ios::binary);
   if (!out) return Status::IoError("cannot create salt");
   out.write(reinterpret_cast<const char*>(salt), 16);
   out.flush();

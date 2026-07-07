@@ -135,7 +135,7 @@ export const ACTIVITY_GUIDES: Record<ActivityId, HelpSection> = {
     id: "verify",
     title: "验证",
     body: [
-      "默认：manifest + chunk 深度校验，无需密钥。",
+      "默认：manifest + chunk 深度校验；加密仓库须填备份密码。",
       "强制锚点：CARL 签名验证，须在验证页填写审计密钥。",
       "Recover：修复中断事务，便于继续增量备份。",
       "指定 Txn 验证时「强制锚点」不生效（引擎限制）。",

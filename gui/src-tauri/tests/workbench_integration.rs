@@ -244,3 +244,50 @@ fn double_init_then_open_succeeds() {
         (dll.close)(eng);
     }
 }
+
+#[test]
+fn backup_unicode_source_path() {
+    let dll = WorkbenchDll::load().expect("dll");
+    let src_path = PathBuf::from(r"e:\BaiduNetdiskDownload\小爱限定工程");
+    if !src_path.is_dir() {
+        eprintln!("skip backup_unicode_source_path: {} not found", src_path.display());
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "ebbackup_wb_unicode_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let repo = root.join("repo");
+    let _ = fs::remove_dir_all(&root);
+
+    unsafe {
+        let repo_c = cstr(&to_win_path(&repo));
+        call_json_plain(|buf, cap| (dll.init_repo_json)(repo_c.as_ptr(), 0, buf, cap));
+
+        let mut err: i32 = 0;
+        let eng = (dll.open_ex)(repo_c.as_ptr(), &mut err);
+        assert!(!eng.is_null(), "open failed status={err}");
+
+        let src_c = cstr(&to_win_path(&src_path));
+        let backup = call_json_eng(eng, |e, buf, cap| {
+            (dll.run_backup_json)(e, src_c.as_ptr(), 0, 0x0002, buf, cap)
+        });
+        assert!(
+            backup
+                .get("stats")
+                .and_then(|s| s.get("files_processed"))
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0)
+                > 0,
+            "expected files_processed > 0"
+        );
+
+        (dll.close)(eng);
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}

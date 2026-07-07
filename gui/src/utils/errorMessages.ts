@@ -29,6 +29,12 @@ export function formatVerifyError(e: unknown): string {
   if (msg.includes("cannot open manifest")) {
     return "该快照或仓库尚无 manifest，请先完成至少一次备份。";
   }
+  if (msg.includes("encrypted repo requires password")) {
+    return "此仓库已加密，请填写备份密码后再验证。";
+  }
+  if (msg.includes("content key") || msg.includes("decrypt")) {
+    return "解密失败：请确认密码与备份时一致。";
+  }
   return msg;
 }
 

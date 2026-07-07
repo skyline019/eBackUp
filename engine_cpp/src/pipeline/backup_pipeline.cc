@@ -1244,7 +1244,7 @@ Status RunBackupPipeline(const std::vector<std::string>& file_paths,
         RelativePathFromRoot(source_root, file_paths[i], &sf.relative_path);
     if (!rel_st.ok()) return rel_st;
     std::error_code ec;
-    sf.file_size = std::filesystem::file_size(file_paths[i], ec);
+    sf.file_size = std::filesystem::file_size(PathFromUtf8(file_paths[i]), ec);
     total_bytes += sf.file_size;
     schedule_in.push_back(std::move(sf));
   }
