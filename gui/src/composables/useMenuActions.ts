@@ -1,6 +1,8 @@
+import { nextTick } from "vue";
 import { pickDirectory } from "@/api/ebbackup";
 import { useRepoStore } from "@/stores/repoStore";
 import { useUiStore } from "@/stores/uiStore";
+import { invokeActivityRunner } from "@/composables/useActivityRunners";
 import type { ActivityId } from "@/utils/activities";
 import type { MenuAction } from "@/utils/topMenus";
 
@@ -28,20 +30,39 @@ export function useMenuActions() {
       case "init-repo":
         ui.setActivity("repo");
         break;
-      case "run-backup":
+      case "run-backup": {
         ui.setActivity("backup");
+        await nextTick();
+        if (!(await invokeActivityRunner("backup-run"))) {
+          ui.pushLog("请在备份页选择源目录后运行", "meta");
+        }
         break;
-      case "verify":
+      }
+      case "verify": {
         ui.setActivity("verify");
+        await nextTick();
+        if (!(await invokeActivityRunner("verify-run"))) {
+          ui.pushLog("验证页未就绪", "meta");
+        }
         break;
-      case "recover":
+      }
+      case "recover": {
         ui.setActivity("verify");
+        await nextTick();
+        if (!(await invokeActivityRunner("recover-run"))) {
+          ui.pushLog("修复页未就绪", "meta");
+        }
+        break;
+      }
+      case "open-help":
+        ui.openHelp("quickstart");
         break;
       case "toggle-settings":
         ui.openSettings();
         break;
       case "toggle-sidebar":
         ui.showSidebar = !ui.showSidebar;
+        ui.persistSidebar();
         ui.schedulePersist();
         break;
       case "toggle-log":

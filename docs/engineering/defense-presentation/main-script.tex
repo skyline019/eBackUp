@@ -1,0 +1,176 @@
+% !TEX program = xelatex
+\documentclass[11pt,a4paper,fontset=none]{ctexart}
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{fancyhdr}
+\setlength{\headheight}{14pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{ebbackup 答辩逐字稿}
+\fancyhead[R]{\vtag{0.9.5}}
+\fancyfoot[C]{\thepage}
+
+\input{preamble-shared.tex}
+\input{fonts-gui.tex}
+\input{macros.tex}
+\input{chapters/code-snippets.tex}
+
+\title{ebbackup 答辩演讲稿\\（课程版 8--10 分钟 + 技术版 15--20 分钟）}
+\author{recoveryProjects / 《软件开发综合实验》}
+\date{2026-07-07 \quad commit \gitdesc{1fca9d7}}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+%% ============================================================
+\part{Part I\quad 课程答辩口径（合计 8--10 分钟）}
+%% ============================================================
+
+\section{开场与项目定位}
+\timing{0--1\,min}{0--1.5\,min}
+\begin{say}
+各位老师好。我是 ebbackup 数据备份软件项目的答辩人。本项目对应《软件开发综合实验》要求，实现了一款可在 Windows 与 Linux 上构建运行的\textbf{内容寻址增量备份}系统，版本为 \vtag{0.9.5}，包含 C++ 内核、命令行工具 \filepath{eb}、以及可选的桌面 Workbench 图形界面。
+
+我们的目标不是做一个「能拷贝文件的演示程序」，而是在\textbf{可验证、可回归}的前提下，完成课程要求的数据备份与还原，并在压缩、加密、筛选、定时与实时备份等扩展项上给出可运行的工程实现。接下来我会按课程评分逻辑，先讲功能对照，再演示主流程，最后说明软件工程过程与测试门禁。
+\end{say}
+
+\section{课程功能对照}
+\timing{1--2.5\,min}{1.5--3\,min}
+\input{chapters/course-mapping.tex}
+\begin{say}
+课程基础分要求两项：将目录树备份到指定位置，以及从备份还原目录树。我们通过 \filepath{eb init}、\filepath{eb backup}、\filepath{eb restore} 三条命令完成，并在 Workbench 的六个 Activity 中提供同等能力。
+
+扩展方面：我们实现了特殊文件与元数据、filter 筛选、EbPack 打包存储、LZ4 与 zstd 压缩、AES-GCM 加密、Tauri 桌面 GUI、\filepath{schedule} 定时与 \filepath{watch} 实时备份。网络网盘模式属于我们刻意划出的生态边界——单机可验证内核优先，因此未做用户管理与远程传输。
+
+需要主动说明的是：LZ4、zstd 与加密库属于成熟第三方实现，按课程规则扩展分可能按 50\% 计；我们的答辩重点放在 CDC 分块、提交点耐久性、Pipeline 拓扑与 bench 门禁等\textbf{自研内核}部分。
+\end{say}
+
+\section{现场演示脚本（可录 3 分钟视频）}
+\timing{2.5--5\,min}{3--6\,min}
+\demo{启动 ebbackup Workbench；或终端执行 \texttt{eb} 命令}
+\input{chapters/figures-sequence.tex}
+\begin{say}
+演示分五步。第一步，在「仓库」页创建或打开本地 repo——空仓库在首次备份前没有 manifest，统计为零是正常状态，我们已在 \vtag{0.9.5} 修复了空仓库打开时的报错。第二步，在「备份」页选择\textbf{真实存在}的源目录；空仓库首次备份应使用全量模式。第三步，在「快照」页查看 txn 列表。第四步，在「恢复」页将数据还原到目标目录，可选指定 txn\_id 做时间旅行。第五步，展示 Workbench 的壁纸与卡片/输出面板透明度调节——这是产品化联调中真实遇到并解决的 WebView2 渲染问题。
+
+若时间有限，口播可只演示：创建仓库 $\rightarrow$ 备份一个小文件夹 $\rightarrow$ 查看快照列表。
+\end{say}
+
+\section{软件工程过程（轻量 vs 课程模板）}
+\timing{5--7\,min}{6--9\,min}
+\input{chapters/figures-adapt-loop.tex}
+\begin{say}
+课程讲授瀑布模型、面向对象方法与 UML 四图。我们的实际过程更接近\textbf{测量驱动的短环}：bench 或 bug 信号 $\rightarrow$ 假设 $\rightarrow$ parity 与 powerfail 验证 $\rightarrow$ ctest 与 bench\_check 门禁 $\rightarrow$ CHANGELOG 与文档归档。
+
+这与课程并不矛盾：我们同样经历了需求边界（课程评分表）、设计（分层架构与构件划分）、实现、测试与发布。差异在于：内核性能类问题无法在一次设计评审中纸面定稿，必须用实测与黄金 parity 验证。事后我们编写了工程技术手册与生态实录，可映射为课程要求的类图、顺序图与构件图——StarUML 正式图可在答辩材料中作为附录提交。
+
+变更管理方面：使用 git 版本控制，\filepath{CHANGELOG.md} 记录每个版本的 why，GitHub Actions 在 push 时运行 ctest。
+\end{say}
+
+\section{测试与质量门禁}
+\timing{7--8.5\,min}{9--11\,min}
+\begin{say}
+测试分三层。语义层：FastCDC stream 与 slice 的 bit-identical parity，以及 powerfail 注入验证提交点。回归层：233 个 GoogleTest 用例，覆盖 pipeline、快照、加密、特殊文件等。性能层：L1 到 L7 bench，其中 reuse 不低于 90\%、pipeline ratio 不低于 0.90 为\textbf{immutable}，永不可为追分而降低。
+
+下方是 CI 实际使用的 \filepath{ci\_floor.json} 节选，即我们的「完成定义」之一。
+\end{say}
+\showcifloor
+
+\begin{say}
+课程 Part 收尾：我们交付了可构建源码、CMake 构建脚本、CLI 与 Workbench 可执行程序、以及配套技术文档。谢谢各位老师，下面进入技术版延展，或直接进入问答。
+\end{say}
+
+\newpage
+%% ============================================================
+\part{Part II\quad 技术深度延展（+10 分钟，合计 15--20 分钟）}
+%% ============================================================
+
+\section{外部压力与本土化}
+\timing{—}{11--13\,min}
+\begin{say}
+技术答辩从五条外部压力展开：P1 性能可比性——本地备份的硬通货是 MB/s；P2 I/O 与 fsync 成本；P3 正确性与并发；P4 运维可交付；P5 单人维护带宽。本土化含义是：Windows Release 为主环境、bench 为立法工具、流程极短、ABI 冻结避免频繁迁移。
+
+\vtag{0.4.6} 时 L5 约 76 MB/s；四轮 sprint 后 \vtag{0.9.4} 达 170--172 MB/s，相对基准约翻倍。profile 显示单文件路径 chunk 阶段 CDC 约占 82\%，这是 Sprint 4 仍继续优化 CDC 的数据依据。
+\end{say}
+\input{chapters/tables-bench.tex}
+
+\section{真实实验 I：Wave 5 并发崩溃}
+\timing{—}{13--14.5\,min}
+\begin{pressbox}[\vtag{0.9.0} 实测记录]
+多 worker Pipeline v4 触发 ChunkStore 全局索引锁下的 heap corruption（异常码 \texttt{0xC0000005}）以及 \texttt{ForEachRecord} 重入死锁。同期 L5 约 142--149 MB/s，L3b ratio 一度逼近 immutable 下限 0.90。
+\end{pressbox}
+\begin{say}
+这是一次典型的 P3 压过 P1 的时刻。若选择继续 chase L5 分数，用户面对的是随机崩溃，生态信用归零。我们的决策是：shard 化索引、tombstone 独立锁序、atomic finalize，用两到三个 commit 先把正确性修到 ctest 全绿，再进入 v0.9.2 流式拓扑 sprint。
+
+口播结论：\textbf{immutable floor 保护 ratio，但不保护 crash}；正确性优先是本土化路径里唯一理性的排序。
+\end{say}
+
+\section{真实实验 II：Stage 3.2 与负向剪枝}
+\timing{—}{14.5--16\,min}
+\begin{say}
+\vtag{0.9.1} 曾讨论将 L5 floor 提升到 280 MB/s（Stage 3.2）。实测 \vtag{0.9.4} 为 171 MB/s，仅达目标的 61\%。若将 280 作为 merge 阻塞，CI 将 100\% 失败，迫使团队作弊降 floor 或放弃合并——这会破坏生态信用。
+
+数据驱动的剪枝是：Stage 3.1（L5=105）blocking；Stage 3.2 aspirational 仅 nightly 报告。同类地，Phase 3C CDC carry-boundary 在 parity 失败后整支回退，收益 0 MB/s，不进入默认路径。
+\end{say}
+
+\section{真实实验 III：CDC Phase A 止损}
+\timing{—}{16--17\,min}
+\begin{say}
+Sprint 4 实现两条 CDC 路径：Phase B 在 stream feed 上做 seg1 bulk scan，默认开启，L5 170--172 MB/s。Phase A 使用整文件 FastCdcSlice cuts，环境变量 \texttt{EBBACKUP\_CDC\_FAST\_SLICE=1}，实测仅约 105 MB/s，相对损失 39\%，甚至低于 \vtag{0.6.0} 的 139。
+
+这是一次清晰的负向实验：L3b ratio 仍可能达标，但绝对吞吐崩溃。immutable ratio 门禁捕不到此类劣化，因此我们增加\textbf{默认路径 + 绝对 MB/s}的产品守卫，Phase A 保持 opt-in。答辩时我会把这作为「测量立法」优于「架构辩论」的例证。
+\end{say}
+
+\section{真实实验 IV：产品化联调（Workbench）}
+\timing{—}{17--18.5\,min}
+\input{chapters/figures-components.tex}
+\begin{say}
+\vtag{0.9.5} 交付 Workbench 后，我们遇到三类真实问题。其一，新建仓库尚无 manifest，\texttt{repo\_info} 报错——根因是 \texttt{ComputeRepoStats} 无条件读取 manifest；修复后空仓库返回零统计。其二，GUI 透明度滑块无效——根因是壁纸模式下父层不透明且 WebView2 对嵌套 color-mix 支持不稳定；改为 JS 预计算 rgba。其三，备份报 source path not found——增加路径存在性校验与首次全量提示。
+
+下面是空仓库统计修复、源路径校验与透明度预计算的三段代表性代码。
+\end{say}
+\showrepostats
+\showrunbackup
+\showpanelsurface
+
+\section{架构与构件（技术版收尾）}
+\timing{—}{18.5--19.5\,min}
+\input{chapters/figures-architecture.tex}
+\showshim
+\begin{say}
+技术版收尾：内核八层、构件图与 JSON shim 边界。DLL 不复制业务逻辑，只做 C API 的 JSON 封装，便于 Tauri Rust 侧集成测试。完整 API 见 \filepath{kernel-manual} 第 18 章，生态决策见 \filepath{ecosystem-evolution}。
+\end{say}
+
+\newpage
+%% ============================================================
+\part{附录\quad Q\&A 备答（每题约 30 秒）}
+%% ============================================================
+
+\section{常见问题}
+\begin{enumerate}
+  \item \textbf{EbPack 算不算课程「打包解包」？}\\
+  答：EbPack 将 chunk 聚合为内容寻址的 \filepath{.ebpack} 文件，是备份领域的 pack 存储，而非 tar 式简单拼接；答辩时强调 dedup 与索引，而非「单文件归档」。
+
+  \item \textbf{为何不用 Qt？}\\
+  答：课程允许 UI 用脚本技术栈；我们选用 Tauri+Vue 以复用 eB-Tree Workbench 壳层经验，内核仍为 C++，符合「后台 C++、前台可脚本」规则。
+
+  \item \textbf{为何不做网络备份？}\\
+  答：生态边界是单节点可验证内核；网络协议、用户管理与传输加密会分散维护带宽，与 P5 压力冲突。
+
+  \item \textbf{与 restic/borg 的差异？}\\
+  答：同为主机级内容寻址备份；我们强调 Windows Release bench 门禁、EbPack 默认布局、RAR/Merkle 审计链与 C API 嵌入场景。
+
+  \item \textbf{immutable floor 是什么？}\\
+  答：CI 中 reuse 与 pipeline ratio 下限只允许升高不允许降低，防止为追分牺牲增量正确性。
+
+  \item \textbf{单人项目如何替代 Scrum？}\\
+  答：用 ctest+bench\_check 作为机器可执行的「完成定义」；CHANGELOG 替代 Sprint 计划文档。
+
+  \item \textbf{UML 四图在哪里？}\\
+  答：内核手册与本文档含类/顺序/构件的 tex 表述；StarUML 正式图可作为课程提交附录，从事后架构导出。
+
+  \item \textbf{下一步？}\\
+  答：Sprint 5 候选是 Hybrid ChunkCuts+feed overlap；Stage 3.2 的 280 MB/s 需再 +109 MB/s，以数据而非口号推进。
+\end{enumerate}
+
+\end{document}

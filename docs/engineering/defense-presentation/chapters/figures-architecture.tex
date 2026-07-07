@@ -1,0 +1,28 @@
+% 内核八层架构（答辩精简）
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  layer/.style={rectangle, draw=PosBlue!60, fill=blue!5, minimum width=11cm,
+    minimum height=0.55cm, font=\small}
+]
+  \node[layer] (l1) {分块层：FastCDC + HCRBO（CFI 增量复用）};
+  \node[layer, below=0.12cm of l1] (l2) {摘要层：SHA256 Content ID（Legacy/Standard 双栈）};
+  \node[layer, below=0.12cm of l2] (l3) {压缩层：ContentClass $\rightarrow$ LZ4/zstd/跳过};
+  \node[layer, below=0.12cm of l3] (l4) {存储层：ChunkStore + EbPack 16-shard};
+  \node[layer, below=0.12cm of l4] (l5) {元数据：Manifest v4 + 双槽 SuperBlock};
+  \node[layer, below=0.12cm of l5] (l6) {时间旅行：Snapshot + GFS prune};
+  \node[layer, below=0.12cm of l6] (l7) {可验证：RAR 审计链 + Merkle};
+  \node[layer, below=0.12cm of l7] (l8) {并发：Pipeline v4 / StreamingChunkCpuPipeline};
+\end{tikzpicture}
+\caption{ebbackup 内核分层（\filepath{kernel-manual} 概述）}
+\label{fig:arch-layers}
+\end{figure}
+
+\begin{philobox}[生态宪法（永不交易）]
+\begin{itemize}
+  \item Content ID = \texttt{SHA256(content)}，CDC 路径不得改变语义；
+  \item 提交点耐久性：manifest commit 前 \texttt{Flush}/fsync；
+  \item Immutable CI：\texttt{reuse\_pct$\geq$90}、\texttt{pipeline\_ratio*$\geq$0.90} 永不可降；
+  \item 中断 txn $\rightarrow$ \texttt{kAborted}，前一 snapshot 仍可 verify。
+\end{itemize}
+\end{philobox}

@@ -1,0 +1,61 @@
+% 答辩演讲稿 — 共享导言（颜色、盒子、tikz、listings）
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{multirow}
+\makeatletter
+\@ifclassloaded{beamer}{%
+  % enumitem 与 beamer 的 enumerate 模板冲突，幻灯片侧不加载
+}{%
+  \usepackage{enumitem}%
+}
+\makeatother
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable,skins,listings}
+\usepackage{tikz}
+\usetikzlibrary{positioning,fit,arrows.meta,calc,matrix,backgrounds,shapes.geometric}
+
+\definecolor{PressRed}{RGB}{160,50,40}
+\definecolor{AdaptGreen}{RGB}{30,110,60}
+\definecolor{PruneOrange}{RGB}{180,90,20}
+\definecolor{PosBlue}{RGB}{30,80,140}
+\definecolor{CodeBg}{RGB}{248,248,252}
+\definecolor{CodeFrame}{RGB}{200,200,210}
+\definecolor{CodeKeyword}{RGB}{0,0,180}
+\definecolor{CodeComment}{RGB}{100,100,100}
+\definecolor{CodeString}{RGB}{163,21,21}
+
+\newtcolorbox{philobox}[1][]{
+  colback=blue!4!white, colframe=PosBlue, fonttitle=\bfseries,
+  title={#1}, breakable, arc=2pt
+}
+\newtcolorbox{pressbox}[1][]{
+  colback=red!4!white, colframe=PressRed, fonttitle=\bfseries,
+  title={#1}, breakable, arc=2pt
+}
+\newtcolorbox{adaptbox}[1][]{
+  colback=green!4!white, colframe=AdaptGreen, fonttitle=\bfseries,
+  title={#1}, breakable, arc=2pt
+}
+\newtcolorbox{prunebox}[1][]{
+  colback=orange!5!white, colframe=PruneOrange, fonttitle=\bfseries,
+  title={#1}, breakable, arc=2pt
+}
+
+\tikzset{
+  evt/.style={rectangle, rounded corners=2pt, draw=gray!60, fill=blue!5,
+    align=left, minimum width=9cm, minimum height=0.75cm, font=\small},
+  pres/.style={rectangle, draw=PressRed!70, fill=red!6, align=center,
+    minimum width=2.4cm, minimum height=0.65cm, font=\footnotesize},
+  comp/.style={rectangle, draw=PosBlue!70, fill=blue!6, align=center,
+    minimum width=2.6cm, minimum height=0.7cm, font=\footnotesize},
+  arrow/.style={-{Stealth[length=2mm]}, thick, draw=gray!60}
+}
+
+% 仓库根相对本目录：../../../
+\newcommand{\repopath}[1]{\filepath{../../../#1}}

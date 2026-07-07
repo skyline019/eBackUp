@@ -45,6 +45,11 @@ type JsonPruneFn = unsafe extern "C" fn(
     usize,
 ) -> c_int;
 type JsonPlainFn = unsafe extern "C" fn(*mut c_char, usize) -> c_int;
+type SetProgressFn = unsafe extern "C" fn(
+    *mut EbBackupEngine,
+    Option<unsafe extern "C" fn(u64, *mut c_void)>,
+    *mut c_void,
+);
 
 pub struct EbbackupApi {
     _lib: Library,
@@ -65,6 +70,7 @@ pub struct EbbackupApi {
     pub runtime_info_json: JsonPlainFn,
     pub last_error_json: JsonEngFn,
     pub get_stats_json: JsonEngFn,
+    pub set_progress: SetProgressFn,
 }
 
 static API: OnceCell<EbbackupApi> = OnceCell::new();
@@ -123,6 +129,7 @@ pub fn api() -> Result<&'static EbbackupApi, String> {
             runtime_info_json: load_sym!(lib, "ebbackup_workbench_runtime_info_json"),
             last_error_json: load_sym!(lib, "ebbackup_workbench_last_error_json"),
             get_stats_json: load_sym!(lib, "ebbackup_workbench_get_stats_json"),
+            set_progress: load_sym!(lib, "eb_backup_set_progress"),
             _lib: lib,
         };
         API.set(api).map_err(|_| "API init race".to_string())?;

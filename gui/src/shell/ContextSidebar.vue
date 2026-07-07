@@ -12,7 +12,7 @@ const title = computed(() => {
     case "repo":
       return "最近仓库";
     case "backup":
-      return "备份选项";
+      return "备份上下文";
     case "snapshots":
       return "快照";
     case "restore":
@@ -36,6 +36,10 @@ function formatBytes(n: number) {
 function openRecent(path: string) {
   void repo.open(path);
 }
+
+function goRestore(txnId: number) {
+  ui.goRestoreWithTxn(txnId);
+}
 </script>
 
 <template>
@@ -47,6 +51,7 @@ function openRecent(path: string) {
         size="small"
         :icon="RefreshRight"
         circle
+        title="刷新"
         @click="repo.refreshSnapshots()"
       />
     </header>
@@ -58,17 +63,48 @@ function openRecent(path: string) {
           </li>
         </ul>
         <p v-if="!repo.recent.length" class="muted">暂无最近仓库</p>
+        <el-button link type="primary" @click="ui.openHelp('quickstart')">查看演示流程</el-button>
+      </template>
+
+      <template v-else-if="ui.activity === 'backup' && repo.isOpen">
+        <dl class="stats-dl">
+          <dt>上次源目录</dt>
+          <dd class="mono">{{ repo.lastSourcePath || "—" }}</dd>
+          <dt>快照数</dt>
+          <dd>{{ repo.snapshots.length }}</dd>
+        </dl>
+        <p class="muted">F1 打开帮助 · 菜单可一键运行备份</p>
       </template>
 
       <template v-else-if="ui.activity === 'snapshots' && repo.isOpen">
         <ul class="snap-list">
-          <li v-for="s in repo.snapshots" :key="s.txn_id" class="snap-item">
+          <li v-for="s in repo.snapshots" :key="s.txn_id" class="snap-item clickable" @click="goRestore(s.txn_id)">
             <strong>#{{ s.txn_id }}</strong>
             <span>{{ new Date(s.created_at_unix * 1000).toLocaleString() }}</span>
-            <span class="muted">{{ s.file_count }} 文件</span>
+            <span class="muted">{{ s.file_count }} 文件 · 点击恢复</span>
           </li>
         </ul>
         <p v-if="!repo.snapshots.length" class="muted">尚无快照</p>
+      </template>
+
+      <template v-else-if="ui.activity === 'restore' && repo.isOpen">
+        <p class="muted">在右侧选择目标目录与 Txn；加密仓库需填密码。</p>
+        <ul v-if="repo.snapshots.length" class="snap-list">
+          <li
+            v-for="s in repo.snapshots.slice(0, 8)"
+            :key="s.txn_id"
+            class="snap-item clickable"
+            @click="goRestore(s.txn_id)"
+          >
+            <strong>#{{ s.txn_id }}</strong>
+            <span class="muted">{{ s.file_count }} 文件</span>
+          </li>
+        </ul>
+      </template>
+
+      <template v-else-if="ui.activity === 'verify'">
+        <p class="muted">默认关闭「强制锚点」即可答辩演示验证。</p>
+        <el-button link type="primary" @click="ui.openHelp('faq')">审计密钥 FAQ</el-button>
       </template>
 
       <template v-else-if="repo.info">
@@ -136,6 +172,14 @@ function openRecent(path: string) {
   border-bottom: 1px solid var(--shell-line);
   font-size: 12px;
 }
+.snap-item.clickable {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 8px 6px;
+}
+.snap-item.clickable:hover {
+  background: var(--hover-bg);
+}
 .stats-dl {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -148,9 +192,15 @@ function openRecent(path: string) {
 .stats-dl dd {
   margin: 0;
   color: var(--text-main);
+  word-break: break-all;
+}
+.stats-dl .mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 .muted {
   color: var(--text-soft);
   font-size: 12px;
+  line-height: 1.5;
 }
 </style>

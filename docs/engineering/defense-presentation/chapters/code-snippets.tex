@@ -1,0 +1,18 @@
+% 代码片段（\lstinputlisting 包装）
+\newcommand{\codesnippet}[4]{%
+  \lstinputlisting[style=#1,firstline=#2,lastline=#3]{../../../#4}}
+
+\newcommand{\showcifloor}{%
+  \codesnippet{ebbackupjson}{1}{13}{engine_cpp/bench/baselines/ci_floor.json}}
+
+\newcommand{\showrepostats}{%
+  \codesnippet{ebbackupcpp}{38}{59}{engine_cpp/src/store/repo_stats.cc}}
+
+\newcommand{\showrunbackup}{%
+  \codesnippet{ebbackupcpp}{764}{768}{engine_cpp/src/engine/backup_engine.cc}}
+
+\newcommand{\showshim}{%
+  \codesnippet{ebbackupcpp}{124}{134}{engine_cpp/workbench/ebbackup_workbench_shim.cc}}
+
+\newcommand{\showpanelsurface}{%
+  \codesnippet{ebbackupts}{141}{149}{gui/src/utils/themeSettings.ts}}

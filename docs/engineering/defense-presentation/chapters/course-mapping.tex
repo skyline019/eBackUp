@@ -1,0 +1,28 @@
+% 课程基础/扩展功能对照（《软件开发综合实验》）
+\begin{table}[htbp]
+\centering
+\caption{课程评分项与 ebbackup 实现对照}
+\small
+\begin{tabular}{@{}llp{5.8cm}@{}}
+\toprule
+课程项 & 分值 & 本项目实现 \\
+\midrule
+数据备份 & 基础40 & \filepath{eb backup} / C API / Workbench 备份页 \\
+数据还原 & 基础40 & 全量/选择性/\texttt{--at} 时间旅行恢复 \\
+特殊文件 & 10 & symlink/junction/目录树（\filepath{special\_files\_test}） \\
+元数据 & 10 & mtime/atime/mode/uid/gid + \texttt{ApplyFileMeta} \\
+自定义筛选 & 各3 & filter 文件：路径/glob/尺寸/时间/uid \\
+打包解包 & 各10 & EbPack 内容寻址 pack（\filepath{.ebpack}） \\
+压缩 & 各10 & LZ4 + zstd（ContentClass 自适应） \\
+加密 & 各10 & AES-256-GCM + PBKDF2 \\
+图形界面 & 10 & Tauri 2 + Vue Workbench（\filepath{gui/}） \\
+定时备份 & 10 & \texttt{eb schedule} + GFS prune \\
+实时备份 & 15 & \texttt{eb watch} + \texttt{FsWatch} \\
+网络备份 & 10+ & \textbf{刻意不做}（生态边界） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{adaptbox}[答辩自述：第三方库规则]
+课程规定扩展功能若用第三方库「直接实现」，扩展分记 50\%。LZ4/zstd/crypto 属成熟库；答辩重点放在 CDC、耐久性、Pipeline 与 bench 门禁等自研内核部分。
+\end{adaptbox}

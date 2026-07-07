@@ -1,0 +1,17 @@
+% 适应性工程环（摘自 ecosystem-evolution ch03）
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.95cm]
+  \node[evt] (b) {Bench/Profile 或 Bug 信号（P1--P5）};
+  \node[evt, below=of b] (h) {假设：改 X 可缓解（不碰 Content ID 宪法）};
+  \node[evt, below=of h] (i) {实现 + parity/powerfail 验证};
+  \node[evt, below=of i] (g) {ctest + \filepath{ebbackup\_bench\_check}};
+  \node[evt, below=of g] (d) {默认开启 / opt-in / 文档 CHANGELOG};
+  \node[evt, below=of d] (p) {负向？剪枝回退};
+  \draw[arrow] (b)--(h)--(i)--(g)--(d);
+  \draw[arrow] (d)--(p);
+  \draw[arrow] (p.west) -- ++(-1.2,0) |- (b.west);
+\end{tikzpicture}
+\caption{测量驱动的适应性工程环（替代重型瀑布评审链）}
+\label{fig:adapt-loop}
+\end{figure}

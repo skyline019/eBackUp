@@ -1,0 +1,94 @@
+% Workbench GUI 字体（gui/public/fonts）
+\newcommand{\ebguifontpath}{../../../gui/public/fonts/}
+
+\makeatletter
+\@ifclassloaded{beamer}{\usefonttheme{professionalfonts}}{}
+\makeatother
+
+\setmainfont{JetBrainsMonoNLNerdFont-Regular}[
+  Path=\ebguifontpath,
+  Extension=.ttf,
+  BoldFont=JetBrainsMonoNLNerdFont-Bold,
+  ItalicFont=JetBrainsMonoNLNerdFont-Italic,
+  BoldItalicFont=JetBrainsMonoNLNerdFont-BoldItalic,
+  Scale=0.92
+]
+\setmonofont{JetBrainsMonoNLNerdFont-Regular}[
+  Path=\ebguifontpath,
+  Extension=.ttf,
+  BoldFont=JetBrainsMonoNLNerdFont-Bold,
+  ItalicFont=JetBrainsMonoNLNerdFont-Italic,
+  BoldItalicFont=JetBrainsMonoNLNerdFont-BoldItalic
+]
+\newfontfamily\ebproggy{ProggyCleanNerdFontMono-Regular}[
+  Path=\ebguifontpath,
+  Extension=.ttf
+]
+
+% 中文回退：Windows 用雅黑（与 GUI --font-ui 一致），WSL/TeX Live 用 Fandol
+\IfFontExistsTF{Microsoft YaHei}{%
+  \setCJKmainfont{Microsoft YaHei}[
+    BoldFont={Microsoft YaHei Bold},
+    ItalicFont={Microsoft YaHei},
+    BoldItalicFont={Microsoft YaHei Bold}
+  ]
+  \setCJKsansfont{Microsoft YaHei}[
+    BoldFont={Microsoft YaHei Bold}
+  ]
+}{%
+  \setCJKmainfont{FandolSong-Regular}[
+    Path=/usr/share/texlive/texmf-dist/fonts/opentype/public/fandol/,
+    Extension=.otf,
+    BoldFont={FandolSong-Bold},
+    ItalicFont={FandolSong-Regular},
+    BoldItalicFont={FandolSong-Bold}
+  ]
+  \setCJKsansfont{FandolHei-Regular}[
+    Path=/usr/share/texlive/texmf-dist/fonts/opentype/public/fandol/,
+    Extension=.otf,
+    BoldFont={FandolHei-Bold}
+  ]
+}
+
+\lstdefinestyle{ebbackupcpp}{
+  language=C++,
+  basicstyle=\ebproggy\footnotesize,
+  keywordstyle=\color{CodeKeyword}\bfseries,
+  commentstyle=\color{CodeComment}\itshape,
+  stringstyle=\color{CodeString},
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  stepnumber=1,
+  numbersep=6pt,
+  backgroundcolor=\color{CodeBg},
+  frame=single,
+  rulecolor=\color{CodeFrame},
+  breaklines=true,
+  showstringspaces=false,
+  tabsize=2,
+  captionpos=b
+}
+\lstdefinestyle{ebbackupjson}{
+  basicstyle=\ebproggy\footnotesize,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  backgroundcolor=\color{CodeBg},
+  frame=single,
+  rulecolor=\color{CodeFrame},
+  breaklines=true,
+  tabsize=2
+}
+\lstdefinestyle{ebbackupts}{
+  language=Java,
+  basicstyle=\ebproggy\footnotesize,
+  keywordstyle=\color{CodeKeyword}\bfseries,
+  commentstyle=\color{CodeComment}\itshape,
+  stringstyle=\color{CodeString},
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  backgroundcolor=\color{CodeBg},
+  frame=single,
+  rulecolor=\color{CodeFrame},
+  breaklines=true,
+  tabsize=2
+}

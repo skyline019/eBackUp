@@ -13,6 +13,8 @@ import MaintenanceView from "@/activities/MaintenanceView.vue";
 import { useUiStore } from "@/stores/uiStore";
 import { useSidebarResize } from "@/composables/useSidebarResize";
 import OpacityRegulator from "@/components/OpacityRegulator.vue";
+import TaskFlowBar from "@/components/TaskFlowBar.vue";
+import WorkflowJourney from "@/components/WorkflowJourney.vue";
 
 const ui = useUiStore();
 const { sidebarResizing, startResize } = useSidebarResize();
@@ -67,6 +69,8 @@ const mainView = computed(() => {
 
     <section class="content workspace" :class="{ 'console-collapsed': ui.settings.logCollapsed }">
       <RibbonBar />
+      <WorkflowJourney />
+      <TaskFlowBar />
       <main class="workspace-main workspace-opacity-anchor">
         <OpacityRegulator
           class="workspace-opacity-regulator"

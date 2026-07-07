@@ -4,7 +4,7 @@ import { useUiStore } from "@/stores/uiStore";
 import { useRepoStore } from "@/stores/repoStore";
 import { useMenuActions } from "@/composables/useMenuActions";
 import { topMenus, type MenuNode } from "@/utils/topMenus";
-import { RefreshRight, Setting, Upload } from "@element-plus/icons-vue";
+import { RefreshRight, Setting, Upload, QuestionFilled } from "@element-plus/icons-vue";
 
 const ui = useUiStore();
 const repo = useRepoStore();
@@ -87,10 +87,12 @@ async function refreshRepo() {
       <el-button
         size="small"
         :icon="RefreshRight"
+        title="刷新仓库信息与快照"
         :disabled="!repo.isOpen"
         @click="refreshRepo"
       />
-      <el-button size="small" :icon="Setting" @click="ui.openSettings()" />
+      <el-button size="small" :icon="QuestionFilled" title="帮助中心 (F1)" @click="ui.openHelp('quickstart')" />
+      <el-button size="small" :icon="Setting" title="外观设置 (Ctrl+,)" @click="ui.openSettings()" />
     </div>
   </header>
 </template>

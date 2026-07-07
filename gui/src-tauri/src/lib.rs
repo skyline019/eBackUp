@@ -1,5 +1,6 @@
 mod commands;
 mod ebbackup_ffi;
+mod task_progress;
 mod ui_settings;
 
 use tauri::Manager;

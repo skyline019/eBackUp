@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useUiStore } from "@/stores/uiStore";
+import { useTaskStore } from "@/stores/taskStore";
 import type { LogKind } from "@/stores/uiStore";
 import OpacityRegulator from "@/components/OpacityRegulator.vue";
+import { ElMessage } from "element-plus";
 
 const ui = useUiStore();
+const task = useTaskStore();
 
 const tabs = [
   { id: "messages" as const, label: "消息" },
@@ -22,6 +25,39 @@ const filterOptions: { value: "all" | LogKind; label: string }[] = [
   { value: "error", label: "错误" },
   { value: "meta", label: "系统" },
 ];
+
+const resultText = computed(() => {
+  switch (ui.outputTab) {
+    case "results":
+      return ui.lastResultJson;
+    case "audit":
+      return ui.lastAuditJson;
+    case "task":
+      return ui.lastTaskJson;
+    default:
+      return "";
+  }
+});
+
+async function copyLogs() {
+  const text = ui.visibleLogs.map((l) => `[${l.time}] ${l.text}`).join("\n");
+  try {
+    await navigator.clipboard.writeText(text);
+    ElMessage.success("日志已复制");
+  } catch {
+    ElMessage.error("复制失败");
+  }
+}
+
+async function copyResult() {
+  if (!resultText.value) return;
+  try {
+    await navigator.clipboard.writeText(resultText.value);
+    ElMessage.success("已复制到剪贴板");
+  } catch {
+    ElMessage.error("复制失败");
+  }
+}
 </script>
 
 <template>
@@ -57,7 +93,17 @@ const filterOptions: { value: "all" | LogKind; label: string }[] = [
             style="width: 140px"
           />
           <el-button size="small" text @click="ui.clearLogs()">清空</el-button>
+          <el-button size="small" text @click="copyLogs">复制</el-button>
         </template>
+        <el-button
+          v-else
+          size="small"
+          text
+          :disabled="!resultText"
+          @click="copyResult"
+        >
+          复制 JSON
+        </el-button>
         <span class="console-shortcuts">Ctrl+J 折叠 · F1 帮助</span>
         <OpacityRegulator
           class="output-opacity-regulator"
@@ -71,6 +117,17 @@ const filterOptions: { value: "all" | LogKind; label: string }[] = [
       </div>
     </header>
     <div v-if="!ui.settings.logCollapsed" class="output-body">
+      <div v-if="task.isRunning" class="output-task-strip">
+        <span class="ots-label">{{ task.active?.label }}</span>
+        <el-progress
+          :percentage="task.active?.percent ?? 0"
+          :stroke-width="6"
+          striped
+          striped-flow
+          style="flex: 1"
+        />
+        <span class="ots-phase">{{ task.active?.message }}</span>
+      </div>
       <div v-if="ui.outputTab === 'messages'" class="log-list">
         <div
           v-for="(ln, i) in visibleLogs"
@@ -139,6 +196,30 @@ const filterOptions: { value: "all" | LogKind; label: string }[] = [
   padding: 8px 12px;
   font-size: 12px;
   background: transparent;
+}
+.output-task-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--shell-line));
+}
+.ots-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-main);
+  white-space: nowrap;
+}
+.ots-phase {
+  font-size: 10px;
+  color: var(--text-soft);
+  white-space: nowrap;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .log-list {
   font-family: var(--log-font-family, monospace);

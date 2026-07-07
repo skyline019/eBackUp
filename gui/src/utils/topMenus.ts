@@ -5,6 +5,7 @@ export type MenuAction =
   | "run-backup"
   | "verify"
   | "recover"
+  | "open-help"
   | "toggle-settings"
   | "toggle-sidebar"
   | "toggle-log"
@@ -46,6 +47,7 @@ export const topMenus: TopMenu[] = [
     items: [
       { label: "运行备份", action: "run-backup" },
       { label: "快照列表", action: "goto-snapshots" },
+      { label: "还原…", action: "goto-restore" },
     ],
   },
   {
@@ -66,6 +68,14 @@ export const topMenus: TopMenu[] = [
       { label: "切换输出面板", action: "toggle-log" },
       { divider: true },
       { label: "设置…", action: "toggle-settings" },
+    ],
+  },
+  {
+    key: "help",
+    label: "帮助",
+    items: [
+      { label: "帮助中心…", action: "open-help" },
+      { label: "快速入门", action: "open-help" },
     ],
   },
 ];

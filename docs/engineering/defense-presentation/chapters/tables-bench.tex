@@ -1,0 +1,52 @@
+% 实测数据表（Release Windows, v0.9.4--0.9.5）
+\begin{table}[htbp]
+\centering
+\caption{Stage 3.1 CI 门禁 vs \vtag{0.9.4} 实测}
+\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+级别 & floor & 实测 & 余量 \\
+\midrule
+L5 256MB 单文件 & 105 MB/s & 170--172 & +63\% \\
+L6 2GB & 112 MB/s & 186 & +66\% \\
+L7 32$\times$32MB & 550 MB/s & 646--658 & +17\% \\
+L3b streaming ratio & 0.90 & 1.01--1.05 & +12\% \\
+L2 增量 reuse & 90\% & $\geq$90\% & immutable \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{L5 演进与 Sprint 4 止损实验}
+\small
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+节点 & L5 MB/s & 相对上版 & 备注 \\
+\midrule
+\vtag{0.4.6} & $\sim$76 & — & 基准 \\
+\vtag{0.6.0} & $\sim$139 & +83\% & EbPack 默认化 \\
+\vtag{0.9.0} & 142--149 & $\approx$0 & Wave 5 先修并发 \\
+\vtag{0.9.2} & 154 & +3--8\% & StreamingChunkCpuPipeline \\
+\vtag{0.9.3} & 159--163 & +3--6\% & digest\_base \\
+\vtag{0.9.4} Phase B & 170--172 & +4--8\% & CDC seg1 bulk \\
+Phase A opt-in & $\sim$105 & \textbf{-39\%} & \textbf{默认关闭} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Stage 3.2 剪枝数据（真实实验）}
+\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+指标 & 数值 \\
+\midrule
+Stage 3.2 L5 aspirational & 280 MB/s \\
+\vtag{0.9.4} 实测 & 171 MB/s（仅为目标 61\%） \\
+若 3.2 作 CI blocking & \textbf{100\% 失败} \\
+决策 & 3.2 降为 nightly，3.1 作 merge 门禁 \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -43,13 +43,13 @@ export const useRepoStore = defineStore("repo", {
       this.lastSourcePath = path;
       localStorage.setItem(LS_LAST_SOURCE, path);
     },
-    async createRepo(parentDir: string, name: string) {
+    async createRepo(parentDir: string, name: string, flags = 0) {
       const ui = useUiStore();
       const path = `${parentDir.replace(/[/\\]+$/, "")}\\${name}`.replace(/\//g, "\\");
       ui.pushLog(`初始化仓库: ${path}`, "cmd");
       this.busy = true;
       try {
-        await initRepo(path, 0);
+        await initRepo(path, flags);
         this.remember(path);
         await this.open(path);
         ui.pushLog("仓库创建并打开成功", "success");

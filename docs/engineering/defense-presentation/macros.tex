@@ -1,0 +1,25 @@
+% 答辩演讲稿共享宏
+\newcommand{\vtag}[1]{\texttt{v#1}}
+\newcommand{\gitdesc}[1]{\texttt{#1}}
+\newcommand{\filepath}[1]{\texttt{\small #1}}
+\newcommand{\wave}[1]{\textbf{Wave #1}}
+
+% 逐字稿：双时长标注
+\newcommand{\timing}[2]{%
+  \par\smallskip\noindent{\small\color{gray}%
+    \textbf{口播时长}\quad 课程版：#1 \quad|\quad 技术版：#2}\par\smallskip}
+
+% 口播正文
+\newenvironment{say}{%
+  \begin{tcolorbox}[colback=blue!3!white,colframe=PosBlue!60,arc=2pt,boxrule=0.4pt,left=4pt,right=4pt,top=3pt,bottom=3pt]
+  \small
+}{%
+  \end{tcolorbox}
+}
+
+% 演示动作提示
+\newcommand{\demo}[1]{%
+  \par\noindent{\small\color{AdaptGreen!80!black}\textbf{[演示]}\ #1}\par}
+
+% Beamer 幻灯片标题副标
+\newcommand{\slidesubtitle}{ebbackup 数据备份软件 · \vtag{0.9.5}}

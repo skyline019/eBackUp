@@ -1,0 +1,16 @@
+% 物理构件图（课程「构件图」答辩口径）
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.2cm and 1.4cm]
+  \node[comp] (cli) {CLI\\\filepath{eb}};
+  \node[comp, right=of cli] (dll) {SHARED DLL\\\filepath{ebbackup\_workbench}};
+  \node[comp, right=of dll] (gui) {Workbench\\Tauri+Vue};
+  \node[comp, below=1.4cm of dll] (core) {静态库\\\filepath{ebbackup\_core}};
+  \draw[arrow] (cli) -- (core);
+  \draw[arrow] (dll) -- (core);
+  \draw[arrow] (gui) -- node[above,font=\tiny]{JSON shim} (dll);
+  \node[below=0.3cm of core, font=\footnotesize, align=center] {ChunkStore / Pipeline / Manifest / Snapshot};
+\end{tikzpicture}
+\caption{构件依赖：GUI 不直连内核，经 JSON shim 调用 C API}
+\label{fig:components}
+\end{figure}

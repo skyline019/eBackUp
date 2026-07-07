@@ -1,0 +1,192 @@
+% !TEX program = xelatex
+\documentclass[aspectratio=169,12pt,fontset=none]{ctexbeamer}
+\usetheme{Madrid}
+\usecolortheme{whale}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+
+\input{preamble-shared.tex}
+\input{fonts-gui.tex}
+\input{macros.tex}
+\input{chapters/code-snippets.tex}
+
+\title{ebbackup 数据备份软件}
+\subtitle{\slidesubtitle\\《软件开发综合实验》答辩}
+\author{recoveryProjects}
+\date{2026-07-07 \quad commit \gitdesc{1fca9d7}}
+
+\begin{document}
+
+%--- 1 封面 ---
+\begin{frame}
+  \titlepage
+  \note{开场 30s：项目名称、课程、版本 v0.9.5 含 Workbench GUI。}
+\end{frame}
+
+%--- 2 定位 ---
+\begin{frame}{一句话定位}
+  \begin{philobox}[生态定位]
+    不是「又一个 backup CLI」，而是在\textbf{可验证、可回归、可单机交付}前提下，把\textbf{内容寻址增量备份内核}做到本地吞吐与运维闭环足够强——用 \textbf{SI MB/s 数字}说话，而非形容词。
+  \end{philobox}
+  \vspace{0.4em}
+  \begin{itemize}
+    \item 内核即产品；不做云网盘、不做多租户
+    \item 233 gtest + L1--L7 bench 硬门禁
+    \item 可选桌面 Workbench（Tauri + Vue）
+  \end{itemize}
+  \note{强调与课程「数据备份软件」一致，但工程深度超出 baseline。}
+\end{frame}
+
+%--- 3 课程对照 ---
+\begin{frame}{课程功能对照}
+  \input{chapters/course-mapping-beamer.tex}
+  \note{完整表见逐字稿；网络备份主动说明生态边界。}
+\end{frame}
+
+%--- 4 架构与宪法 ---
+\begin{frame}{内核架构}
+  \resizebox{0.95\textwidth}{!}{%
+    \begin{tikzpicture}[
+      layer/.style={rectangle, draw=PosBlue!60, fill=blue!5, minimum width=10cm,
+        minimum height=0.48cm, font=\scriptsize}
+    ]
+      \node[layer] (l1) {FastCDC+HCRBO | Digest | ContentClass | EbPack};
+      \node[layer, below=0.1cm of l1] (l2) {Manifest+SuperBlock | Snapshot | RAR/Merkle | Pipeline};
+    \end{tikzpicture}
+  }
+  \vspace{0.3em}
+  \small 四条宪法：Content ID · 提交点 fsync · immutable floor · kAborted 可恢复
+  \note{详细八层见逐字稿与 kernel-manual。}
+\end{frame}
+
+%--- 5 构件图 ---
+\begin{frame}{构件图（物理体系结构）}
+  \input{chapters/figures-components.tex}
+  \note{对应课程 UML 构件图要求；GUI 经 DLL JSON shim 解耦。}
+\end{frame}
+
+%--- 7 顺序图 ---
+\begin{frame}{备份主路径}
+  \resizebox{0.92\textwidth}{!}{%
+    \input{chapters/figures-sequence-inner.tex}
+  }
+  \note{演示前可口述：scan$\rightarrow$chunk$\rightarrow$store$\rightarrow$manifest commit 提交点。}
+\end{frame}
+
+%--- 8 实测 ---
+\begin{frame}{实测高光（L5/L7）}
+  \begin{table}
+    \centering\small
+    \begin{tabular}{@{}lrr@{}}
+    \toprule
+    级别 & floor & 实测 \\
+    \midrule
+    L5 256MB & 105 & 170--172 MB/s \\
+    L7 multi & 550 & 646--658 MB/s \\
+    L3b ratio & 0.90 & 1.01--1.05 \\
+    \bottomrule
+    \end{tabular}
+  \end{table}
+  \note{完整表见逐字稿；数字来自 ci\_floor.json 与 CHANGELOG。}
+\end{frame}
+
+%--- 9 Wave5 ---
+\begin{frame}{真实经历 I：Wave 5 正确性}
+  \begin{pressbox}[P3 爆发 — \vtag{0.9.0}]
+    Pipeline v4 多 worker 下 ChunkStore 全局锁导致 heap corruption（\texttt{0xC0000005}）与 \texttt{ForEachRecord} 重入死锁。L5 仍 $\sim$146 MB/s——若继续 chase 分数，生态因\textbf{不可恢复 crash} 归零。
+  \end{pressbox}
+  \vspace{0.3em}
+  \textbf{决策}：16-shard 索引 + tombstone 锁序 + atomic finalize；\textbf{先修正确性再 Sprint}。
+  \note{这是最有说服力的「工程取舍」故事。}
+\end{frame}
+
+%--- 10 Stage 3.2 ---
+\begin{frame}{真实经历 II：Stage 3.2 剪枝}
+  \begin{table}
+    \centering\small
+    \begin{tabular}{@{}lr@{}}
+    \toprule
+    Stage 3.2 L5 目标 & 280 MB/s \\
+    v0.9.4 实测 & 171 MB/s（61\%） \\
+    若 blocking & CI 100\% 红 \\
+  \bottomrule
+    \end{tabular}
+  \end{table}
+  \textbf{剪枝}：3.2 降为 aspirational nightly；3.1（105 MB/s）作 merge 门禁。
+  \note{体现「测量立法」而非口号式目标。}
+\end{frame}
+
+%--- 11 Phase A ---
+\begin{frame}{真实经历 III：CDC Phase A 止损}
+  \begin{table}
+    \centering\small
+    \begin{tabular}{@{}lr@{}}
+    \toprule
+    Phase B（默认 stream） & 170--172 MB/s \\
+    Phase A（\texttt{CDC\_FAST\_SLICE=1}） & $\sim$105 MB/s \\
+    相对损失 & \textbf{-39\%} \\
+  \bottomrule
+    \end{tabular}
+  \end{table}
+  \textbf{结论}：实验路径 opt-in；immutable ratio 捕不到绝对 MB/s 劣化。
+  \note{负向实验同样值得答辩讲述。}
+\end{frame}
+
+%--- 12 Workbench ---
+\begin{frame}{Workbench 演示链}
+  \begin{enumerate}
+    \item 仓库：init / open（空仓库零统计，已修 manifest 路径）
+    \item 备份：源路径校验 + 首次全量
+    \item 快照：list / prune
+    \item 恢复：\texttt{restore --at}
+    \item GUI：透明度调节器、壁纸模式
+  \end{enumerate}
+  \vspace{0.3em}
+  \small 详见 \filepath{docs/product/WORKBENCH\_GUI.md}
+  \note{现场演示 3 分钟可录屏：创建仓库$\rightarrow$备份$\rightarrow$查看快照。}
+\end{frame}
+
+%--- 13 测试 ---
+\begin{frame}{测试与门禁}
+  \begin{itemize}
+    \item \textbf{233} gtest + L1--L7 bench + powerfail + Rust IT
+    \item immutable：reuse $\geq$90\%、ratio $\geq$0.90
+    \item GitHub Actions：Windows + Linux
+  \end{itemize}
+  \note{ci\_floor.json 全文见逐字稿；强调机器可执行的完成定义。}
+\end{frame}
+
+%--- 14 理念对比 ---
+\begin{frame}{开发理念 vs 课程软件工程}
+  \resizebox{0.88\textwidth}{!}{%
+    \input{chapters/figures-adapt-loop-inner.tex}
+  }
+  \vspace{0.2em}
+  \footnotesize
+  \textbf{相同}：迭代、分层、测试、文档沉淀 \quad
+  \textbf{不同}：测量驱动 vs 纸面需求锁定
+  \note{坦诚：StarUML 四图需从事后文档导出补交课程格式。}
+\end{frame}
+
+%--- 15 真实产品化 ---
+\begin{frame}{产品化实验（GUI）}
+  \textbf{空仓库}：\texttt{repo\_info} 曾报 manifest 缺失 $\rightarrow$ \texttt{ComputeRepoStats} 修复\\
+  \textbf{透明度}：WebView2 嵌套 \texttt{color-mix} 失效 $\rightarrow$ 预计算 \texttt{rgba} alpha\\
+  \textbf{备份 UX}：\texttt{source path not found} $\rightarrow$ 路径存在性校验
+  \note{来自真实联调，非编造。}
+\end{frame}
+
+%--- 16 总结 ---
+\begin{frame}{总结}
+  \begin{enumerate}
+    \item \textbf{功能}：课程基础 + 多项扩展（无网络）
+    \item \textbf{工程}：宪法 + bench 门禁 + 233 测试
+    \item \textbf{经历}：Wave5 正确性 / 3.2 剪枝 / Phase A 止损
+    \item \textbf{交付}：CLI + DLL + Workbench + CMake + CI
+  \end{enumerate}
+  \vspace{0.5em}
+  \centering\Large 谢谢 · Q\&A
+  \note{预留问答：EbPack、Qt vs Tauri、与 restic 差异、immutable floor。}
+\end{frame}
+
+\end{document}

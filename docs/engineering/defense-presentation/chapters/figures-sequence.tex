@@ -1,0 +1,15 @@
+% 备份主路径顺序图（简化）
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.7cm]
+  \node[evt, minimum width=11cm] (u) {用户：\texttt{eb backup <repo> <source>} 或 Workbench};
+  \node[evt, below=of u, minimum width=11cm] (s) {Scan：遍历源目录 + filter 筛选};
+  \node[evt, below=of s, minimum width=11cm] (c) {Chunk：FastCDC/HCRBO + Digest（SHA256）};
+  \node[evt, below=of c, minimum width=11cm] (e) {Encode：LZ4/zstd + 可选 AES-GCM};
+  \node[evt, below=of e, minimum width=11cm] (st) {Store：EbPack append + chunk.idx};
+  \node[evt, below=of st, minimum width=11cm] (m) {Commit：manifest + superblock + RAR 审计};
+  \draw[arrow] (u)--(s)--(c)--(e)--(st)--(m);
+\end{tikzpicture}
+\caption{全量/增量备份主路径（顺序图口语版）}
+\label{fig:seq-backup}
+\end{figure}

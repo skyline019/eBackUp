@@ -1,7 +1,6 @@
 import { onMounted, onBeforeUnmount } from "vue";
 import { useUiStore } from "@/stores/uiStore";
 import { type ActivityId } from "@/utils/activities";
-import { useMenuActions } from "@/composables/useMenuActions";
 
 const ACTIVITY_KEYS: Record<string, ActivityId> = {
   "1": "repo",
@@ -14,7 +13,6 @@ const ACTIVITY_KEYS: Record<string, ActivityId> = {
 
 export function useGlobalShortcuts() {
   const ui = useUiStore();
-  useMenuActions();
 
   function onGlobalKey(ev: KeyboardEvent) {
     const target = ev.target as HTMLElement | null;
@@ -24,7 +22,7 @@ export function useGlobalShortcuts() {
 
     if (ev.key === "F1") {
       ev.preventDefault();
-      ui.showShortcutHelp = true;
+      ui.openHelp("quickstart");
       return;
     }
 
@@ -33,6 +31,7 @@ export function useGlobalShortcuts() {
       if (key === "b") {
         ev.preventDefault();
         ui.showSidebar = !ui.showSidebar;
+        ui.persistSidebar();
         ui.schedulePersist();
         return;
       }
@@ -46,6 +45,11 @@ export function useGlobalShortcuts() {
         ui.openSettings();
         return;
       }
+      if (key === "/" || (key === "?" && ev.shiftKey)) {
+        ev.preventDefault();
+        ui.openHelp("faq");
+        return;
+      }
       if (!ev.shiftKey && ACTIVITY_KEYS[key]) {
         ev.preventDefault();
         ui.setActivity(ACTIVITY_KEYS[key]);
@@ -55,7 +59,7 @@ export function useGlobalShortcuts() {
 
     if (!inInput && ev.ctrlKey && ev.shiftKey && ev.key.toLowerCase() === "p") {
       ev.preventDefault();
-      ui.showShortcutHelp = true;
+      ui.openHelp("keys");
     }
   }
 
@@ -68,5 +72,7 @@ export const SHORTCUT_HELP = [
   { keys: "Ctrl+B", desc: "显示或隐藏侧栏" },
   { keys: "Ctrl+J / Ctrl+`", desc: "折叠或展开底部输出面板" },
   { keys: "Ctrl+,", desc: "打开外观设置" },
-  { keys: "F1 / Ctrl+Shift+P", desc: "快捷键帮助" },
+  { keys: "F1", desc: "帮助中心（快速入门）" },
+  { keys: "Ctrl+/", desc: "帮助中心（常见问题）" },
+  { keys: "Ctrl+Shift+P", desc: "帮助中心（快捷键列表）" },
 ];

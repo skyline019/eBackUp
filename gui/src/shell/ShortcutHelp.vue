@@ -16,7 +16,7 @@ const visible = computed({
 <template>
   <el-dialog
     v-model="visible"
-    title="快捷键"
+    title="快捷键（完整列表见帮助中心 F1）"
     width="520px"
     align-center
     append-to-body
@@ -29,6 +29,7 @@ const visible = computed({
       </template>
     </div>
     <template #footer>
+      <el-button @click="ui.openHelp('keys')">打开帮助中心</el-button>
       <el-button type="primary" @click="visible = false">关闭</el-button>
     </template>
   </el-dialog>

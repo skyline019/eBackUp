@@ -17,6 +17,7 @@ import type { ActivityId } from "@/utils/activities";
 
 const LS_LOGS = "ebbackup_workbench_logs";
 const LS_UI = "ebbackup_workbench_ui";
+const LS_SIDEBAR = "ebbackup_workbench_sidebar";
 
 export type LogKind = "cmd" | "error" | "success" | "meta";
 
@@ -38,6 +39,9 @@ export const useUiStore = defineStore("ui", {
     showSidebar: true,
     showSettings: false,
     showShortcutHelp: false,
+    showHelpCenter: false,
+    helpCenterTab: "quickstart",
+    restoreTxnPrefill: null as number | null,
     outputTab: "messages" as "messages" | "results" | "audit" | "task",
     logAutoFollow: true,
     logFilterKind: "all" as "all" | LogKind,
@@ -75,6 +79,9 @@ export const useUiStore = defineStore("ui", {
       try {
         const rawLogs = localStorage.getItem(LS_LOGS);
         if (rawLogs) this.logs = JSON.parse(rawLogs) as LogLine[];
+
+        const rawSidebar = localStorage.getItem(LS_SIDEBAR);
+        if (rawSidebar === "0") this.showSidebar = false;
 
         if (isTauriRuntime()) {
           const [exists, disk, path] = await Promise.all([
@@ -183,6 +190,22 @@ export const useUiStore = defineStore("ui", {
     },
     setActivity(id: ActivityId) {
       this.activity = id;
+    },
+    openHelp(tab?: string) {
+      this.showHelpCenter = true;
+      if (tab) this.helpCenterTab = tab;
+    },
+    goRestoreWithTxn(txnId: number) {
+      this.restoreTxnPrefill = txnId;
+      this.activity = "restore";
+    },
+    consumeRestoreTxn(): number | null {
+      const v = this.restoreTxnPrefill;
+      this.restoreTxnPrefill = null;
+      return v;
+    },
+    persistSidebar() {
+      localStorage.setItem(LS_SIDEBAR, this.showSidebar ? "1" : "0");
     },
     openSettings() {
       this.showSettings = true;

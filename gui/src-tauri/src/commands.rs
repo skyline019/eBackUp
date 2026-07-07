@@ -1,6 +1,8 @@
 use crate::ebbackup_ffi::{self, cstr, EnginePtr, SESSION};
+use crate::task_progress;
 use serde::Serialize;
 use std::path::PathBuf;
+use tauri::AppHandle;
 
 #[derive(Serialize)]
 pub struct RepoInfoDto {
@@ -231,28 +233,43 @@ pub async fn list_snapshots() -> Result<Vec<SnapshotDto>, String> {
 
 #[tauri::command]
 pub async fn run_backup(
+    app: AppHandle,
     source_path: String,
     incremental: Option<bool>,
     flags: Option<u32>,
 ) -> Result<BackupStatsDto, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let src = cstr(&source_path)?;
-        let inc = if incremental.unwrap_or(true) { 1 } else { 0 };
-        let fl = flags.unwrap_or(0);
-        let v = with_eng(|api, eng| {
-            ebbackup_ffi::call_json(|buf, cap| unsafe {
-                (api.run_backup_json)(eng, src.as_ptr(), inc, fl, buf as *mut _, cap)
+        task_progress::begin_progress(app.clone(), "backup");
+        let result = (|| {
+            let src = cstr(&source_path)?;
+            let inc = if incremental.unwrap_or(true) { 1 } else { 0 };
+            let fl = flags.unwrap_or(0);
+            let v = with_eng(|api, eng| {
+                unsafe { task_progress::attach_progress(api.set_progress, eng) };
+                let out = ebbackup_ffi::call_json(|buf, cap| unsafe {
+                    (api.run_backup_json)(eng, src.as_ptr(), inc, fl, buf as *mut _, cap)
+                });
+                unsafe { task_progress::detach_progress(api.set_progress, eng) };
+                out
+            })?;
+            let s = v.get("stats").cloned().unwrap_or_default();
+            Ok(BackupStatsDto {
+                files_processed: s.get("files_processed").and_then(|x| x.as_u64()).unwrap_or(0),
+                chunks_written: s.get("chunks_written").and_then(|x| x.as_u64()).unwrap_or(0),
+                chunks_reused: s.get("chunks_reused").and_then(|x| x.as_u64()).unwrap_or(0),
+                chunks_reused_from_cfi: s
+                    .get("chunks_reused_from_cfi")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0),
+                bytes_processed: s.get("bytes_processed").and_then(|x| x.as_u64()).unwrap_or(0),
+                orphan_chunks_hint: s
+                    .get("orphan_chunks_hint")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0),
             })
-        })?;
-        let s = v.get("stats").cloned().unwrap_or_default();
-        Ok(BackupStatsDto {
-            files_processed: s.get("files_processed").and_then(|x| x.as_u64()).unwrap_or(0),
-            chunks_written: s.get("chunks_written").and_then(|x| x.as_u64()).unwrap_or(0),
-            chunks_reused: s.get("chunks_reused").and_then(|x| x.as_u64()).unwrap_or(0),
-            chunks_reused_from_cfi: s.get("chunks_reused_from_cfi").and_then(|x| x.as_u64()).unwrap_or(0),
-            bytes_processed: s.get("bytes_processed").and_then(|x| x.as_u64()).unwrap_or(0),
-            orphan_chunks_hint: s.get("orphan_chunks_hint").and_then(|x| x.as_u64()).unwrap_or(0),
-        })
+        })();
+        task_progress::end_progress(result.is_ok());
+        result
     })
     .await
     .map_err(|e| format!("backup join: {e}"))?
@@ -260,75 +277,103 @@ pub async fn run_backup(
 
 #[tauri::command]
 pub async fn run_restore(
+    app: AppHandle,
     dest_path: String,
     txn_id: Option<u64>,
     flags: Option<u32>,
 ) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let dest = cstr(&dest_path)?;
-        let txn = txn_id.unwrap_or(0);
-        let fl = flags.unwrap_or(0);
-        with_eng(|api, eng| {
-            ebbackup_ffi::call_json(|buf, cap| unsafe {
-                (api.run_restore_json)(eng, dest.as_ptr(), txn, fl, buf as *mut _, cap)
+        task_progress::begin_progress(app.clone(), "restore");
+        let result = (|| {
+            let dest = cstr(&dest_path)?;
+            let txn = txn_id.unwrap_or(0);
+            let fl = flags.unwrap_or(0);
+            with_eng(|api, eng| {
+                ebbackup_ffi::call_json(|buf, cap| unsafe {
+                    (api.run_restore_json)(eng, dest.as_ptr(), txn, fl, buf as *mut _, cap)
+                })
             })
-        })
+        })();
+        task_progress::end_progress(result.is_ok());
+        result
     })
     .await
     .map_err(|e| format!("restore join: {e}"))?
 }
 
 #[tauri::command]
-pub async fn verify_repo(txn_id: Option<u64>, flags: Option<u32>) -> Result<serde_json::Value, String> {
+pub async fn verify_repo(
+    app: AppHandle,
+    txn_id: Option<u64>,
+    flags: Option<u32>,
+) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let txn = txn_id.unwrap_or(0);
-        let fl = flags.unwrap_or(0);
-        with_eng(|api, eng| {
-            ebbackup_ffi::call_json(|buf, cap| unsafe {
-                (api.verify_json)(eng, txn, fl, buf as *mut _, cap)
+        task_progress::begin_progress(app.clone(), "verify");
+        let result = (|| {
+            let txn = txn_id.unwrap_or(0);
+            let fl = flags.unwrap_or(0);
+            with_eng(|api, eng| {
+                ebbackup_ffi::call_json(|buf, cap| unsafe {
+                    (api.verify_json)(eng, txn, fl, buf as *mut _, cap)
+                })
             })
-        })
+        })();
+        task_progress::end_progress(result.is_ok());
+        result
     })
     .await
     .map_err(|e| format!("verify join: {e}"))?
 }
 
 #[tauri::command]
-pub async fn recover_repo() -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        with_eng(|api, eng| {
+pub async fn recover_repo(app: AppHandle) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        task_progress::begin_progress(app.clone(), "recover");
+        let result = with_eng(|api, eng| {
             ebbackup_ffi::call_json(|buf, cap| unsafe {
                 (api.recover_json)(eng, buf as *mut _, cap)
             })
-        })
+        });
+        task_progress::end_progress(result.is_ok());
+        result
     })
     .await
     .map_err(|e| format!("recover join: {e}"))?
 }
 
 #[tauri::command]
-pub async fn compact_repo(dry_run: Option<bool>) -> Result<serde_json::Value, String> {
+pub async fn compact_repo(app: AppHandle, dry_run: Option<bool>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let dr = if dry_run.unwrap_or(false) { 1 } else { 0 };
-        with_eng(|api, eng| {
-            ebbackup_ffi::call_json(|buf, cap| unsafe {
-                (api.compact_json)(eng, dr, buf as *mut _, cap)
+        task_progress::begin_progress(app.clone(), "compact");
+        let result = (|| {
+            let dr = if dry_run.unwrap_or(false) { 1 } else { 0 };
+            with_eng(|api, eng| {
+                ebbackup_ffi::call_json(|buf, cap| unsafe {
+                    (api.compact_json)(eng, dr, buf as *mut _, cap)
+                })
             })
-        })
+        })();
+        task_progress::end_progress(result.is_ok());
+        result
     })
     .await
     .map_err(|e| format!("compact join: {e}"))?
 }
 
 #[tauri::command]
-pub async fn gc_orphans(dry_run: Option<bool>) -> Result<serde_json::Value, String> {
+pub async fn gc_orphans(app: AppHandle, dry_run: Option<bool>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let dr = if dry_run.unwrap_or(false) { 1 } else { 0 };
-        with_eng(|api, eng| {
-            ebbackup_ffi::call_json(|buf, cap| unsafe {
-                (api.gc_orphans_json)(eng, dr, buf as *mut _, cap)
+        task_progress::begin_progress(app.clone(), "gc");
+        let result = (|| {
+            let dr = if dry_run.unwrap_or(false) { 1 } else { 0 };
+            with_eng(|api, eng| {
+                ebbackup_ffi::call_json(|buf, cap| unsafe {
+                    (api.gc_orphans_json)(eng, dr, buf as *mut _, cap)
+                })
             })
-        })
+        })();
+        task_progress::end_progress(result.is_ok());
+        result
     })
     .await
     .map_err(|e| format!("gc join: {e}"))?
@@ -336,19 +381,25 @@ pub async fn gc_orphans(dry_run: Option<bool>) -> Result<serde_json::Value, Stri
 
 #[tauri::command]
 pub async fn prune_snapshots(
+    app: AppHandle,
     retention_tiers: String,
     retain_min: Option<i32>,
     dry_run: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let tiers = cstr(&retention_tiers)?;
-        let rm = retain_min.unwrap_or(3);
-        let dr = if dry_run.unwrap_or(false) { 1 } else { 0 };
-        with_eng(|api, eng| {
-            ebbackup_ffi::call_json(|buf, cap| unsafe {
-                (api.prune_snapshots_json)(eng, tiers.as_ptr(), rm, dr, buf as *mut _, cap)
+        task_progress::begin_progress(app.clone(), "prune");
+        let result = (|| {
+            let tiers = cstr(&retention_tiers)?;
+            let rm = retain_min.unwrap_or(3);
+            let dr = if dry_run.unwrap_or(false) { 1 } else { 0 };
+            with_eng(|api, eng| {
+                ebbackup_ffi::call_json(|buf, cap| unsafe {
+                    (api.prune_snapshots_json)(eng, tiers.as_ptr(), rm, dr, buf as *mut _, cap)
+                })
             })
-        })
+        })();
+        task_progress::end_progress(result.is_ok());
+        result
     })
     .await
     .map_err(|e| format!("prune join: {e}"))?

@@ -1,0 +1,10 @@
+% 备份主路径顺序图（无 figure 外壳，供 Beamer resize）
+\begin{tikzpicture}[node distance=0.55cm]
+  \node[evt, minimum width=11cm, minimum height=0.55cm, font=\scriptsize] (u) {用户：\texttt{eb backup} 或 Workbench};
+  \node[evt, below=of u, minimum width=11cm, minimum height=0.55cm, font=\scriptsize] (s) {Scan：遍历 + filter};
+  \node[evt, below=of s, minimum width=11cm, minimum height=0.55cm, font=\scriptsize] (c) {Chunk：FastCDC + SHA256};
+  \node[evt, below=of c, minimum width=11cm, minimum height=0.55cm, font=\scriptsize] (e) {Encode：LZ4/zstd + AES};
+  \node[evt, below=of e, minimum width=11cm, minimum height=0.55cm, font=\scriptsize] (st) {Store：EbPack + chunk.idx};
+  \node[evt, below=of st, minimum width=11cm, minimum height=0.55cm, font=\scriptsize] (m) {Commit：manifest + superblock};
+  \draw[arrow] (u)--(s)--(c)--(e)--(st)--(m);
+\end{tikzpicture}

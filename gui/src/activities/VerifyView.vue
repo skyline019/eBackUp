@@ -1,8 +1,13 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { verifyRepo, recoverRepo } from "@/api/ebbackup";
 import { useRepoStore } from "@/stores/repoStore";
 import { useUiStore } from "@/stores/uiStore";
+import { setActivityRunner } from "@/composables/useActivityRunners";
+import { confirmDestructive } from "@/utils/confirmDestructive";
+import { enrichError, formatVerifyError } from "@/utils/errorMessages";
+import FieldTip from "@/components/FieldTip.vue";
+import EmptyState from "@/components/EmptyState.vue";
 
 const repo = useRepoStore();
 const ui = useUiStore();
@@ -12,6 +17,28 @@ const requireAnchor = ref(false);
 const busy = ref(false);
 
 const FLAG_REQUIRE_ANCHOR = 0x0004;
+
+const anchorDisabled = computed(() => (txnId.value ?? 0) > 0);
+
+let unregVerify: (() => void) | null = null;
+let unregRecover: (() => void) | null = null;
+
+onMounted(() => {
+  unregVerify = setActivityRunner("verify-run", verify);
+  unregRecover = setActivityRunner("recover-run", recover);
+});
+
+onUnmounted(() => {
+  unregVerify?.();
+  unregRecover?.();
+});
+
+watch(anchorDisabled, (disabled) => {
+  if (disabled && requireAnchor.value) {
+    requireAnchor.value = false;
+    ui.pushLog("指定 Txn 验证时不支持强制锚点，已自动关闭", "meta");
+  }
+});
 
 async function verify() {
   if (!repo.isOpen) {
@@ -25,7 +52,7 @@ async function verify() {
     ui.setAuditResult(res);
     ui.pushLog("验证通过", "success");
   } catch (e) {
-    ui.pushLog(String(e), "error");
+    ui.pushLog(formatVerifyError(await enrichError(e)), "error");
   } finally {
     busy.value = false;
   }
@@ -36,13 +63,20 @@ async function recover() {
     ui.pushLog("请先打开仓库", "error");
     return;
   }
+  const ok = await confirmDestructive(
+    "修复中断事务",
+    "将把未完成的事务标记为 aborted，便于继续增量备份。请确认无正在进行的备份。"
+  );
+  if (!ok) return;
   busy.value = true;
   try {
     const res = await recoverRepo();
     ui.setAuditResult(res);
     ui.pushLog("中断事务已修复", "success");
+    await repo.refreshInfo();
+    await repo.refreshSnapshots();
   } catch (e) {
-    ui.pushLog(String(e), "error");
+    ui.pushLog(formatVerifyError(await enrichError(e)), "error");
   } finally {
     busy.value = false;
   }
@@ -52,18 +86,47 @@ async function recover() {
 <template>
   <div class="activity-page">
     <section class="panel-card">
-      <h2>完整性验证</h2>
-      <el-form label-width="120px">
+      <div class="head-row">
+        <h2>完整性验证</h2>
+        <el-button link type="primary" @click="ui.openHelp('activity')">本页帮助</el-button>
+      </div>
+      <EmptyState
+        v-if="!repo.isOpen"
+        title="请先打开仓库"
+        action-label="前往仓库页"
+        @action="ui.setActivity('repo')"
+      />
+      <el-form v-else label-width="120px">
         <el-form-item label="快照 Txn">
           <el-input-number v-model="txnId" :min="0" placeholder="留空=最新" />
+          <FieldTip content="留空验证最新 manifest；填写数字验证历史快照。" />
         </el-form-item>
-        <el-form-item label="Require anchor">
-          <el-switch v-model="requireAnchor" />
+        <el-form-item label="强制锚点">
+          <el-switch v-model="requireAnchor" :disabled="anchorDisabled" />
+          <p class="field-hint">
+            关闭（默认）：manifest + chunk 深度校验，适合答辩演示。
+            开启：CARL 锚点签名验证，需环境变量 <code>EBBACKUP_AUDIT_KEY</code>。
+          </p>
         </el-form-item>
+        <el-alert
+          v-if="anchorDisabled"
+          type="info"
+          :closable="false"
+          show-icon
+          title="指定 Txn 时仅做快照级校验"
+          class="anchor-alert"
+        />
+        <el-alert
+          v-else-if="requireAnchor"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="需要 EBBACKUP_AUDIT_KEY"
+          description="PowerShell：$env:EBBACKUP_AUDIT_KEY='密钥'; 重启 Workbench。"
+          class="anchor-alert"
+        />
         <el-form-item>
-          <el-button type="primary" :loading="busy" :disabled="!repo.isOpen" @click="verify">
-            验证仓库
-          </el-button>
+          <el-button type="primary" :loading="busy" @click="verify">验证仓库</el-button>
         </el-form-item>
       </el-form>
     </section>
@@ -87,9 +150,35 @@ async function recover() {
   overflow: auto;
   height: 100%;
 }
+.head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.head-row h2,
+.panel-card h2 {
+  margin: 0;
+  font-size: 15px;
+}
 .desc {
   font-size: 13px;
   color: var(--text-soft);
   margin: 0 0 12px;
+}
+.field-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-soft);
+  max-width: 520px;
+}
+.field-hint code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.anchor-alert {
+  margin-bottom: 12px;
+  max-width: 560px;
 }
 </style>

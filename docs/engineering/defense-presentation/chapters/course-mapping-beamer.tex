@@ -1,0 +1,16 @@
+% Beamer 精简：课程对照（半表）
+\begin{table}
+\centering
+\tiny
+\begin{tabular}{@{}ll@{}}
+\toprule
+课程项 & 实现 \\
+\midrule
+备份/还原 & 基础40 — \filepath{eb backup/restore} + GUI \\
+特殊文件/元数据 & symlink + mtime/mode/uid \\
+筛选/压缩/加密 & filter + LZ4/zstd + AES-GCM \\
+GUI/定时/实时 & Workbench + schedule + watch \\
+网络备份 & 刻意不做 \\
+\bottomrule
+\end{tabular}
+\end{table}

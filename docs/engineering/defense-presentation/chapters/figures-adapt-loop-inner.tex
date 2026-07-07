@@ -1,0 +1,12 @@
+% 适应性工程环（无 figure 外壳，供 Beamer resize）
+\begin{tikzpicture}[node distance=0.75cm]
+  \node[evt, minimum height=0.55cm, font=\scriptsize] (b) {Bench/Profile 或 Bug（P1--P5）};
+  \node[evt, below=of b, minimum height=0.55cm, font=\scriptsize] (h) {假设：改 X（不碰 Content ID）};
+  \node[evt, below=of h, minimum height=0.55cm, font=\scriptsize] (i) {实现 + parity/powerfail};
+  \node[evt, below=of i, minimum height=0.55cm, font=\scriptsize] (g) {ctest + bench\_check};
+  \node[evt, below=of g, minimum height=0.55cm, font=\scriptsize] (d) {默认 / opt-in / CHANGELOG};
+  \node[evt, below=of d, minimum height=0.55cm, font=\scriptsize] (p) {负向？剪枝回退};
+  \draw[arrow] (b)--(h)--(i)--(g)--(d);
+  \draw[arrow] (d)--(p);
+  \draw[arrow] (p.west) -- ++(-1.0,0) |- (b.west);
+\end{tikzpicture}

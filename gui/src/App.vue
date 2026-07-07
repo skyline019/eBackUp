@@ -2,15 +2,18 @@
 import { computed, onMounted } from "vue";
 import AppShell from "@/shell/AppShell.vue";
 import ShortcutHelp from "@/shell/ShortcutHelp.vue";
+import HelpCenter from "@/shell/HelpCenter.vue";
 import SettingsDrawer from "@/shell/SettingsDrawer.vue";
 import { useUiStore } from "@/stores/uiStore";
 import { useRepoStore } from "@/stores/repoStore";
 import { useGlobalShortcuts } from "@/composables/useGlobalShortcuts";
+import { useTaskEvents } from "@/composables/useTaskEvents";
 import { isTauriRuntime } from "@/utils/tauriRuntime";
 
 const ui = useUiStore();
 const repo = useRepoStore();
 useGlobalShortcuts();
+useTaskEvents();
 
 const runtimeHint = computed(() =>
   isTauriRuntime()
@@ -28,7 +31,7 @@ const settingsOpen = computed({
 onMounted(async () => {
   repo.loadLocal();
   await ui.load();
-  ui.pushLog("ebbackup Workbench 已启动 — F1 查看快捷键", "meta");
+  ui.pushLog("ebbackup Workbench 已启动 — F1 帮助中心", "meta");
   if (!isTauriRuntime()) {
     ui.pushLog(runtimeHint.value, "error");
   }
@@ -39,6 +42,7 @@ onMounted(async () => {
   <div v-if="runtimeHint" class="runtime-banner">{{ runtimeHint }}</div>
   <AppShell />
   <ShortcutHelp />
+  <HelpCenter />
   <SettingsDrawer v-model="settingsOpen" />
 </template>
 
