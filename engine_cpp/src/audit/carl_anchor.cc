@@ -203,9 +203,21 @@ Status VerifyCarlAnchorSignature(const CarlSignedTreeHead& anchor,
   return VerifyRarSignature(body, anchor.signature, secret_key);
 }
 
+namespace {
+
+const char* ResolveAuditKey(const std::string* session_audit_key) {
+  if (session_audit_key && !session_audit_key->empty()) {
+    return session_audit_key->c_str();
+  }
+  return std::getenv("EBBACKUP_AUDIT_KEY");
+}
+
+}  // namespace
+
 Status VerifyCarlAnchorRequired(const std::string& chain_path,
                                 const std::string& anchor_dir,
-                                bool require_signature) {
+                                bool require_signature,
+                                const std::string* session_audit_key) {
   CarlSignedTreeHead anchor{};
   bool found = false;
   const Status ls = LoadLatestCarlAnchor(anchor_dir, ChainBasename(chain_path),
@@ -217,13 +229,13 @@ Status VerifyCarlAnchorRequired(const std::string& chain_path,
   if (!vs.ok()) return vs;
 
   if (require_signature) {
-    const char* key = std::getenv("EBBACKUP_AUDIT_KEY");
+    const char* key = ResolveAuditKey(session_audit_key);
     if (!key || key[0] == '\0') {
-      return Status::InvalidArgument("EBBACKUP_AUDIT_KEY required for signature verify");
+      return Status::InvalidArgument("audit key required for signature verify");
     }
     return VerifyCarlAnchorSignature(anchor, key);
   }
-  if (const char* key = std::getenv("EBBACKUP_AUDIT_KEY")) {
+  if (const char* key = ResolveAuditKey(session_audit_key)) {
     if (key[0] != '\0' && !anchor.signature.empty()) {
       const Status ss = VerifyCarlAnchorSignature(anchor, key);
       if (!ss.ok()) return ss;

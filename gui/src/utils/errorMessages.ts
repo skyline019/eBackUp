@@ -17,11 +17,11 @@ export function formatBackupError(e: unknown): string {
 
 export function formatVerifyError(e: unknown): string {
   const msg = stripCmdPrefix(e instanceof Error ? e.message : String(e));
-  if (msg.includes("EBBACKUP_AUDIT_KEY required for signature verify")) {
-    return (
-      "已开启「强制锚点验证」，但未设置审计密钥 EBBACKUP_AUDIT_KEY。" +
-      "普通完整性验证请关闭该开关；若需验证 CARL 签名，请在启动 Workbench 前设置该环境变量。"
-    );
+  if (
+    msg.includes("audit key required for signature verify") ||
+    msg.includes("EBBACKUP_AUDIT_KEY required for signature verify")
+  ) {
+    return "已开启「强制锚点验证」，请在本页填写审计密钥。";
   }
   if (msg.includes("no anchor published")) {
     return "仓库尚未发布 CARL 锚点。请先完成备份，或关闭「强制锚点验证」仅做 manifest/块校验。";

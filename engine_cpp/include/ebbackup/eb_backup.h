@@ -114,6 +114,7 @@ EbStatus eb_backup_prune_snapshots(EbBackupEngine* eng,
                                      EbPruneReport* report);
 
 void eb_backup_set_password(EbBackupEngine* eng, const char* password);
+void eb_backup_set_audit_key(EbBackupEngine* eng, const char* audit_key);
 EbStatus eb_backup_load_filter_file(EbBackupEngine* eng, const char* path);
 
 typedef void (*EbProgressFn)(uint64_t pct_permille, void* user_data);

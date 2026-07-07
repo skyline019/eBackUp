@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { verifyRepo, recoverRepo } from "@/api/ebbackup";
+import { verifyRepo, recoverRepo, setAuditKey } from "@/api/ebbackup";
 import { useRepoStore } from "@/stores/repoStore";
 import { useUiStore } from "@/stores/uiStore";
 import { setActivityRunner } from "@/composables/useActivityRunners";
@@ -14,6 +14,7 @@ const ui = useUiStore();
 
 const txnId = ref<number | undefined>(undefined);
 const requireAnchor = ref(false);
+const auditKey = ref("");
 const busy = ref(false);
 
 const FLAG_REQUIRE_ANCHOR = 0x0004;
@@ -45,8 +46,13 @@ async function verify() {
     ui.pushLog("请先打开仓库", "error");
     return;
   }
+  if (requireAnchor.value && !auditKey.value.trim()) {
+    ui.pushLog("开启强制锚点验证时，请填写审计密钥", "error");
+    return;
+  }
   busy.value = true;
   try {
+    await setAuditKey(auditKey.value.trim());
     const flags = requireAnchor.value ? FLAG_REQUIRE_ANCHOR : 0;
     const res = await verifyRepo(txnId.value || undefined, flags);
     ui.setAuditResult(res);
@@ -101,11 +107,21 @@ async function recover() {
           <el-input-number v-model="txnId" :min="0" placeholder="留空=最新" />
           <FieldTip content="留空验证最新 manifest；填写数字验证历史快照。" />
         </el-form-item>
+        <el-form-item label="审计密钥">
+          <el-input
+            v-model="auditKey"
+            type="password"
+            show-password
+            placeholder="CARL 锚点签名密钥（强制锚点时必填）"
+            clearable
+          />
+          <FieldTip content="与发布锚点时使用的密钥一致；仅保存在当前会话，不写入磁盘。" />
+        </el-form-item>
         <el-form-item label="强制锚点">
           <el-switch v-model="requireAnchor" :disabled="anchorDisabled" />
           <p class="field-hint">
             关闭（默认）：manifest + chunk 深度校验，适合答辩演示。
-            开启：CARL 锚点签名验证，需环境变量 <code>EBBACKUP_AUDIT_KEY</code>。
+            开启：额外校验 CARL 锚点签名，须填写上方审计密钥。
           </p>
         </el-form-item>
         <el-alert
@@ -117,12 +133,12 @@ async function recover() {
           class="anchor-alert"
         />
         <el-alert
-          v-else-if="requireAnchor"
+          v-else-if="requireAnchor && !auditKey.trim()"
           type="warning"
           :closable="false"
           show-icon
-          title="需要 EBBACKUP_AUDIT_KEY"
-          description="PowerShell：$env:EBBACKUP_AUDIT_KEY='密钥'; 重启 Workbench。"
+          title="请填写审计密钥"
+          description="开启强制锚点后，需在上方输入密钥再点「验证仓库」。"
           class="anchor-alert"
         />
         <el-form-item>
@@ -172,10 +188,6 @@ async function recover() {
   line-height: 1.5;
   color: var(--text-soft);
   max-width: 520px;
-}
-.field-hint code {
-  font-family: var(--font-mono);
-  font-size: 11px;
 }
 .anchor-alert {
   margin-bottom: 12px;

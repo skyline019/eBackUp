@@ -33,6 +33,7 @@ struct EbBackupEngineImpl {
   std::unique_ptr<ebbackup::BackupEngine> engine;
   std::string last_error;
   std::string password;
+  std::string audit_key;
   ebbackup::BackupFilterOptions filter;
   EbProgressFn progress_fn{nullptr};
   void* progress_user{nullptr};
@@ -152,6 +153,7 @@ EbStatus eb_backup_verify_ex(EbBackupEngine* eng, uint32_t flags) {
   ebbackup::BackupOptions options{};
   options.require_anchor = (flags & EB_BACKUP_FLAG_REQUIRE_ANCHOR) != 0;
   options.encryption_password = impl->password;
+  options.audit_key = impl->audit_key;
   const ebbackup::Status st = impl->engine->Verify(options);
   if (!st.ok()) impl->last_error = st.message();
   return ToEbStatus(st);
@@ -189,6 +191,12 @@ void eb_backup_set_password(EbBackupEngine* eng, const char* password) {
   if (!eng) return;
   auto* impl = reinterpret_cast<EbBackupEngineImpl*>(eng);
   impl->password = password ? password : "";
+}
+
+void eb_backup_set_audit_key(EbBackupEngine* eng, const char* audit_key) {
+  if (!eng) return;
+  auto* impl = reinterpret_cast<EbBackupEngineImpl*>(eng);
+  impl->audit_key = audit_key ? audit_key : "";
 }
 
 EbStatus eb_backup_load_filter_file(EbBackupEngine* eng, const char* path) {
@@ -296,6 +304,7 @@ EbStatus eb_backup_verify_at(EbBackupEngine* eng, uint64_t txn_id) {
   auto* impl = reinterpret_cast<EbBackupEngineImpl*>(eng);
   ebbackup::BackupOptions opts{};
   opts.snapshot_txn_id = txn_id;
+  opts.audit_key = impl->audit_key;
   const ebbackup::Status st = impl->engine->Verify(opts);
   if (!st.ok()) impl->last_error = st.message();
   return ToEbStatus(st);

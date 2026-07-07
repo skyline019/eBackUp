@@ -58,6 +58,7 @@ struct BackupOptions {
   ChunkProfileMode chunk_profile{ChunkProfileMode::kAuto};
   uint64_t snapshot_txn_id{0};
   bool gc_latest_manifest_only{false};
+  std::string audit_key;
   size_t worker_count{0};
   size_t store_shard_count{16};
 };

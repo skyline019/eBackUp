@@ -35,7 +35,8 @@ Status VerifyCarlAnchorSignature(const CarlSignedTreeHead& anchor,
 
 Status VerifyCarlAnchorRequired(const std::string& chain_path,
                                 const std::string& anchor_dir,
-                                bool require_signature = false);
+                                bool require_signature = false,
+                                const std::string* session_audit_key = nullptr);
 
 }  // namespace audit
 }  // namespace ebbackup

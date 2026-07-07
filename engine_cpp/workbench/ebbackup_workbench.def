@@ -23,6 +23,7 @@ eb_backup_list_snapshots
 eb_backup_free_snapshots
 eb_backup_prune_snapshots
 eb_backup_set_password
+eb_backup_set_audit_key
 eb_backup_load_filter_file
 eb_backup_set_progress
 eb_backup_abi_version

@@ -32,6 +32,7 @@ pub fn run() {
             commands::gc_orphans,
             commands::prune_snapshots,
             commands::set_password,
+            commands::set_audit_key,
             commands::load_filter_file,
             commands::last_error,
             commands::get_backup_stats,

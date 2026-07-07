@@ -42,11 +42,11 @@ export const HELP_FAQ: HelpSection[] = [
   },
   {
     id: "audit-key",
-    title: "EBBACKUP_AUDIT_KEY 是什么？",
+    title: "审计密钥是什么？",
     body: [
-      "CARL 审计锚点的签名密钥，仅高级验证需要。",
-      "课程演示：验证页关闭「强制锚点」即可。",
-      "PowerShell 启动前：$env:EBBACKUP_AUDIT_KEY='你的密钥'",
+      "CARL 锚点签名的密钥，在验证页「审计密钥」栏直接填写即可。",
+      "课程演示：关闭「强制锚点」，仅做 manifest/chunk 校验。",
+      "密钥仅保存在当前引擎会话，不写入设置文件。",
     ],
   },
   {
@@ -126,8 +126,8 @@ export const ACTIVITY_GUIDES: Record<ActivityId, HelpSection> = {
     id: "verify",
     title: "验证",
     body: [
-      "默认：manifest + chunk 深度校验，无需环境变量。",
-      "强制锚点：CARL 签名验证，需 EBBACKUP_AUDIT_KEY。",
+      "默认：manifest + chunk 深度校验，无需密钥。",
+      "强制锚点：CARL 签名验证，须在验证页填写审计密钥。",
       "Recover：修复中断事务，便于继续增量备份。",
       "指定 Txn 验证时「强制锚点」不生效（引擎限制）。",
     ],

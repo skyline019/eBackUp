@@ -103,8 +103,7 @@ function goRestore(txnId: number) {
       </template>
 
       <template v-else-if="ui.activity === 'verify'">
-        <p class="muted">默认关闭「强制锚点」即可答辩演示验证。</p>
-        <el-button link type="primary" @click="ui.openHelp('faq')">审计密钥 FAQ</el-button>
+        <p class="muted">默认关闭「强制锚点」即可答辩演示；签名验证在验证页填写密钥。</p>
       </template>
 
       <template v-else-if="repo.info">

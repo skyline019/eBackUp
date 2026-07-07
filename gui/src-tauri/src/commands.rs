@@ -421,6 +421,21 @@ pub async fn set_password(password: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn set_audit_key(audit_key: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        with_eng(|api, eng| {
+            let key = cstr(&audit_key)?;
+            unsafe {
+                (api.set_audit_key)(eng, key.as_ptr());
+            }
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|e| format!("audit_key join: {e}"))?
+}
+
+#[tauri::command]
 pub async fn load_filter_file(path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         with_eng(|api, eng| {

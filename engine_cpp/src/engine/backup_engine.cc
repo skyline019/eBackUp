@@ -1044,11 +1044,12 @@ Status BackupEngine::Verify(const BackupOptions& options) {
   if (!deep.ok()) return deep;
 
   const std::string chain_path = RepoJoin(repo_path_, "audit/rar.chain");
-  if (options.require_anchor ||
-      std::getenv("EBBACKUP_AUDIT_KEY") != nullptr) {
+  if (options.require_anchor || std::getenv("EBBACKUP_AUDIT_KEY") != nullptr ||
+      !options.audit_key.empty()) {
     const Status anchor_st = audit::VerifyCarlAnchorRequired(
         chain_path, audit::DefaultCarlAnchorDir(repo_path_),
-        options.require_anchor);
+        options.require_anchor,
+        options.audit_key.empty() ? nullptr : &options.audit_key);
     if (!anchor_st.ok()) return anchor_st;
   }
 

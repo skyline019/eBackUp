@@ -137,6 +137,11 @@ export async function setPassword(password: string) {
   return invokeSafe<void>("set_password", { password });
 }
 
+export async function setAuditKey(auditKey: string) {
+  requireTauri();
+  return invokeSafe<void>("set_audit_key", { auditKey });
+}
+
 export async function loadFilterFile(path: string) {
   requireTauri();
   return invokeSafe<void>("load_filter_file", { path });

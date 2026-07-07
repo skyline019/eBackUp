@@ -12,6 +12,7 @@ pub type EbBackupEngine = c_void;
 type OpenExFn = unsafe extern "C" fn(*const c_char, *mut c_int) -> *mut EbBackupEngine;
 type CloseFn = unsafe extern "C" fn(*mut EbBackupEngine);
 type SetPasswordFn = unsafe extern "C" fn(*mut EbBackupEngine, *const c_char);
+type SetAuditKeyFn = unsafe extern "C" fn(*mut EbBackupEngine, *const c_char);
 type LoadFilterFn = unsafe extern "C" fn(*mut EbBackupEngine, *const c_char) -> c_int;
 type JsonEngFn = unsafe extern "C" fn(*mut EbBackupEngine, *mut c_char, usize) -> c_int;
 type JsonInitFn =
@@ -56,6 +57,7 @@ pub struct EbbackupApi {
     pub open_ex: OpenExFn,
     pub close: CloseFn,
     pub set_password: SetPasswordFn,
+    pub set_audit_key: SetAuditKeyFn,
     pub load_filter_file: LoadFilterFn,
     pub init_repo_json: JsonInitFn,
     pub repo_info_json: JsonEngFn,
@@ -115,6 +117,7 @@ pub fn api() -> Result<&'static EbbackupApi, String> {
             open_ex: load_sym!(lib, "eb_backup_open_ex"),
             close: load_sym!(lib, "eb_backup_close"),
             set_password: load_sym!(lib, "eb_backup_set_password"),
+            set_audit_key: load_sym!(lib, "eb_backup_set_audit_key"),
             load_filter_file: load_sym!(lib, "eb_backup_load_filter_file"),
             init_repo_json: load_sym!(lib, "ebbackup_workbench_init_repo_json"),
             repo_info_json: load_sym!(lib, "ebbackup_workbench_repo_info_json"),

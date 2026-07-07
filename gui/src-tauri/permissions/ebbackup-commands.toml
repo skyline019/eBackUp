@@ -16,6 +16,7 @@ commands.allow = [
   "gc_orphans",
   "prune_snapshots",
   "set_password",
+  "set_audit_key",
   "load_filter_file",
   "last_error",
   "get_backup_stats",
