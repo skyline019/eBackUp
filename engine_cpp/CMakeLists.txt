@@ -121,6 +121,24 @@ if(MSVC)
   target_link_options(ebbackup_bench_check PRIVATE $<$<CONFIG:Release>:/LTCG>)
 endif()
 
+add_library(ebbackup_workbench SHARED
+  workbench/ebbackup_workbench_shim.cc
+)
+target_compile_definitions(ebbackup_workbench PRIVATE EBBACKUP_WORKBENCH_SHARED_BUILD)
+target_compile_features(ebbackup_workbench PUBLIC cxx_std_17)
+target_include_directories(ebbackup_workbench
+  PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+target_link_libraries(ebbackup_workbench PRIVATE ebbackup_core)
+if(WIN32)
+  target_sources(ebbackup_workbench PRIVATE workbench/ebbackup_workbench.def)
+  target_link_libraries(ebbackup_workbench PRIVATE bcrypt)
+endif()
+if(MSVC)
+  target_compile_options(ebbackup_workbench PRIVATE /W4 /utf-8)
+  target_link_options(ebbackup_workbench PRIVATE $<$<CONFIG:Release>:/LTCG>)
+endif()
+
 if(EBBACKUP_BUILD_TESTS)
   set(EBBACKUP_TEST_SOURCES
     tests/chunk/fast_cdc_test.cc

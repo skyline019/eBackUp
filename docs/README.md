@@ -21,6 +21,7 @@
 | [technical/ABI_AND_FEATURES.md](technical/ABI_AND_FEATURES.md) | C API ABI v7–v12、Feature Flags、Init 默认行为 |
 | [technical/TEST_AND_CI.md](technical/TEST_AND_CI.md) | 测试分层、fixture、CI/ASan、bench ctest 门禁 |
 | [technical/ENVIRONMENT_VARIABLES.md](technical/ENVIRONMENT_VARIABLES.md) | 运行时/测试/ bench 环境变量 |
+| [product/WORKBENCH_GUI.md](product/WORKBENCH_GUI.md) | 桌面 Workbench GUI（Tauri + Vue） |
 
 ---
 
@@ -28,7 +29,9 @@
 
 | 文档 | 说明 |
 |------|------|
+| [product/WORKBENCH_GUI.md](product/WORKBENCH_GUI.md) | **桌面 Workbench GUI** 归档（构建、Activity、透明度、shim API、测试、排错） |
 | [../engine_cpp/README.md](../engine_cpp/README.md) | CLI、`eb init/backup/restore`、filter、加密、C API 速查 |
+| [../gui/README.md](../gui/README.md) | Workbench 快速入口 |
 | [../README.md](../README.md) | 仓库根说明、构建与 ctest 入门 |
 
 ---

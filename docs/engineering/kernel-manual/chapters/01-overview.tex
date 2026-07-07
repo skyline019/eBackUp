@@ -17,9 +17,9 @@ ebbackup 是一个 \textbf{C++17 本地内容寻址备份内核}，面向桌面/
 \end{enumerate}
 
 \begin{designbox}[产品边界]
-\textbf{内核提供：}\texttt{eb init/backup/restore/verify/compact/repo-stats/list-snapshots/prune}、daemon schedule/watch、稳定 C API（\filepath{include/ebbackup/eb\_backup.h}）。
+\textbf{内核提供：}\texttt{eb init/backup/restore/verify/compact/repo-stats/list-snapshots/prune}、daemon schedule/watch、稳定 C API（\filepath{include/ebbackup/eb\_backup.h}）、可选桌面 GUI Workbench（\filepath{gui/}，Tauri + Vue）。
 
-\textbf{内核不提供：}云同步协议、多租户远程仓库、GUI Workbench、分布式 chunk 路由。集成方通过 C API 或 CLI 嵌入自有调度/UI。
+\textbf{内核不提供：}云同步协议、多租户远程仓库、分布式 chunk 路由。远程调度与 UI 可通过 C API、CLI 或 Workbench 嵌入。
 \end{designbox}
 
 \section{里程碑时间线（M5--M9 与 Wave 演进）}

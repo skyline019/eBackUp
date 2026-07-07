@@ -4,9 +4,9 @@
 
 ---
 
-## 测试规模（v0.9.4）
+## 测试规模（v0.9.5）
 
-- **232** GoogleTest 用例（`ebbackup_tests`）
+- **233** GoogleTest 用例（`ebbackup_tests`，含 `RepoStatsTest.EmptyInitializedRepoWithoutManifest`）
 - 独立 C API 测试 target：`eb_run_tests_capi`
 - Bench 硬门禁：`ebbackup_bench_check`（ctest）
 
@@ -23,10 +23,22 @@
 | 失败注入 | `tests/failure/powerfail_test.cc` | `EBTEST_ABORT_AFTER` kill 点 |
 | Chaos | `tests/failure/` + `chaos_util` | 确定性 seed=42 |
 | Bench | `tests/bench/bench_check.cc` | L1–L7 floor gate |
+| Workbench | `gui/src-tauri/tests/workbench_integration.rs` | DLL JSON shim roundtrip（`npm run test:rust`） |
 
 ---
 
-## Fixture
+## Workbench GUI 测试（v0.9.5+）
+
+```powershell
+cmake --build build --config Release --target ebbackup_workbench
+cd gui
+npm run sync:runtime
+npm run test:rust
+```
+
+依赖：`gui/src-tauri/bin/ebbackup_workbench.dll`（由 `sync_runtime_binaries.ps1` 从 `build/engine_cpp/Release/` 复制）。
+
+文档：[`product/WORKBENCH_GUI.md`](../product/WORKBENCH_GUI.md)
 
 | Fixture | 路径 | 用途 |
 |---------|------|------|

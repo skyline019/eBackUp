@@ -1,0 +1,180 @@
+/* Wallpaper layers + layered opacity (workspace vs chrome borders) */
+
+:root {
+  --wallpaper-opacity: 0.58;
+  --workspace-panel-opacity: 0.52;
+  --chrome-panel-opacity: 0.3;
+  --panel-opacity-effective: 0.86;
+  --table-view-opacity-effective: 0.74;
+  --log-panel-opacity-effective: 0.9;
+}
+
+html[data-bg-mode="image"] body,
+html[data-bg-mode="video"] body {
+  background-image: none;
+  background-color: var(--page-bg, #080d18);
+}
+
+.layout-image-wallpaper,
+.layout-video-wallpaper {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  object-fit: cover;
+  object-position: center center;
+  opacity: var(--wallpaper-opacity, 0.58);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.layout.layout-wallpaper-active,
+.workbench-shell.layout-wallpaper-active {
+  min-height: 100vh;
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+.layout.layout-wallpaper-active .activity-bar,
+.layout.layout-wallpaper-active .context-sidebar,
+.layout.layout-wallpaper-active .sidebar,
+.layout.layout-wallpaper-active .content,
+.layout.layout-wallpaper-active .sidebar-resizer,
+.layout.layout-wallpaper-active .menu-bar,
+.layout.layout-wallpaper-active .ribbon-bar,
+.layout.layout-wallpaper-active .output-panel,
+.layout.layout-wallpaper-active .query-workspace,
+.layout.layout-wallpaper-active .workspace-main,
+.workbench-shell.layout-wallpaper-active .activity-bar,
+.workbench-shell.layout-wallpaper-active .context-sidebar,
+.workbench-shell.layout-wallpaper-active .sidebar,
+.workbench-shell.layout-wallpaper-active .content,
+.workbench-shell.layout-wallpaper-active .sidebar-resizer,
+.workbench-shell.layout-wallpaper-active .menu-bar,
+.workbench-shell.layout-wallpaper-active .ribbon-bar,
+.workbench-shell.layout-wallpaper-active .output-panel,
+.workbench-shell.layout-wallpaper-active .query-workspace,
+.workbench-shell.layout-wallpaper-active .workspace-main {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* 左侧：保持可读 */
+.layout.layout-wallpaper-active .activity-bar,
+.layout.layout-wallpaper-active .context-sidebar,
+.layout.layout-wallpaper-active .sidebar,
+.layout.layout-wallpaper-active .sidebar-resizer,
+.workbench-shell.layout-wallpaper-active .activity-bar,
+.workbench-shell.layout-wallpaper-active .context-sidebar,
+.workbench-shell.layout-wallpaper-active .sidebar,
+.workbench-shell.layout-wallpaper-active .sidebar-resizer {
+  background: color-mix(
+    in srgb,
+    var(--panel-bg-strong, rgba(9, 17, 36, 0.95))
+      calc(100% * var(--panel-opacity-effective, 0.86)),
+    rgba(8, 13, 24, 0.72)
+  ) !important;
+}
+
+.layout.layout-wallpaper-active .menu-bar,
+.layout.layout-wallpaper-active .ribbon-bar,
+.workbench-shell.layout-wallpaper-active .menu-bar,
+.workbench-shell.layout-wallpaper-active .ribbon-bar {
+  background: color-mix(
+    in srgb,
+    var(--panel-bg-strong, rgba(9, 17, 36, 0.95))
+      calc(100% * var(--panel-opacity-effective, 0.86)),
+    rgba(8, 13, 24, 0.75)
+  ) !important;
+}
+
+.layout.layout-wallpaper-active .content,
+.workbench-shell.layout-wallpaper-active .content {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* 右侧主工作区：透底，由卡片/表格各自控制不透明度 */
+.layout.layout-wallpaper-active .workspace-main,
+.workbench-shell.layout-wallpaper-active .workspace-main {
+  background: transparent !important;
+}
+
+.layout.layout-wallpaper-active .activity-page,
+.workbench-shell.layout-wallpaper-active .activity-page {
+  background: transparent !important;
+}
+
+.layout.layout-wallpaper-active .output-panel,
+.workbench-shell.layout-wallpaper-active .output-panel {
+  background: var(--log-panel-surface, rgba(7, 14, 31, 0.88)) !important;
+}
+
+.workbench-shell.layout-wallpaper-active .activity-page .panel-card,
+.layout.layout-wallpaper-active .activity-page .panel-card {
+  background: var(--workspace-card-surface, rgba(9, 17, 36, 0.88)) !important;
+}
+
+/* 右侧边框容器（标签/工具栏/筛选/分页）：更透 */
+.workbench-shell.layout-wallpaper-active .grid-chrome,
+.workbench-shell.layout-wallpaper-active .grid-status-bar.grid-chrome,
+.layout.layout-wallpaper-active .grid-chrome {
+  background: color-mix(
+    in srgb,
+    var(--page-bg, #080d18) calc(100% * var(--chrome-panel-opacity, 0.3)),
+    rgba(8, 13, 24, 0.22)
+  ) !important;
+  border-color: color-mix(
+    in srgb,
+    var(--accent) 22%,
+    transparent
+  ) !important;
+  box-shadow: 0 2px 12px color-mix(in srgb, #000 10%, transparent) !important;
+}
+
+/* 卡片 / 表格局部：保持数据区可读 */
+.layout.layout-wallpaper-active .activity-page .card,
+.layout.layout-wallpaper-active .data-grid .table-wrap,
+.workbench-shell.layout-wallpaper-active .activity-page .card,
+.workbench-shell.layout-wallpaper-active .data-grid .table-wrap,
+.workbench-shell.layout-wallpaper-active .explorer-view .table-card,
+.workbench-shell.layout-wallpaper-active .empty-tables-hint {
+  background: color-mix(
+    in srgb,
+    var(--table-surface-bg, #08121f)
+      calc(100% * var(--table-view-opacity-effective, 0.74)),
+    rgba(8, 18, 31, 0.82)
+  ) !important;
+}
+
+.workbench-shell.layout-wallpaper-active .data-table-view .data-table-wrap {
+  background: color-mix(
+    in srgb,
+    var(--table-surface-bg, #08121f)
+      calc(100% * var(--table-view-opacity-effective, 0.74)),
+    rgba(8, 18, 31, 0.85)
+  ) !important;
+  border-color: color-mix(
+    in srgb,
+    var(--accent) 28%,
+    var(--card-border)
+  ) !important;
+}
+
+.workbench-shell.layout-wallpaper-active .context-sidebar,
+.workbench-shell.layout-wallpaper-active .catalog-tree {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.workbench-shell.layout-wallpaper-active .output-panel .log-line {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.workbench-shell.layout-wallpaper-active .data-table-view .grid-chrome .el-input__wrapper,
+.workbench-shell.layout-wallpaper-active .data-table-view .grid-chrome .el-select__wrapper {
+  background: color-mix(
+    in srgb,
+    var(--panel-bg-input) calc(100% * var(--chrome-panel-opacity, 0.3)),
+    rgba(8, 13, 24, 0.35)
+  ) !important;
+}

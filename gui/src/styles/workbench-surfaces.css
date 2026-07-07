@@ -1,0 +1,712 @@
+/**
+ * Workbench surface system — dark glass theme for tables, inputs, panels.
+ * Scoped to .workbench-shell (legacy .layout rules live in structdb-shell.css).
+ */
+
+/* ── Element Plus token bridge ── */
+.workbench-shell {
+  --el-bg-color: color-mix(in srgb, var(--page-bg, #080d18) 88%, transparent);
+  --el-bg-color-page: color-mix(in srgb, var(--page-bg, #080d18) 90%, transparent);
+  --el-bg-color-overlay: var(--panel-bg-overlay);
+  --el-text-color-primary: var(--text-main);
+  --el-text-color-regular: var(--text-regular);
+  --el-border-color: var(--card-border);
+  --el-border-color-light: var(--card-border-strong);
+  --el-fill-color-blank: var(--panel-bg-input);
+  --el-fill-color-light: color-mix(in srgb, var(--panel-bg-input) 88%, #1f2b45);
+  --el-fill-color: color-mix(in srgb, var(--panel-bg-input) 82%, #22304d);
+  --el-color-primary: var(--accent);
+  --el-mask-color: rgba(0, 0, 0, 0.58);
+  --el-disabled-bg-color: color-mix(in srgb, var(--panel-bg-input) 72%, #111827);
+  --el-disabled-text-color: color-mix(in srgb, var(--text-regular) 48%, #64748b);
+  --surface-glow: color-mix(in srgb, var(--accent) 22%, transparent);
+  --surface-border: color-mix(in srgb, var(--card-border) 80%, var(--accent));
+  --radius-surface: calc(12px * var(--corner-scale, 1));
+  --radius-control: calc(8px * var(--corner-scale, 1));
+}
+
+/* ── Inputs / selects / numbers ── */
+.workbench-shell .el-input__wrapper,
+.workbench-shell .el-textarea__inner,
+.workbench-shell .el-select__wrapper,
+.workbench-shell .el-input-number__decrease,
+.workbench-shell .el-input-number__increase,
+.output-panel .el-input__wrapper,
+.output-panel .el-select__wrapper {
+  background: color-mix(in srgb, var(--panel-bg-input) 92%, #0a1224) !important;
+  box-shadow: 0 0 0 1px var(--surface-border) inset !important;
+  border-radius: var(--radius-control) !important;
+  transition:
+    box-shadow var(--motion-normal, 190ms) var(--motion-ease, ease),
+    background-color var(--motion-normal, 190ms) var(--motion-ease, ease);
+}
+
+.workbench-shell .el-input__wrapper:hover,
+.workbench-shell .el-select__wrapper:hover,
+.output-panel .el-input__wrapper:hover {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 35%, var(--card-border)) inset,
+    0 0 12px color-mix(in srgb, var(--accent) 8%, transparent) !important;
+}
+
+.workbench-shell .el-input__wrapper.is-focus,
+.workbench-shell .el-textarea__inner:focus,
+.workbench-shell .el-select__wrapper.is-focused,
+.output-panel .el-input__wrapper.is-focus {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 65%, #60a5fa) inset,
+    0 0 0 3px var(--surface-glow) !important;
+}
+
+.workbench-shell .el-input__inner,
+.workbench-shell .el-textarea__inner,
+.workbench-shell .el-input-number__input {
+  color: var(--text-main) !important;
+}
+
+/* ── Buttons ── */
+.workbench-shell .el-button {
+  --el-button-text-color: var(--text-regular);
+  --el-button-hover-text-color: var(--text-main);
+  --el-button-disabled-text-color: color-mix(in srgb, var(--text-soft) 70%, #64748b);
+  font-weight: 500;
+  border-radius: var(--radius-control) !important;
+  transition:
+    transform var(--motion-fast, 140ms) var(--motion-ease, ease),
+    box-shadow var(--motion-normal, 190ms) var(--motion-ease, ease),
+    background-color var(--motion-normal, 190ms) var(--motion-ease, ease),
+    border-color var(--motion-normal, 190ms) var(--motion-ease, ease);
+}
+
+.workbench-shell .el-button:not(.is-disabled):hover {
+  transform: translateY(-1px);
+}
+
+.workbench-shell .el-button--primary {
+  --el-button-text-color: #f8fafc;
+  --el-button-bg-color: color-mix(in srgb, var(--accent) 78%, #1e3a5f);
+  --el-button-border-color: color-mix(in srgb, var(--accent) 55%, #334155);
+  --el-button-hover-bg-color: color-mix(in srgb, var(--accent) 90%, #2563eb);
+  --el-button-hover-border-color: var(--accent);
+  box-shadow: 0 2px 14px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.workbench-shell .el-button--primary:not(.is-disabled):hover {
+  box-shadow: 0 4px 20px color-mix(in srgb, var(--accent) 38%, transparent);
+}
+
+.workbench-shell .el-button.is-plain,
+.workbench-shell .el-button--default {
+  --el-button-bg-color: color-mix(in srgb, var(--panel-bg-input) 78%, #0f172a);
+  --el-button-border-color: var(--surface-border);
+  --el-button-hover-bg-color: var(--hover-bg);
+  --el-button-hover-border-color: color-mix(in srgb, var(--accent) 40%, var(--card-border));
+}
+
+.workbench-shell .el-button--success {
+  box-shadow: 0 2px 12px color-mix(in srgb, #22c55e 22%, transparent);
+}
+
+/* ── Tables (global within shell) ── */
+.workbench-shell .el-table,
+.create-table-dialog .el-table,
+.audit-panel .el-table {
+  --el-table-header-bg-color: color-mix(in srgb, var(--table-surface-bg, #08121f) 55%, #162540);
+  --el-table-tr-bg-color: color-mix(
+    in srgb,
+    var(--table-surface-bg, #08121f) calc(100% * var(--table-view-opacity, 0.74)),
+    transparent
+  );
+  --el-table-current-row-bg-color: color-mix(in srgb, var(--accent) 28%, var(--table-surface-bg, #08121f));
+  --el-table-row-hover-bg-color: color-mix(in srgb, var(--accent) 22%, var(--table-surface-bg, #08121f));
+  --el-table-header-text-color: var(--text-main);
+  --el-table-bg-color: color-mix(
+    in srgb,
+    var(--table-surface-bg, #08121f) calc(100% * var(--table-view-opacity, 0.74)),
+    transparent
+  );
+  --el-fill-color-blank: color-mix(
+    in srgb,
+    var(--table-surface-bg, #08121f) calc(100% * var(--table-view-opacity, 0.74)),
+    transparent
+  );
+  --el-table-border-color: var(--card-border-strong);
+  --el-table-text-color: var(--text-main);
+  background: transparent !important;
+}
+
+.workbench-shell .el-table th.el-table__cell,
+.workbench-shell .el-table tr,
+.workbench-shell .el-table td.el-table__cell,
+.create-table-dialog .el-table th.el-table__cell,
+.create-table-dialog .el-table td.el-table__cell,
+.audit-panel .el-table th.el-table__cell,
+.audit-panel .el-table td.el-table__cell {
+  background: color-mix(
+    in srgb,
+    var(--table-surface-bg, #08121f) calc(96% * var(--table-view-opacity, 0.74)),
+    rgba(255, 255, 255, 0.03)
+  ) !important;
+  border-color: color-mix(in srgb, var(--card-border-strong) 85%, transparent) !important;
+  transition: background-color 0.18s ease;
+}
+
+.workbench-shell .el-table th.el-table__cell {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--table-surface-bg, #08121f) 48%, #1e293b),
+    color-mix(in srgb, var(--table-surface-bg, #08121f) 72%, #0f172a)
+  ) !important;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.workbench-shell .el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
+  background: color-mix(
+    in srgb,
+    var(--table-surface-bg, #08121f) calc(88% * var(--table-view-opacity, 0.74)),
+    rgba(59, 130, 246, 0.04)
+  ) !important;
+}
+
+.workbench-shell .el-table__body tr:hover > td.el-table__cell {
+  background: color-mix(in srgb, var(--accent) 18%, var(--table-surface-bg, #08121f)) !important;
+}
+
+.workbench-shell .el-table__inner-wrapper::before {
+  background-color: var(--card-border-strong) !important;
+}
+
+.workbench-shell .el-table .el-table__fixed-right-patch,
+.workbench-shell .el-table__fixed-right::before {
+  background: var(--table-surface-bg, #08121f) !important;
+}
+
+/* ── Data grid chrome ── */
+.data-table-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  gap: 8px;
+}
+
+.data-table-view .grid-chrome {
+  flex-shrink: 0;
+}
+
+.data-table-view .grid-filter-panel {
+  flex-shrink: 0;
+  max-height: min(30vh, 220px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.data-table-view .grid-filter-panel .filter-inputs-row {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  padding-bottom: 2px;
+}
+
+.data-table-view .grid-pager-panel {
+  flex-shrink: 0;
+}
+
+.grid-chrome {
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  border-radius: var(--radius-surface);
+  background: linear-gradient(
+    165deg,
+    color-mix(
+      in srgb,
+      var(--panel-bg-strong) calc(100% * var(--chrome-panel-opacity, 0.42)),
+      transparent
+    ),
+    color-mix(
+      in srgb,
+      var(--panel-bg-soft) calc(100% * var(--chrome-panel-opacity, 0.36)),
+      transparent
+    )
+  );
+  box-shadow:
+    0 2px 14px color-mix(in srgb, #000 10%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 4%, transparent);
+  backdrop-filter: blur(6px);
+}
+
+.grid-table-tabs {
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.grid-table-tabs-inner {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  align-items: center;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.grid-table-tabs-inner .muted {
+  flex-shrink: 0;
+}
+
+.grid-table-tabs .el-button {
+  border-radius: 999px !important;
+  padding: 5px 14px !important;
+  border: 1px solid var(--surface-border) !important;
+  background: color-mix(in srgb, var(--panel-bg-input) 70%, transparent) !important;
+}
+
+.grid-table-tabs .el-button.el-button--primary {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent) !important;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent) inset,
+    0 4px 16px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.grid-table-tabs .tab-close {
+  opacity: 0.65;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.grid-table-tabs .tab-close:hover {
+  opacity: 1;
+  color: #f87171;
+}
+
+.grid-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  border-radius: var(--radius-control);
+  background: color-mix(
+    in srgb,
+    var(--accent) 5%,
+    color-mix(in srgb, var(--panel-bg-input) calc(100% * var(--chrome-panel-opacity, 0.4)), transparent)
+  );
+  border: 1px solid color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.grid-toolbar-panel {
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.grid-filter-panel {
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+
+.grid-filter-panel .filter-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.grid-filter-panel .filter-inputs-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 6px;
+}
+
+.data-table-view .data-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--card-border));
+  border-radius: var(--radius-surface);
+  background:
+    radial-gradient(ellipse 90% 55% at 50% -15%, var(--surface-glow), transparent 58%),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--table-surface-bg, #08121f) 65%, transparent),
+      color-mix(in srgb, var(--table-surface-bg, #08121f) 95%, rgba(255, 255, 255, 0.02))
+    );
+  box-shadow:
+    0 10px 32px color-mix(in srgb, #000 24%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 5%, transparent);
+}
+
+.data-table-view .data-table-wrap .data-grid-table {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+.data-table-view .data-table-wrap .data-grid-table .el-table__inner-wrapper {
+  min-width: min-content;
+}
+
+.data-table-view .data-table-wrap .el-table__body-wrapper .el-scrollbar__wrap {
+  overflow-x: auto !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.data-table-view .data-table-wrap .el-table__body-wrapper {
+  overscroll-behavior: contain;
+}
+
+.workbench-shell .data-table-view .data-table-wrap {
+  overflow: hidden !important;
+}
+
+.data-grid-table .col-header {
+  gap: 2px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+}
+
+.data-grid-table .col-header-selected {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent) inset;
+}
+
+.data-grid-table .col-type {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text-soft);
+  width: fit-content;
+}
+
+.data-grid-table .cell-display {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 5px;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.data-grid-table .cell-display:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.data-grid-table .cell-editor-input .el-input__wrapper {
+  overflow-x: auto;
+}
+
+.data-grid-table .cell-display.empty {
+  opacity: 0.55;
+}
+
+.data-grid-table .grid-row-dirty td {
+  background: color-mix(in srgb, #f59e0b 16%, var(--table-surface-bg, #08121f)) !important;
+  box-shadow: inset 3px 0 0 #f59e0b;
+}
+
+.data-grid-table .grid-row-new td {
+  background: color-mix(in srgb, #22c55e 12%, var(--table-surface-bg, #08121f)) !important;
+  box-shadow: inset 3px 0 0 #22c55e;
+}
+
+.grid-pager-panel {
+  padding: 8px 12px;
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+/* ── Switch / tag / checkbox ── */
+.workbench-shell .el-switch.is-checked .el-switch__core {
+  background: color-mix(in srgb, var(--accent) 85%, #1e3a5f) !important;
+  border-color: var(--accent) !important;
+}
+
+.workbench-shell .el-tag {
+  border-color: var(--card-border) !important;
+  background: color-mix(in srgb, var(--panel-bg-input) 82%, transparent) !important;
+  color: var(--text-main) !important;
+}
+
+.workbench-shell .el-checkbox__inner {
+  background: var(--panel-bg-input) !important;
+  border-color: var(--card-border-strong) !important;
+}
+
+/* ── Tabs (audit etc.) ── */
+.workbench-shell .el-tabs__item {
+  color: var(--text-soft) !important;
+  transition: color 0.15s ease;
+}
+
+.workbench-shell .el-tabs__item.is-active {
+  color: var(--accent) !important;
+  font-weight: 600;
+}
+
+.workbench-shell .el-tabs__active-bar {
+  background: var(--accent) !important;
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.workbench-shell .el-tabs__nav-wrap::after {
+  background-color: var(--shell-line, var(--card-border)) !important;
+}
+
+/* ── Dialogs / drawers (teleported) ── */
+.el-dialog,
+.el-drawer.settings-modal {
+  background: color-mix(in srgb, var(--panel-bg-overlay) 96%, #0a1020) !important;
+  border: 1px solid var(--card-border-strong) !important;
+  border-radius: calc(14px * var(--corner-scale, 1)) !important;
+  box-shadow:
+    0 24px 64px color-mix(in srgb, #000 45%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent) inset !important;
+  backdrop-filter: blur(12px);
+}
+
+.el-dialog__header {
+  border-bottom: 1px solid var(--shell-line, var(--card-border));
+  margin-right: 0 !important;
+  padding-bottom: 12px !important;
+}
+
+.el-dialog__title {
+  color: var(--text-main) !important;
+  font-weight: 650 !important;
+}
+
+.create-table-dialog .wizard-card {
+  animation: surface-fade-in 0.28s ease both;
+}
+
+.create-table-dialog .wizard-card:nth-child(2) {
+  animation-delay: 0.04s;
+}
+.create-table-dialog .wizard-card:nth-child(3) {
+  animation-delay: 0.08s;
+}
+.create-table-dialog .wizard-card:nth-child(4) {
+  animation-delay: 0.12s;
+}
+
+.create-table-dialog .el-dialog__body {
+  padding-top: 8px !important;
+}
+
+.create-table-dialog .el-input__wrapper,
+.create-table-dialog .el-select__wrapper,
+.create-table-dialog .el-input-number .el-input__wrapper {
+  background: color-mix(in srgb, var(--panel-bg-input) 94%, #0a1224) !important;
+  box-shadow: 0 0 0 1px var(--surface-border) inset !important;
+}
+
+.create-table-dialog .ddl-columns-table .el-table__cell {
+  padding: 6px 8px !important;
+}
+
+.create-table-dialog .el-checkbox__input.is-disabled.is-checked .el-checkbox__inner {
+  background-color: color-mix(in srgb, var(--accent) 72%, #1e3a5f) !important;
+  border-color: var(--accent) !important;
+}
+
+.create-table-dialog .el-checkbox__input.is-disabled.is-checked .el-checkbox__inner::after {
+  border-color: #f8fafc !important;
+}
+
+.create-table-dialog .el-form-item__label {
+  color: var(--text-soft) !important;
+}
+
+.grid-add-column-dialog .el-dialog__body {
+  padding-top: 8px !important;
+}
+
+.grid-add-column-dialog .el-form-item__label {
+  color: var(--text-soft) !important;
+}
+
+.grid-add-column-dialog .el-input__wrapper,
+.grid-add-column-dialog .el-select__wrapper {
+  background: color-mix(in srgb, var(--panel-bg-input) 94%, #0a1224) !important;
+  box-shadow: 0 0 0 1px var(--surface-border) inset !important;
+}
+
+.grid-add-column-dialog .el-dialog__footer {
+  border-top: 1px solid var(--shell-line, var(--card-border));
+  padding-top: 12px !important;
+}
+
+.grid-confirm-dialog .el-dialog__body {
+  padding-top: 8px !important;
+}
+
+.grid-confirm-dialog .el-dialog__footer {
+  border-top: 1px solid var(--shell-line, var(--card-border));
+  padding-top: 12px !important;
+}
+
+.grid-tool-dialog .el-dialog__body {
+  padding-top: 8px !important;
+}
+
+.grid-tool-dialog .el-input__wrapper,
+.grid-tool-dialog .el-select__wrapper {
+  background: color-mix(in srgb, var(--panel-bg-input) 94%, #0a1224) !important;
+  box-shadow: 0 0 0 1px var(--surface-border) inset !important;
+}
+
+.grid-tool-dialog .el-dialog__footer {
+  border-top: 1px solid var(--shell-line, var(--card-border));
+  padding-top: 12px !important;
+}
+
+.create-table-dialog .el-dialog__footer {
+  border-top: 1px solid var(--shell-line, var(--card-border));
+  padding-top: 12px !important;
+}
+
+.create-table-dialog .el-dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.create-table-dialog .dlg-layout {
+  flex: 1;
+  min-height: 0;
+}
+
+.create-table-dialog .columns-card.dlg-main {
+  min-height: 200px;
+}
+
+.create-table-dialog .ddl-columns-table .el-table__body-wrapper {
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.column-type-dropdown.el-popper {
+  z-index: 29050 !important;
+}
+
+.column-type-dropdown .el-select-group__title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-soft);
+  padding: 6px 12px 4px;
+}
+
+.column-type-dropdown .el-select-dropdown__item {
+  height: auto;
+  line-height: 1.35;
+  padding: 8px 12px;
+}
+
+.column-type-dropdown .type-opt {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 220px;
+}
+
+.column-type-dropdown .type-opt-name {
+  font-family: var(--font-mono, Consolas, monospace);
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-main);
+}
+
+.column-type-dropdown .type-opt-meta {
+  font-size: 11px;
+  color: var(--text-soft);
+}
+
+@keyframes surface-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── Activity cards ── */
+.activity-page .card {
+  backdrop-filter: blur(6px);
+  transition:
+    border-color 0.22s ease,
+    box-shadow 0.22s ease,
+    transform 0.18s ease;
+}
+
+.activity-page .card:hover {
+  transform: translateY(-1px);
+}
+
+/* ── Output panel inputs ── */
+.output-panel .output-header {
+  border-bottom: 1px solid var(--shell-line);
+  background: transparent;
+}
+
+.output-tab {
+  transition: color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.output-tab.active {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* ── Scrollbars in table area ── */
+.data-table-wrap .el-scrollbar__bar {
+  opacity: 0.85 !important;
+}
+
+.data-table-wrap .el-scrollbar__bar.is-vertical {
+  width: 8px !important;
+}
+
+.data-table-wrap .el-scrollbar__bar.is-horizontal {
+  height: 8px !important;
+}
+
+.data-table-wrap .el-scrollbar__thumb {
+  background: color-mix(in srgb, var(--accent) 35%, #334155) !important;
+  border-radius: 6px !important;
+}
+
+/* ── Loading overlay ── */
+.workbench-shell .el-loading-mask {
+  background: color-mix(in srgb, var(--table-surface-bg, #08121f) 55%, transparent) !important;
+  backdrop-filter: blur(2px);
+}
+
+.workbench-shell.no-anim .el-button:hover {
+  transform: none;
+}
+
+.workbench-shell.no-anim .activity-page .card:hover {
+  transform: none;
+}

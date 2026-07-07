@@ -1,0 +1,33 @@
+{
+  "name": "ebbackup-workbench",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "sync:runtime": "powershell -ExecutionPolicy Bypass -File scripts/sync_runtime_binaries.ps1",
+    "sync:fonts": "powershell -ExecutionPolicy Bypass -File scripts/sync_fonts.ps1",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --test workbench_integration -- --nocapture",
+    "build:desktop": "powershell -ExecutionPolicy Bypass -File scripts/build_desktop.ps1",
+    "tauri:dev": "npm run sync:runtime && tauri dev",
+    "tauri:build": "npm run sync:runtime && tauri build"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "@tauri-apps/api": "^2.2.0",
+    "@tauri-apps/plugin-shell": "^2.2.0",
+    "element-plus": "^2.13.7",
+    "pinia": "^2.3.0",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.2.0",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "~5.6.3",
+    "vite": "^6.0.3",
+    "vue-tsc": "^2.1.10"
+  }
+}

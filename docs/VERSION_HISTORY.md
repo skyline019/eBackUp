@@ -45,9 +45,11 @@ v0.9.1           Stage 3.1 / 3.2 双轨 floor（并入 v0.9.0 CHANGELOG）
 v0.9.2           StreamingChunkCpuPipeline（>32MB 单文件流式 CDC）
 v0.9.3           digest_base 批处理 + DigestPool span 分片
 v0.9.4 (Sprint4) CDC Phase B seg1 bulk + Phase A FastCdcSlice opt-in
+    ↓
+v0.9.5           Desktop Workbench GUI（Tauri + Vue + ebbackup_workbench.dll）
 ```
 
-**当前版本**：CHANGELOG **v0.9.4** · C API `EB_BACKUP_ABI_VERSION = 12` · ctest **232** gtest + C API + bench L1–L7 · CMake `project VERSION 0.6.0`（与 CHANGELOG 版本号不同步，以 CHANGELOG 为准）
+**当前版本**：CHANGELOG **v0.9.5** · C API `EB_BACKUP_ABI_VERSION = 12` · ctest **233** gtest（含空仓库 repo-stats）+ C API + bench L1–L7 + Workbench Rust 集成测试 · CMake `project VERSION 0.6.0`（与 CHANGELOG 版本号不同步，以 CHANGELOG 为准）
 
 ---
 
@@ -295,6 +297,20 @@ v0.9.4 (Sprint4) CDC Phase B seg1 bulk + Phase A FastCdcSlice opt-in
 
 ---
 
+### v0.9.5 — Desktop Workbench GUI
+
+**主题**：可选桌面 GUI 入口；JSON shim DLL + Tauri 宿主；文档正式归档。
+
+| 领域 | 交付 |
+|------|------|
+| **GUI** | `gui/` Tauri 2 + Vue 3；六 Activity；壁纸 + 透明度调节器 |
+| **Native** | `ebbackup_workbench` SHARED + `engine_cpp/workbench/` JSON shim |
+| **测试** | Rust 集成测试 roundtrip；`RepoStatsTest.EmptyInitializedRepoWithoutManifest` |
+| **Release** | NSIS 0.1.0 x64；`npm run build:desktop` |
+| **文档** | [`docs/product/WORKBENCH_GUI.md`](product/WORKBENCH_GUI.md) |
+
+---
+
 ## 五、仓库布局演进
 
 | 路径 | 引入版本 | 说明 |
@@ -369,6 +385,7 @@ v0.7–v0.9.4 **ABI 保持 v12**，无 breaking API 变更。
 | v0.6 | 207 | EbPackCompactTest |
 | v0.8 | 220+ | PipelineV4 parity + L7 |
 | **v0.9.4** | **232** | streaming_chunk_pipeline + CDC fast path parity |
+| **v0.9.5** | **233** gtest + Workbench Rust IT | 空仓库 repo-stats；`gui/` 桌面 Workbench |
 
 详见 [`technical/TEST_AND_CI.md`](technical/TEST_AND_CI.md)。
 
@@ -425,6 +442,7 @@ multi-file / incremental / workers>0 → Pipeline v4
 | 版本变更明细 | [`CHANGELOG.md`](../CHANGELOG.md) |
 | 引擎 / CLI 手册 | [`engine_cpp/README.md`](../engine_cpp/README.md) |
 | 性能基线 | [`reference/PERF_BASELINE.md`](reference/PERF_BASELINE.md) |
+| 桌面 Workbench GUI | [`product/WORKBENCH_GUI.md`](product/WORKBENCH_GUI.md) |
 | CI floor | [`engine_cpp/bench/baselines/ci_floor.json`](../engine_cpp/bench/baselines/ci_floor.json) |
 
 ---

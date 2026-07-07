@@ -1,0 +1,51 @@
+/* Workspace cards + output panel — driven by precomputed --*-surface rgba vars */
+
+.workbench-shell .content.workspace {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.workbench-shell .workspace-main,
+.workbench-shell .activity-page {
+  background: transparent;
+}
+
+.activity-page {
+  padding-top: 44px;
+}
+
+.activity-page .panel-card,
+.workbench-shell .panel-card {
+  padding: 16px;
+  border-radius: 10px;
+  border: 1px solid var(--card-border);
+  background: var(--workspace-card-surface, rgba(9, 17, 36, 0.88));
+}
+
+.activity-page .panel-card h2,
+.workbench-shell .panel-card h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  color: var(--text-main);
+}
+
+.workspace-opacity-anchor {
+  position: relative;
+}
+
+.workspace-opacity-regulator {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 12;
+}
+
+/* Override structdb-shell .console opaque defaults */
+.workbench-shell .output-panel.console {
+  background: var(--log-panel-surface, rgba(7, 14, 31, 0.88)) !important;
+  box-shadow: none;
+}
+
+.output-panel .output-opacity-regulator {
+  flex-shrink: 0;
+}

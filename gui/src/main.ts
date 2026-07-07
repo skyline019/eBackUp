@@ -1,0 +1,21 @@
+import { createApp } from "vue";
+import { createPinia } from "pinia";
+import ElementPlus from "element-plus";
+import "element-plus/dist/index.css";
+import App from "./App.vue";
+import "./styles/fonts.css";
+import "./styles/workbench-layout.css";
+import "./styles/structdb-shell.css";
+import "./styles/workbench-refined.css";
+import "./styles/workbench-phase7.css";
+import "./styles/wallpaper-shell.css";
+import "./styles/navicat-shell.css";
+import "./styles/theme.css";
+import "./styles/workbench-polish.css";
+import "./styles/workbench-surfaces.css";
+import "./styles/workbench-panels.css";
+
+const app = createApp(App);
+app.use(createPinia());
+app.use(ElementPlus);
+app.mount("#app");

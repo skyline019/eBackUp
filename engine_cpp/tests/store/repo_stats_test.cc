@@ -8,6 +8,18 @@
 namespace ebbackup {
 namespace {
 
+TEST(RepoStatsTest, EmptyInitializedRepoWithoutManifest) {
+  const std::string repo = test::TempDir("stats_empty");
+  ASSERT_TRUE(test::InitV03Repo(repo).ok());
+
+  RepoStats stats{};
+  ASSERT_TRUE(ComputeRepoStats(repo, &stats).ok());
+  EXPECT_EQ(stats.manifest_bytes, 0u);
+  EXPECT_EQ(stats.live_bytes, 0u);
+  EXPECT_EQ(stats.physical_bytes, 0u);
+  EXPECT_DOUBLE_EQ(stats.ampl_ratio, 1.0);
+}
+
 TEST(RepoStatsTest, CleanBackupLiveEqualsPhysical) {
   const std::string repo = test::TempDir("stats_clean");
   const std::string source = test::TempDir("stats_clean_src");

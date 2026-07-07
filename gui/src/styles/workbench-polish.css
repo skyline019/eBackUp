@@ -1,0 +1,136 @@
+/* Workbench polish: overlays, cards, page chrome */
+
+.el-overlay {
+  z-index: 28000 !important;
+}
+
+.el-drawer,
+.el-dialog.create-table-dialog,
+.el-dialog.grid-add-column-dialog,
+.el-dialog.grid-confirm-dialog,
+.el-dialog.grid-tool-dialog,
+.el-dialog.shortcut-help-dialog {
+  z-index: 28001 !important;
+}
+
+/* Select poppers inside modals must sit above overlay (28000) and dialog (28001) */
+.el-popper.column-type-dropdown {
+  z-index: 29050 !important;
+}
+
+.settings-modal.el-drawer {
+  background: color-mix(in srgb, var(--panel-bg-strong) 96%, transparent) !important;
+}
+
+.page-hero {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--card-border) 70%, transparent);
+}
+
+.page-hero h1 {
+  font-size: calc(20px * var(--font-scale, 1));
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, var(--text-main), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.activity-page .card,
+.database-home .card-highlight {
+  box-shadow: 0 4px 24px color-mix(in srgb, #000 18%, transparent);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.activity-page .card:hover {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--card-border));
+}
+
+.explorer-view .page-hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.explorer-view .hero-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.explorer-view .table-card {
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.explorer-view .table-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.audit-panel .metric {
+  transition: border-color 0.2s ease;
+}
+
+.audit-panel .metric:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--card-border));
+}
+
+.ribbon-actions .el-button {
+  font-weight: 500;
+}
+
+/* Metric cards — audit dashboard */
+.audit-panel .metric-grid {
+  gap: 10px;
+}
+
+.audit-panel .metric {
+  border-radius: calc(10px * var(--corner-scale, 1));
+  backdrop-filter: blur(4px);
+}
+
+.audit-panel .metric.danger {
+  animation: metric-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes metric-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, #ef4444 0%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, #ef4444 18%, transparent);
+  }
+}
+
+/* Query workspace */
+.query-workspace .query-toolbar .el-button--primary {
+  box-shadow: 0 2px 16px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* Context sidebar */
+.context-sidebar {
+  backdrop-filter: blur(6px);
+}
+
+/* Activity bar glow on active */
+.activity-btn.active {
+  box-shadow: inset 0 0 12px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.empty-tables-hint {
+  padding: 32px 24px;
+  text-align: center;
+  color: var(--text-soft);
+  border: 1px dashed var(--card-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--card-bg) 80%, transparent);
+}
+
+.empty-tables-hint strong {
+  color: var(--accent);
+}

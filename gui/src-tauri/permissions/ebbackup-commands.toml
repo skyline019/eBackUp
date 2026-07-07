@@ -1,0 +1,30 @@
+[[permission]]
+identifier = "ebbackup-commands"
+description = "ebbackup Workbench application invoke commands"
+commands.allow = [
+  "runtime_info",
+  "init_repo",
+  "open_repo",
+  "close_repo",
+  "repo_info",
+  "list_snapshots",
+  "run_backup",
+  "run_restore",
+  "verify_repo",
+  "recover_repo",
+  "compact_repo",
+  "gc_orphans",
+  "prune_snapshots",
+  "set_password",
+  "load_filter_file",
+  "last_error",
+  "get_backup_stats",
+  "sync_runtime_binaries",
+  "pick_directory",
+  "pick_file",
+  "path_exists",
+  "get_ui_settings",
+  "set_ui_settings",
+  "ui_settings_path",
+  "ui_settings_exists",
+]

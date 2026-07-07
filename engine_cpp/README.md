@@ -218,3 +218,13 @@ Both modes use **commit-point** semantics: chunk data is fsync'd before manifest
 | `balanced` | 16 MiB / 64 records | Larger packs, fewer spill syscalls |
 
 Persistent chunk index (`chunk.idx`) is written once at backup completion (not per chunk).
+
+## Desktop Workbench (optional)
+
+CMake target **`ebbackup_workbench`** builds a SHARED DLL with JSON shim for the Tauri GUI:
+
+```powershell
+cmake --build build --config Release --target ebbackup_workbench
+```
+
+Full documentation: [`docs/product/WORKBENCH_GUI.md`](../docs/product/WORKBENCH_GUI.md) · quick start: [`gui/README.md`](../gui/README.md).

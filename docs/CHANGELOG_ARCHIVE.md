@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.9.5 — 2026-07-07
+
+### Added — Desktop Workbench GUI (`gui/`)
+
+- **Tauri 2 + Vue 3** 桌面工作台：仓库 / 备份 / 快照 / 恢复 / 验证 / 维护 六个 Activity
+- **`ebbackup_workbench` SHARED DLL** + JSON shim（`engine_cpp/workbench/`）封装 C API
+- **Rust 集成测试** `gui/src-tauri/tests/workbench_integration.rs`（`npm run test:rust`）
+- **Release 打包** NSIS 安装包 + 便携 exe（`npm run build:desktop`）
+- **UI 设置持久化**、壁纸模式、工作区卡片 / 输出面板 **5%–100% 透明度调节器**
+- **扩展 shim API**：`runtime_info`、`last_error`、`get_backup_stats`
+
+### Fixed — Workbench 配套引擎/GUI
+
+- **`ComputeRepoStats`**：空仓库（无 manifest、`txn_id=0`）返回零统计，修复 `repo_info` 报错
+- **备份页**：源路径存在性校验、空仓库自动全量、中文错误提示
+- **透明度**：预计算 `--workspace-card-surface` / `--log-panel-surface`，壁纸模式下父层透底
+
+### Docs
+
+- 正式归档 [`docs/product/WORKBENCH_GUI.md`](docs/product/WORKBENCH_GUI.md)
+- 工程技术手册 / 生态实录补充 Workbench 生态位说明
+
 ## v0.9.4 — 2026-07-07
 
 ### Added — Sprint 4 CDC dual-path + gear seg1 bulk scan

@@ -1,0 +1,182 @@
+<script setup lang="ts">
+import { computed } from "vue";
+import { useUiStore } from "@/stores/uiStore";
+import type { LogKind } from "@/stores/uiStore";
+import OpacityRegulator from "@/components/OpacityRegulator.vue";
+
+const ui = useUiStore();
+
+const tabs = [
+  { id: "messages" as const, label: "消息" },
+  { id: "results" as const, label: "结果" },
+  { id: "audit" as const, label: "审计链" },
+  { id: "task" as const, label: "任务" },
+];
+
+const visibleLogs = computed(() => [...ui.visibleLogs].reverse().slice(0, 200));
+
+const filterOptions: { value: "all" | LogKind; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: "cmd", label: "命令" },
+  { value: "success", label: "成功" },
+  { value: "error", label: "错误" },
+  { value: "meta", label: "系统" },
+];
+</script>
+
+<template>
+  <section class="output-panel console" :class="{ collapsed: ui.settings.logCollapsed }">
+    <header class="output-header console-header">
+      <div class="output-tabs">
+        <button
+          v-for="t in tabs"
+          :key="t.id"
+          type="button"
+          class="output-tab"
+          :class="{ active: ui.outputTab === t.id }"
+          @click="ui.outputTab = t.id"
+        >
+          {{ t.label }}
+        </button>
+      </div>
+      <div class="console-toolbar">
+        <template v-if="ui.outputTab === 'messages'">
+          <el-select v-model="ui.logFilterKind" size="small" style="width: 88px">
+            <el-option
+              v-for="o in filterOptions"
+              :key="o.value"
+              :label="o.label"
+              :value="o.value"
+            />
+          </el-select>
+          <el-input
+            v-model="ui.logKeyword"
+            size="small"
+            placeholder="筛选日志"
+            clearable
+            style="width: 140px"
+          />
+          <el-button size="small" text @click="ui.clearLogs()">清空</el-button>
+        </template>
+        <span class="console-shortcuts">Ctrl+J 折叠 · F1 帮助</span>
+        <OpacityRegulator
+          class="output-opacity-regulator"
+          setting-key="logPanelOpacity"
+          label="输出"
+          compact
+        />
+        <el-button size="small" text @click="ui.toggleLogCollapsed()">
+          {{ ui.settings.logCollapsed ? "展开" : "折叠" }}
+        </el-button>
+      </div>
+    </header>
+    <div v-if="!ui.settings.logCollapsed" class="output-body">
+      <div v-if="ui.outputTab === 'messages'" class="log-list">
+        <div
+          v-for="(ln, i) in visibleLogs"
+          :key="i"
+          class="log-line"
+          :class="`kind-${ln.kind}`"
+        >
+          <span class="log-time">{{ ln.time }}</span>
+          {{ ln.text }}
+        </div>
+        <p v-if="!visibleLogs.length" class="muted">暂无消息</p>
+      </div>
+      <pre v-else-if="ui.outputTab === 'results'" class="json-pane">{{
+        ui.lastResultJson || "（无任务结果）"
+      }}</pre>
+      <pre v-else-if="ui.outputTab === 'audit'" class="json-pane">{{
+        ui.lastAuditJson || "（无审计数据）"
+      }}</pre>
+      <pre v-else class="json-pane">{{ ui.lastTaskJson || "（无任务详情）" }}</pre>
+    </div>
+  </section>
+</template>
+
+<style scoped>
+.output-panel {
+  border-top: 1px solid var(--shell-line);
+  background: var(--log-panel-surface, rgba(7, 14, 31, 0.88));
+  min-height: 140px;
+  max-height: 280px;
+  display: flex;
+  flex-direction: column;
+}
+.output-panel.collapsed {
+  min-height: 36px;
+  max-height: 36px;
+}
+.output-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: transparent;
+}
+.output-tabs {
+  display: flex;
+  gap: 4px;
+}
+.output-tab {
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.output-tab.active {
+  background: var(--active-bg);
+  color: var(--accent);
+}
+.output-body {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 12px;
+  font-size: 12px;
+  background: transparent;
+}
+.log-list {
+  font-family: var(--log-font-family, monospace);
+}
+.log-line {
+  padding: 2px 0;
+  color: var(--text-regular);
+}
+.log-time {
+  opacity: 0.6;
+  margin-right: 8px;
+}
+.kind-error {
+  color: #fca5a5;
+}
+.kind-success {
+  color: #86efac;
+}
+.kind-cmd {
+  color: #93c5fd;
+}
+.json-pane {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-regular);
+  font-family: var(--log-font-family, monospace);
+}
+.muted {
+  color: var(--text-soft);
+}
+.console-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.console-shortcuts {
+  font-size: 11px;
+  color: var(--text-soft);
+}
+</style>

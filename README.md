@@ -10,6 +10,7 @@ The primary implementation lives in [`engine_cpp/`](engine_cpp/).
 | Path | Purpose |
 |------|---------|
 | [`engine_cpp/`](engine_cpp/) | Backup kernel, CLI (`eb`), tests, and product manual |
+| [`gui/`](gui/) | Desktop Workbench (Tauri 2 + Vue 3) — optional GUI entry |
 | [`docs/`](docs/) | Technical archive: version history, architecture, perf baseline (v0.1–v0.9+) |
 | [`gtest_capi/`](gtest_capi/) | Bundled GoogleTest for CI and local builds |
 | [`.github/workflows/ebbackup.yml`](.github/workflows/ebbackup.yml) | Windows + Linux CI (build + ctest) |
@@ -36,6 +37,7 @@ e:\recoveryProjects\build\engine_cpp\Release\ebbackup_tests.exe
 
 - **Technical archive (v0.1–v0.9.4)**: [`docs/README.md`](docs/README.md)
 - Engine, CLI, filters, encryption: [`engine_cpp/README.md`](engine_cpp/README.md)
+- Desktop Workbench（完整归档）: [`docs/product/WORKBENCH_GUI.md`](docs/product/WORKBENCH_GUI.md) · 快速入口: [`gui/README.md`](gui/README.md)
 - Performance baseline (L1–L7) and CI bench gate: [`docs/reference/PERF_BASELINE.md`](docs/reference/PERF_BASELINE.md)
 - Release / ABI notes: [`CHANGELOG.md`](CHANGELOG.md)
 
@@ -51,3 +53,12 @@ eb restore ./repo ./dest --at 42
 ```
 
 See [`engine_cpp/README.md`](engine_cpp/README.md) for selective restore, time-travel snapshots, `--verify-content`, and schedule/watch commands.
+
+## Desktop GUI
+
+```powershell
+cmake --build e:\recoveryProjects\build --config Release --target ebbackup_workbench
+cd e:\recoveryProjects\gui
+npm install
+npm run tauri:dev
+```

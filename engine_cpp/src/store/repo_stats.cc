@@ -28,18 +28,42 @@ Status ComputeRepoStats(const std::string& repo_path, RepoStats* out) {
   *out = RepoStats{};
 
   const std::string manifest_path = RepoJoin(repo_path, "manifest");
-  if (std::filesystem::exists(manifest_path)) {
-    out->manifest_bytes = std::filesystem::file_size(manifest_path);
-  }
-
-  ManifestDocument doc;
-  const Status rd = ReadManifestAuto(manifest_path, &doc);
-  if (!rd.ok()) return rd;
+  const bool has_manifest = std::filesystem::exists(manifest_path);
 
   BackupSuperBlockStore sb_store(RepoJoin(repo_path, "superblock.bin"));
   BackupSuperBlock sb{};
   const Status sb_st = sb_store.Load(&sb);
   if (!sb_st.ok()) return sb_st;
+
+  if (!has_manifest) {
+    if (sb.critical.txn_id != 0) {
+      return Status::IoError("cannot open manifest: " + manifest_path);
+    }
+    ChunkStore store(RepoJoin(repo_path, "data/chunks"));
+    if (RepoUsesPersistentIndex(sb)) {
+      store.SetUsePersistentIndex(true);
+    }
+    if (RepoUsesEbPack(sb)) {
+      store.SetUseEbPack(true);
+    }
+    const Status open_st = store.Open();
+    if (open_st.ok()) {
+      out->physical_bytes = store.PhysicalBytes();
+      out->unique_chunks = store.record_count();
+      out->tombstoned_chunks = store.tombstone_count();
+      if (out->physical_bytes > 0) {
+        out->orphan_bytes = out->physical_bytes;
+      }
+    }
+    out->ampl_ratio = 1.0;
+    return Status::Ok();
+  }
+
+  out->manifest_bytes = std::filesystem::file_size(manifest_path);
+
+  ManifestDocument doc;
+  const Status rd = ReadManifestAuto(manifest_path, &doc);
+  if (!rd.ok()) return rd;
 
   ChunkStore store(RepoJoin(repo_path, "data/chunks"));
   if (RepoUsesPersistentIndex(sb)) {

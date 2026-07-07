@@ -1,0 +1,60 @@
+@font-face {
+  font-family: "JetBrainsMonoNL NF";
+  src: url("/fonts/JetBrainsMonoNLNerdFont-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrainsMonoNL NF";
+  src: url("/fonts/JetBrainsMonoNLNerdFont-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrainsMonoNL NF";
+  src: url("/fonts/JetBrainsMonoNLNerdFont-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrainsMonoNL NF";
+  src: url("/fonts/JetBrainsMonoNLNerdFont-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrainsMonoNL NF";
+  src: url("/fonts/JetBrainsMonoNLNerdFont-BoldItalic.ttf") format("truetype");
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "ProggyClean Nerd Font Mono";
+  src: url("/fonts/ProggyCleanNerdFontMono-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --font-ui: "JetBrainsMonoNL NF", "JetBrains Mono", "Microsoft YaHei", "Segoe UI", monospace;
+  --font-mono: "JetBrainsMonoNL NF", "JetBrains Mono", Consolas, monospace;
+  --font-log: "ProggyClean Nerd Font Mono", "ProggyClean", Consolas, monospace;
+}
+
+.log-line,
+.logs,
+.command-output-box,
+.review-log-pane {
+  font-family: var(--font-log) !important;
+}
