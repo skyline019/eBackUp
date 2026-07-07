@@ -3,6 +3,7 @@
 #include <chrono>
 #include <filesystem>
 
+#include "ebbackup/common/path_encoding.h"
 #include "ebbackup/common/path_util.h"
 
 #ifndef _WIN32
@@ -79,11 +80,12 @@ Status ScanDirectory(const std::string& source_root,
   out->clear();
   std::error_code ec;
   const auto options = std::filesystem::directory_options::skip_permission_denied;
+  const auto root = PathFromUtf8(source_root);
   for (const auto& entry :
-       std::filesystem::recursive_directory_iterator(source_root, options, ec)) {
+       std::filesystem::recursive_directory_iterator(root, options, ec)) {
     if (ec) return Status::IoError("scan failed: " + ec.message());
     ScanEntry item{};
-    item.absolute_path = entry.path().string();
+    item.absolute_path = PathToUtf8(entry.path());
     const Status rel_st =
         RelativePathFromRoot(source_root, item.absolute_path, &item.relative_path);
     if (!rel_st.ok()) return rel_st;
@@ -93,7 +95,7 @@ Status ScanDirectory(const std::string& source_root,
     if (item.type == FileType::kSymlink) {
       std::error_code lec;
       item.symlink_target =
-          std::filesystem::read_symlink(entry.path(), lec).string();
+          PathToUtf8(std::filesystem::read_symlink(entry.path(), lec));
       if (lec) return Status::IoError("read symlink failed: " + item.absolute_path);
       item.size = item.symlink_target.size();
     } else if (item.type == FileType::kDirectory) {

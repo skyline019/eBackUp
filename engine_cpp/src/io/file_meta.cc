@@ -2,6 +2,8 @@
 
 #include <filesystem>
 
+#include "ebbackup/common/path_encoding.h"
+
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -17,7 +19,8 @@ Status ApplyFileMeta(const std::string& path, const ManifestFileEntry& entry) {
     return Status::Ok();
   }
 #ifdef _WIN32
-  DWORD attrs = GetFileAttributesA(path.c_str());
+  const std::wstring wide = Utf8ToWide(path);
+  DWORD attrs = GetFileAttributesW(wide.c_str());
   if (attrs == INVALID_FILE_ATTRIBUTES) {
     return Status::IoError("GetFileAttributes failed: " + path);
   }
@@ -28,12 +31,12 @@ Status ApplyFileMeta(const std::string& path, const ManifestFileEntry& entry) {
     } else {
       attrs &= ~FILE_ATTRIBUTE_READONLY;
     }
-    if (!SetFileAttributesA(path.c_str(), attrs)) {
+    if (!SetFileAttributesW(wide.c_str(), attrs)) {
       return Status::IoError("SetFileAttributes failed: " + path);
     }
   }
   if (entry.mtime_unix != 0) {
-    HANDLE h = CreateFileA(path.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ,
+    HANDLE h = CreateFileW(wide.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ,
                            nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS,
                            nullptr);
     if (h == INVALID_HANDLE_VALUE) {

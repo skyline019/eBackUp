@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <thread>
 
+#include "ebbackup/common/path_encoding.h"
+
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -52,7 +54,8 @@ FsWatch::~FsWatch() {
 
 Status FsWatch::Open() {
 #ifdef _WIN32
-  HANDLE h = CreateFileA(path_.c_str(), FILE_LIST_DIRECTORY,
+  const std::wstring wide = Utf8ToWide(path_);
+  HANDLE h = CreateFileW(wide.c_str(), FILE_LIST_DIRECTORY,
                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                          nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
   if (h == INVALID_HANDLE_VALUE) {

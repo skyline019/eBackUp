@@ -19,6 +19,7 @@ set(EBBACKUP_CORE_SOURCES
   src/common/digest_sha_ni.cc
   src/common/digest_pool.cc
   src/common/fsync.cc
+  src/common/path_encoding.cc
   src/chunk/fast_cdc.cc
   src/chunk/fast_cdc_simd.cc
   src/chunk/cfi_bloom.cc

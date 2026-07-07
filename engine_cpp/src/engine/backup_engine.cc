@@ -15,6 +15,7 @@
 #include "ebbackup/codec/content_class.h"
 #include "ebbackup/common/digest.h"
 #include "ebbackup/common/fsync.h"
+#include "ebbackup/common/path_encoding.h"
 #include "ebbackup/common/path_util.h"
 #include "ebbackup/crypto/aes_gcm.h"
 #include "ebbackup/engine/restore_engine.h"
@@ -29,7 +30,7 @@ namespace ebbackup {
 namespace {
 
 std::string RepoJoin(const std::string& repo, const std::string& name) {
-  return (std::filesystem::path(repo) / name).string();
+  return PathToUtf8(PathFromUtf8(repo) / PathFromUtf8(name));
 }
 
 std::vector<uint8_t> ReadFileBytes(const std::string& path) {
@@ -37,7 +38,7 @@ std::vector<uint8_t> ReadFileBytes(const std::string& path) {
   if (reader.Open(path).ok()) {
     return std::vector<uint8_t>(reader.data(), reader.data() + reader.size());
   }
-  std::ifstream in(path, std::ios::binary);
+  std::ifstream in(PathFromUtf8(path), std::ios::binary);
   return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
                               std::istreambuf_iterator<char>());
 }
@@ -61,7 +62,7 @@ void PopulateAnchorChecksums(const uint8_t* data, size_t len, CfiIndex* cfi) {
 
 Status ReadManifestBodyCrc32FromFile(const std::string& path, uint32_t* out) {
   if (!out) return Status::InvalidArgument("out is null");
-  std::ifstream in(path, std::ios::binary);
+  std::ifstream in(PathFromUtf8(path), std::ios::binary);
   if (!in) return Status::IoError("cannot open manifest: " + path);
   std::string header;
   if (!std::getline(in, header)) return Status::Corrupt("empty manifest");
@@ -180,9 +181,9 @@ Status BackupEngine::InitRepo(const std::string& repo_path,
 Status BackupEngine::InitRepoEx(const std::string& repo_path,
                                 const RepoInitOptions& options) {
   std::error_code ec;
-  std::filesystem::create_directories(RepoJoin(repo_path, "data"), ec);
+  std::filesystem::create_directories(PathFromUtf8(RepoJoin(repo_path, "data")), ec);
   if (ec) return Status::IoError("cannot create repo data dir");
-  std::filesystem::create_directories(RepoJoin(repo_path, "audit"), ec);
+  std::filesystem::create_directories(PathFromUtf8(RepoJoin(repo_path, "audit")), ec);
   if (ec) return Status::IoError("cannot create repo audit dir");
   BackupSuperBlockStore sb_store(RepoJoin(repo_path, "superblock.bin"));
   BackupSuperBlock sb{};
@@ -203,7 +204,7 @@ Status BackupEngine::InitRepoEx(const std::string& repo_path,
   }
   if (options.ebpack) {
     sb.ext.backup_features |= kBackupFeatureEbPack;
-    std::filesystem::create_directories(RepoJoin(repo_path, "data/packs"), ec);
+    std::filesystem::create_directories(PathFromUtf8(RepoJoin(repo_path, "data/packs")), ec);
     if (ec) return Status::IoError("cannot create repo packs dir");
   }
   if (options.coalesced_meta) {
@@ -763,7 +764,7 @@ Status BackupEngine::VerifyManifestDocument(const ManifestDocument& doc,
 
 Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
                                const BackupOptions& options) {
-  if (!std::filesystem::exists(source_path)) {
+  if (!std::filesystem::exists(PathFromUtf8(source_path))) {
     return Status::NotFound("source path not found");
   }
   if (mode == BackupMode::kIncremental) {

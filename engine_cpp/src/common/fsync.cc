@@ -2,6 +2,8 @@
 
 #include <cstdio>
 
+#include "ebbackup/common/path_encoding.h"
+
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
@@ -15,11 +17,12 @@ namespace ebbackup {
 
 Status FsyncPath(const std::string& path) {
 #ifdef _WIN32
+  const std::wstring wide = Utf8ToWide(path);
   int fd = -1;
-  if (_sopen_s(&fd, path.c_str(), _O_RDWR | _O_BINARY, _SH_DENYNO,
-               _S_IREAD | _S_IWRITE) != 0) {
-    if (_sopen_s(&fd, path.c_str(), _O_RDONLY | _O_BINARY, _SH_DENYNO,
-                 _S_IREAD) != 0) {
+  if (_wsopen_s(&fd, wide.c_str(), _O_RDWR | _O_BINARY, _SH_DENYNO,
+                _S_IREAD | _S_IWRITE) != 0) {
+    if (_wsopen_s(&fd, wide.c_str(), _O_RDONLY | _O_BINARY, _SH_DENYNO,
+                  _S_IREAD) != 0) {
       return Status::IoError("cannot open for fsync: " + path);
     }
   }

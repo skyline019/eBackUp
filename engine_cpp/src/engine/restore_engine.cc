@@ -14,6 +14,7 @@
 #include "ebbackup/audit/merkle.h"
 #include "ebbackup/common/digest.h"
 #include "ebbackup/common/fsync.h"
+#include "ebbackup/common/path_encoding.h"
 #include "ebbackup/common/path_util.h"
 #include "ebbackup/crypto/aes_gcm.h"
 #include "ebbackup/engine/manifest.h"
@@ -26,7 +27,7 @@ namespace ebbackup {
 namespace {
 
 std::string RepoJoin(const std::string& repo, const std::string& name) {
-  return (std::filesystem::path(repo) / name).string();
+  return PathToUtf8(PathFromUtf8(repo) / PathFromUtf8(name));
 }
 
 int FileTypeOrder(FileType type) {
@@ -46,7 +47,7 @@ Status RestoreEngine::SetupEncryption(const RestoreOptions& options) {
     return Status::InvalidArgument("encrypted repo requires password");
   }
   uint8_t salt[16];
-  std::ifstream in(salt_path, std::ios::binary);
+  std::ifstream in(PathFromUtf8(salt_path), std::ios::binary);
   if (!in) return Status::IoError("cannot open salt");
   in.read(reinterpret_cast<char*>(salt), 16);
   if (!in) return Status::Corrupt("salt read short");
@@ -61,7 +62,7 @@ Status RestoreEngine::SetupEncryption(const RestoreOptions& options) {
 Status RestoreEngine::RestoreEntry(const std::filesystem::path& dest_root,
                                    const ManifestFileEntry& file) {
   const std::string rel = NormalizeRepoPath(file.relative_path);
-  const std::filesystem::path out_path = dest_root / rel;
+  const std::filesystem::path out_path = dest_root / PathFromUtf8(rel);
   std::error_code ec;
 
   if (file.file_type == FileType::kDirectory) {
@@ -69,7 +70,7 @@ Status RestoreEngine::RestoreEntry(const std::filesystem::path& dest_root,
     if (ec) {
       return Status::IoError("cannot create directory: " + ec.message());
     }
-    return ApplyFileMeta(out_path.string(), file);
+    return ApplyFileMeta(PathToUtf8(out_path), file);
   }
 
   std::filesystem::create_directories(out_path.parent_path(), ec);
@@ -81,11 +82,11 @@ Status RestoreEngine::RestoreEntry(const std::filesystem::path& dest_root,
     if (std::filesystem::exists(out_path, ec)) {
       std::filesystem::remove(out_path, ec);
     }
-    std::filesystem::create_symlink(file.symlink_target, out_path, ec);
+    std::filesystem::create_symlink(PathFromUtf8(file.symlink_target), out_path, ec);
     if (ec) {
       return Status::IoError("symlink restore failed: " + ec.message());
     }
-    return ApplyFileMeta(out_path.string(), file);
+    return ApplyFileMeta(PathToUtf8(out_path), file);
   }
 
 #ifndef _WIN32
@@ -108,7 +109,7 @@ Status RestoreEngine::RestoreEntry(const std::filesystem::path& dest_root,
         return Status::IoError("mknod failed: " + out_path.string());
       }
     }
-    return ApplyFileMeta(out_path.string(), file);
+    return ApplyFileMeta(PathToUtf8(out_path), file);
   }
 #else
   if (file.file_type == FileType::kFifo || file.file_type == FileType::kBlock ||
@@ -142,9 +143,9 @@ Status RestoreEngine::RestoreEntry(const std::filesystem::path& dest_root,
   if (total != file.size) {
     return Status::Corrupt("restored size mismatch for " + rel);
   }
-  const Status fs = FsyncPath(out_path.string());
+  const Status fs = FsyncPath(PathToUtf8(out_path));
   if (!fs.ok()) return fs;
-  return ApplyFileMeta(out_path.string(), file);
+  return ApplyFileMeta(PathToUtf8(out_path), file);
 }
 
 Status RestoreEngine::RunRestore(const std::string& dest_path,
@@ -163,7 +164,7 @@ Status RestoreEngine::RunRestore(const std::string& dest_path,
   if (!rd.ok()) return rd;
 
   std::error_code ec;
-  std::filesystem::create_directories(dest_path, ec);
+  std::filesystem::create_directories(PathFromUtf8(dest_path), ec);
   if (ec) return Status::IoError("cannot create dest: " + ec.message());
 
   std::vector<ManifestFileEntry> files = doc.files;
@@ -203,7 +204,7 @@ Status RestoreEngine::RunRestore(const std::string& dest_path,
                      return a.relative_path < b.relative_path;
                    });
 
-  const std::filesystem::path dest_root(dest_path);
+  const std::filesystem::path dest_root = PathFromUtf8(dest_path);
   for (const auto& file : files) {
     const Status st = RestoreEntry(dest_root, file);
     if (!st.ok()) return st;

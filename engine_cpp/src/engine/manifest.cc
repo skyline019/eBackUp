@@ -9,6 +9,7 @@
 #include "ebbackup/common/crc32.h"
 #include "ebbackup/common/digest.h"
 #include "ebbackup/common/fsync.h"
+#include "ebbackup/common/path_encoding.h"
 
 namespace ebbackup {
 
@@ -117,7 +118,7 @@ Status WriteManifestWithHeader(const std::string& path, const std::string& heade
   uint32_t crc = 0;
   const Status crc_st = ComputeManifestBodyCrc32(body, &crc);
   if (!crc_st.ok()) return crc_st;
-  std::ofstream out(path, std::ios::binary);
+  std::ofstream out(PathFromUtf8(path), std::ios::binary);
   if (!out) return Status::IoError("cannot write manifest: " + path);
   out << header << "\n";
   out << body;
@@ -443,7 +444,7 @@ Status WriteManifestV4(const std::string& path, const ManifestDocument& doc) {
   uint32_t crc = 0;
   const Status crc_st = ComputeManifestV4BodyCrc32(body, &crc);
   if (!crc_st.ok()) return crc_st;
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  std::ofstream out(PathFromUtf8(path), std::ios::binary | std::ios::trunc);
   if (!out) return Status::IoError("cannot write manifest: " + path);
   out << "EBMANIFEST4\n";
   out.write(reinterpret_cast<const char*>(body.data()),
@@ -474,7 +475,7 @@ Status ReadManifestAuto(const std::string& path, ManifestDocument* out) {
   out->files.clear();
   out->txn_id = 0;
 
-  std::ifstream in(path, std::ios::binary);
+  std::ifstream in(PathFromUtf8(path), std::ios::binary);
   if (!in) return Status::IoError("cannot open manifest: " + path);
   std::string header;
   if (!std::getline(in, header)) return Status::Corrupt("empty manifest");

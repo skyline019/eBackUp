@@ -24,6 +24,7 @@
 #include "ebbackup/codec/lz4_codec.h"
 #include "ebbackup/common/digest.h"
 #include "ebbackup/common/digest_pool.h"
+#include "ebbackup/common/path_encoding.h"
 #include "ebbackup/common/path_util.h"
 #include "ebbackup/crypto/aes_gcm.h"
 #include "ebbackup/io/mmap_reader.h"
@@ -802,7 +803,7 @@ Status ReadOneFileData(const std::string& path, const BackupPipelineOptions& opt
     out->view.use_mmap = true;
     out->view.mmap = std::move(reader);
   } else {
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(PathFromUtf8(path), std::ios::binary);
     if (!file) return Status::IoError("read failed: " + path);
     out->view.owned.assign(std::istreambuf_iterator<char>(file),
                            std::istreambuf_iterator<char>());
@@ -1055,7 +1056,7 @@ void ReaderStage(BoundedQueue<FileInput>* in, BoundedQueue<FileData>* out,
       data.view.use_mmap = true;
       data.view.mmap = std::move(reader);
     } else {
-      std::ifstream file(item.path, std::ios::binary);
+      std::ifstream file(PathFromUtf8(item.path), std::ios::binary);
       if (!file) {
         shared->SetError(Status::IoError("read failed: " + item.path));
         break;

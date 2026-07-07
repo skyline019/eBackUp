@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "ebbackup/common/path_encoding.h"
+
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -54,7 +56,8 @@ MmapReader& MmapReader::operator=(MmapReader&& other) noexcept {
 Status MmapReader::Open(const std::string& path) {
   Close();
 #ifdef _WIN32
-  HANDLE file = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+  const std::wstring wide = Utf8ToWide(path);
+  HANDLE file = CreateFileW(wide.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) {
     return Status::IoError("mmap open failed: " + path);

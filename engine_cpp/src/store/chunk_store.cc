@@ -23,6 +23,7 @@
 #include "ebbackup/codec/zstd_codec.h"
 #include "ebbackup/common/crc32.h"
 #include "ebbackup/common/digest.h"
+#include "ebbackup/common/path_encoding.h"
 #include "ebbackup/common/fsync.h"
 #include "ebbackup/crypto/aes_gcm.h"
 
@@ -106,8 +107,8 @@ std::string ChunkStore::TombstonePath() const {
 Status ChunkStore::LoadTombstones() {
   tombstones_.clear();
   const std::string path = TombstonePath();
-  if (!std::filesystem::exists(path)) return Status::Ok();
-  std::ifstream in(path);
+  if (!std::filesystem::exists(PathFromUtf8(path))) return Status::Ok();
+  std::ifstream in(PathFromUtf8(path));
   if (!in) return Status::IoError("cannot open tombstones: " + path);
   std::string line;
   while (std::getline(in, line)) {
@@ -143,7 +144,7 @@ uint64_t ChunkStore::PackFlushRecords() const {
 Status ChunkStore::ReadParsedHeaderAt(uint64_t offset,
                                       ParsedHeader* parsed) const {
   if (!parsed) return Status::InvalidArgument("parsed is null");
-  std::ifstream in(path_, std::ios::binary);
+  std::ifstream in(PathFromUtf8(path_), std::ios::binary);
   if (!in) return Status::IoError("cannot open chunk store: " + path_);
   in.seekg(static_cast<std::streamoff>(offset));
 
@@ -239,11 +240,11 @@ Status ChunkStore::LoadIndex() {
   }
   index_entries_.clear();
   file_size_ = 0;
-  if (!use_ebpack_ && !std::filesystem::exists(path_)) {
+  if (!use_ebpack_ && !std::filesystem::exists(PathFromUtf8(path_))) {
     return Status::Ok();
   }
-  if (std::filesystem::exists(path_)) {
-    file_size_ = std::filesystem::file_size(path_);
+  if (std::filesystem::exists(PathFromUtf8(path_))) {
+    file_size_ = std::filesystem::file_size(PathFromUtf8(path_));
   }
   const uint64_t scan_end = file_size_;
 
@@ -389,9 +390,10 @@ Status ChunkStore::EnsureAppendSession() {
   std::filesystem::create_directories(
       std::filesystem::path(path_).parent_path());
 #ifdef _WIN32
-  if (_sopen_s(&append_fd_, path_.c_str(),
-               _O_RDWR | _O_BINARY | _O_CREAT | _O_APPEND, _SH_DENYNO,
-               _S_IREAD | _S_IWRITE) != 0) {
+  const std::wstring wide = Utf8ToWide(path_);
+  if (_wsopen_s(&append_fd_, wide.c_str(),
+                _O_RDWR | _O_BINARY | _O_CREAT | _O_APPEND, _SH_DENYNO,
+                _S_IREAD | _S_IWRITE) != 0) {
     append_fd_ = -1;
     return Status::IoError("cannot open chunk store for append: " + path_);
   }
@@ -438,7 +440,7 @@ Status ChunkStore::WriteBufferToSession(bool fsync_after) {
   if (write_buffer_.empty()) return Status::Ok();
 
   if (append_fd_ < 0) {
-    std::ofstream out(path_, std::ios::binary | std::ios::app);
+    std::ofstream out(PathFromUtf8(path_), std::ios::binary | std::ios::app);
     if (!out) return Status::IoError("cannot flush chunk buffer");
     out.write(reinterpret_cast<const char*>(write_buffer_.data()),
               static_cast<std::streamsize>(write_buffer_.size()));
@@ -714,7 +716,7 @@ Status ChunkStore::ReadEbPackRecordAt(const std::string& pack_path,
                                       uint64_t offset, ParsedHeader* parsed,
                                       std::vector<uint8_t>* payload) {
   if (!parsed) return Status::InvalidArgument("parsed is null");
-  std::ifstream in(pack_path, std::ios::binary);
+  std::ifstream in(PathFromUtf8(pack_path), std::ios::binary);
   if (!in) return Status::IoError("cannot open ebpack: " + pack_path);
 
   EbPackHeader hdr{};
@@ -745,7 +747,7 @@ Status ChunkStore::ReadRecordAt(uint64_t offset, ParsedHeader* parsed,
   const Status hdr_st = ReadParsedHeaderAt(offset, parsed);
   if (!hdr_st.ok()) return hdr_st;
   if (!payload) return Status::Ok();
-  std::ifstream in(path_, std::ios::binary);
+  std::ifstream in(PathFromUtf8(path_), std::ios::binary);
   if (!in) return Status::IoError("cannot open chunk store: " + path_);
   in.seekg(static_cast<std::streamoff>(offset + parsed->header_size));
   payload->resize(parsed->header.stored_len);
@@ -886,7 +888,7 @@ Status ChunkStore::TombstoneHash(const uint8_t hash[32]) {
     if (tombstones_.count(key) > 0) return Status::Ok();
     tombstones_.insert(key);
   }
-  std::ofstream out(TombstonePath(), std::ios::app);
+  std::ofstream out(PathFromUtf8(TombstonePath()), std::ios::app);
   if (!out) return Status::IoError("cannot append tombstone");
   out << BytesToHex(hash, 32) << "\n";
   out.flush();

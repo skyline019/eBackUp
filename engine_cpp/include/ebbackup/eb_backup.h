@@ -7,6 +7,9 @@
 extern "C" {
 #endif
 
+/* All path arguments (repo_path, source_path, dest_path, filter paths, etc.)
+ * are UTF-8 encoded, without embedded NUL bytes. */
+
 #define EB_BACKUP_ABI_VERSION 12u
 
 #define EB_BACKUP_FLAG_LZ4 0x0001u

@@ -6,6 +6,7 @@
 #include <fstream>
 
 #include "ebbackup/common/digest.h"
+#include "ebbackup/common/path_encoding.h"
 
 namespace ebbackup {
 namespace audit {
@@ -119,7 +120,7 @@ Status VerifyRestoredFileChunks(const std::string& restored_path,
                                 const ManifestFileEntry& manifest,
                                 ChunkStore* store) {
   if (!store) return Status::InvalidArgument("store is null");
-  std::ifstream in(restored_path, std::ios::binary);
+  std::ifstream in(PathFromUtf8(restored_path), std::ios::binary);
   if (!in) return Status::IoError("cannot read restored file: " + restored_path);
   size_t offset = 0;
   for (const auto& hex : manifest.chunk_hashes_hex) {
@@ -167,8 +168,8 @@ Status ComputeMerkleRootFromRestoredFiles(
   for (const auto& file : sorted) {
     if (file.file_type != FileType::kRegular) continue;
     if (file.chunk_hashes_hex.empty()) continue;
-    const std::string path =
-        (std::filesystem::path(dest_root) / file.relative_path).string();
+    const std::string path = PathToUtf8(PathFromUtf8(dest_root) /
+                                        PathFromUtf8(file.relative_path));
     const Status verify_st = VerifyRestoredFileChunks(path, file, store);
     if (!verify_st.ok()) return verify_st;
     for (const auto& hex : file.chunk_hashes_hex) {

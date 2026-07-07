@@ -4,6 +4,8 @@
 #include <cstring>
 #include <filesystem>
 
+#include "ebbackup/common/path_encoding.h"
+
 namespace ebbackup {
 
 namespace {
@@ -45,7 +47,8 @@ void BackupSuperBlockStore::FinalizeCritical(BackupSuperBlock* block) {
 }
 
 Status BackupSuperBlockStore::ReadSlot(int slot, BackupSuperBlock* out) {
-  std::ifstream in(path_, std::ios::binary);
+  const auto fs_path = PathFromUtf8(path_);
+  std::ifstream in(fs_path, std::ios::binary);
   if (!in) {
     return Status::IoError("cannot open superblock: " + path_);
   }
@@ -68,11 +71,11 @@ Status BackupSuperBlockStore::ReadSlot(int slot, BackupSuperBlock* out) {
 }
 
 Status BackupSuperBlockStore::WriteSlot(int slot, const BackupSuperBlock& block) {
-  std::filesystem::create_directories(
-      std::filesystem::path(path_).parent_path());
-  std::fstream io(path_, std::ios::binary | std::ios::in | std::ios::out);
+  const auto fs_path = PathFromUtf8(path_);
+  std::filesystem::create_directories(fs_path.parent_path());
+  std::fstream io(fs_path, std::ios::binary | std::ios::in | std::ios::out);
   if (!io) {
-    std::ofstream create(path_, std::ios::binary);
+    std::ofstream create(fs_path, std::ios::binary);
     if (!create) {
       return Status::IoError("cannot create superblock: " + path_);
     }
@@ -80,7 +83,7 @@ Status BackupSuperBlockStore::WriteSlot(int slot, const BackupSuperBlock& block)
     create.write(reinterpret_cast<const char*>(&zero), kBackupSuperBlockSize);
     create.write(reinterpret_cast<const char*>(&zero), kBackupSuperBlockSize);
     create.close();
-    io.open(path_, std::ios::binary | std::ios::in | std::ios::out);
+    io.open(fs_path, std::ios::binary | std::ios::in | std::ios::out);
   }
   io.seekp(static_cast<std::streamoff>(slot) * kBackupSuperBlockSize);
   io.write(reinterpret_cast<const char*>(&block), kBackupSuperBlockSize);
@@ -93,7 +96,7 @@ Status BackupSuperBlockStore::WriteSlot(int slot, const BackupSuperBlock& block)
 }
 
 Status BackupSuperBlockStore::Load(BackupSuperBlock* out) {
-  if (!std::filesystem::exists(path_)) {
+  if (!std::filesystem::exists(PathFromUtf8(path_))) {
     *out = BackupSuperBlock{};
     return Status::Ok();
   }
@@ -139,14 +142,15 @@ Status BackupSuperBlockStore::CorruptSlotForTest(int slot) {
 }
 
 Status BackupSuperBlockStore::CorruptOuterCrcForTest(int slot) {
-  std::ifstream in(path_, std::ios::binary);
+  const auto fs_path = PathFromUtf8(path_);
+  std::ifstream in(fs_path, std::ios::binary);
   if (!in) return Status::IoError("cannot open superblock");
   BackupSuperBlock block{};
   in.seekg(static_cast<std::streamoff>(slot) * kBackupSuperBlockSize);
   in.read(reinterpret_cast<char*>(&block), kBackupSuperBlockSize);
   if (!in) return Status::IoError("superblock read short");
   block.block_crc32 ^= 0xFFFFFFFFu;
-  std::fstream io(path_, std::ios::binary | std::ios::in | std::ios::out);
+  std::fstream io(fs_path, std::ios::binary | std::ios::in | std::ios::out);
   if (!io) return Status::IoError("cannot open superblock for corrupt");
   io.seekp(static_cast<std::streamoff>(slot) * kBackupSuperBlockSize);
   io.write(reinterpret_cast<const char*>(&block), kBackupSuperBlockSize);

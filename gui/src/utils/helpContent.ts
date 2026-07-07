@@ -41,6 +41,15 @@ export const HELP_FAQ: HelpSection[] = [
     body: ["空仓库或尚无 manifest 时只能全量。取消「增量备份」或让系统自动切换全量。"],
   },
   {
+    id: "unicode-path",
+    title: "中文或含空格的路径",
+    body: [
+      "源目录、仓库目录、恢复目标均支持中文与空格（UTF-8）。",
+      "请用「浏览」选择路径，避免从资源管理器复制后乱码。",
+      "与 CLI 共用引擎：路径字符串统一为 UTF-8。",
+    ],
+  },
+  {
     id: "audit-key",
     title: "审计密钥是什么？",
     body: [
