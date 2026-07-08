@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "ebbackup/common/digest.h"
@@ -30,7 +31,9 @@ Status VerifyRestoredFileChunks(const std::string& restored_path,
 Status ComputeMerkleRootFromRestoredFiles(
     const std::string& dest_root,
     const std::vector<ManifestFileEntry>& files, ChunkStore* store,
-    uint8_t root_out[32]);
+    uint8_t root_out[32],
+    const std::unordered_map<std::string, std::string>* dest_rel_override =
+        nullptr);
 
 }  // namespace audit
 }  // namespace ebbackup

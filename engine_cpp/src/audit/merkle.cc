@@ -7,6 +7,7 @@
 
 #include "ebbackup/common/digest.h"
 #include "ebbackup/common/path_encoding.h"
+#include "ebbackup/common/path_util.h"
 
 namespace ebbackup {
 namespace audit {
@@ -157,7 +158,8 @@ Status VerifyRestoredFileChunks(const std::string& restored_path,
 Status ComputeMerkleRootFromRestoredFiles(
     const std::string& dest_root,
     const std::vector<ManifestFileEntry>& files, ChunkStore* store,
-    uint8_t root_out[32]) {
+    uint8_t root_out[32],
+    const std::unordered_map<std::string, std::string>* dest_rel_override) {
   if (!store) return Status::InvalidArgument("store is null");
   std::vector<std::string> leaf_hex;
   std::vector<ManifestFileEntry> sorted = files;
@@ -168,8 +170,13 @@ Status ComputeMerkleRootFromRestoredFiles(
   for (const auto& file : sorted) {
     if (file.file_type != FileType::kRegular) continue;
     if (file.chunk_hashes_hex.empty()) continue;
-    const std::string path = PathToUtf8(PathFromUtf8(dest_root) /
-                                        PathFromUtf8(file.relative_path));
+    std::string rel = NormalizeRepoPath(file.relative_path);
+    if (dest_rel_override) {
+      const auto it = dest_rel_override->find(rel);
+      if (it == dest_rel_override->end()) continue;
+      rel = it->second;
+    }
+    const std::string path = PathToUtf8(PathFromUtf8(dest_root) / PathFromUtf8(rel));
     const Status verify_st = VerifyRestoredFileChunks(path, file, store);
     if (!verify_st.ok()) return verify_st;
     for (const auto& hex : file.chunk_hashes_hex) {

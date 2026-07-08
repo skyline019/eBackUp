@@ -25,3 +25,11 @@ npm run tauri:dev
 | `npm run test:rust` | DLL JSON shim 集成测试 |
 | `npm run sync:runtime` | 同步 `ebbackup_workbench.dll` |
 | `npm run sync:fonts` | 从 eB-Tree 同步字体 |
+
+## 多 Profile（Wave O+）
+
+桌面版在 Ribbon 提供 Profile 切换：每个 Profile 在 `%AppData%/…/profiles/<id>/` 下独立保存 `settings.json`（主题/壁纸/告警）与 `state.json`（最近仓库、上次源路径）。切换 Profile 会关闭当前仓库并加载对应设置。
+
+## 垂直插件（Wave P / ABI v27）
+
+备份页「高级选项」与作业编辑支持勾选 `sqlite_checkpoint`、`registry_hive`（Win）、`vhdx_scan`（Win）。作业级插件保存在 `jobs.json` 的 `plugins` 字段。

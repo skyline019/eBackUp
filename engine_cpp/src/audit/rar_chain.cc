@@ -5,6 +5,7 @@
 #include <fstream>
 #include <sstream>
 
+#include "ebbackup/audit/rar_sign.h"
 #include "ebbackup/common/crc32.h"
 #include "ebbackup/common/digest.h"
 #include "ebbackup/common/fsync.h"
@@ -243,6 +244,95 @@ uint64_t RarChainNextSequence(const std::string& chain_path) {
     return 1;
   }
   return last.sequence + 1;
+}
+
+namespace {
+
+std::string TrimPayloadJson(const std::string& payload_json) {
+  size_t start = payload_json.find_first_not_of(" \t\r\n");
+  if (start == std::string::npos) return {};
+  size_t end = payload_json.find_last_not_of(" \t\r\n");
+  return payload_json.substr(start, end - start + 1);
+}
+
+bool IsOpsBody(const std::string& body_json) {
+  return body_json.find("\"kind\":\"ops\"") != std::string::npos ||
+         body_json.find("\"kind\": \"ops\"") != std::string::npos;
+}
+
+}  // namespace
+
+std::string BuildOpsBodyJson(const std::string& op,
+                             const std::string& payload_json) {
+  const std::string op_esc = JsonEscape(op);
+  std::ostringstream oss;
+  oss << "{\"kind\":\"ops\",\"op\":\"" << op_esc << '"';
+  if (!payload_json.empty()) {
+    const std::string trimmed = TrimPayloadJson(payload_json);
+    if (!trimmed.empty() && trimmed.front() == '{') {
+      oss << ',';
+      if (trimmed.size() >= 2) {
+        oss << trimmed.substr(1, trimmed.size() - 2);
+      }
+    }
+  }
+  oss << '}';
+  return oss.str();
+}
+
+Status AppendOpsAuditEntry(const std::string& repo_path, const std::string& op,
+                           const std::string& payload_json, DigestAlgo algo,
+                           const std::string& audit_key) {
+  const std::string chain_path =
+      (std::filesystem::path(repo_path) / "audit/rar.chain").string();
+  const std::string body_json = BuildOpsBodyJson(op, payload_json);
+  RarChainEntry entry{};
+  entry.sequence = RarChainNextSequence(chain_path);
+  entry.txn_id = 0;
+  entry.manifest_crc32 = "00000000";
+  entry.merkle_root = std::string(64, '0');
+  entry.prev_rar_sha256 = RarChainLastSha256(chain_path);
+  entry.generated_at_unix = static_cast<int64_t>(std::time(nullptr));
+  entry.body_json = body_json;
+  entry.rar_sha256 = ComputeRarSha256(body_json, algo);
+  if (!audit_key.empty()) {
+    (void)SignRarJson(body_json, audit_key, &entry.signature);
+  }
+  return AppendRarChainEntry(chain_path, entry);
+}
+
+Status ListOpsAuditEntries(const std::string& repo_path,
+                           std::vector<RarChainEntry>* out) {
+  if (!out) return Status::InvalidArgument("out is null");
+  out->clear();
+  const std::string chain_path =
+      (std::filesystem::path(repo_path) / "audit/rar.chain").string();
+  std::vector<RarChainEntry> all;
+  const Status st = ReadRarChainEntries(chain_path, &all);
+  if (!st.ok()) return st;
+  for (const auto& entry : all) {
+    if (IsOpsBody(entry.body_json)) out->push_back(entry);
+  }
+  return Status::Ok();
+}
+
+std::string OpsAuditEntriesToJson(const std::vector<RarChainEntry>& entries) {
+  std::ostringstream out;
+  out << "{\"ok\":true,\"entries\":[";
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (i > 0) out << ',';
+    const auto& e = entries[i];
+    const std::string body_esc = JsonEscape(e.body_json);
+    out << "{\"sequence\":" << e.sequence;
+    out << ",\"generated_at_unix\":" << e.generated_at_unix;
+    out << ",\"body_json\":\"" << body_esc << '"';
+    if (!e.signature.empty()) {
+      out << ",\"signature\":\"" << JsonEscape(e.signature) << '"';
+    }
+    out << '}';
+  }
+  out << "]}";
+  return out.str();
 }
 
 }  // namespace audit

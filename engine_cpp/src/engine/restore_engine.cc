@@ -1,9 +1,11 @@
 #include "ebbackup/engine/restore_engine.h"
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <unordered_map>
 
 #ifndef _WIN32
 #include <sys/stat.h>
@@ -12,27 +14,77 @@
 #endif
 
 #include "ebbackup/audit/merkle.h"
+#include "ebbackup/catalog/restore_acceptance.h"
 #include "ebbackup/common/digest.h"
 #include "ebbackup/common/fsync.h"
 #include "ebbackup/common/path_encoding.h"
 #include "ebbackup/common/path_util.h"
 #include "ebbackup/crypto/aes_gcm.h"
 #include "ebbackup/engine/manifest.h"
+#include "ebbackup/engine/restore_plan.h"
+#include "ebbackup/engine/restore_path_remap.h"
 #include "ebbackup/io/file_meta.h"
 #include "ebbackup/scan/backup_filter.h"
 #include "ebbackup/store/snapshot_store.h"
+#include "ebbackup/winmeta/win_meta.h"
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace ebbackup {
 
 namespace {
 
+#ifdef _WIN32
+Status WritePathBytesWin32(const std::string& path, const uint8_t* data, size_t len) {
+  const std::wstring wide = Utf8ToWide(path);
+  HANDLE h = CreateFileW(wide.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    return Status::IoError("CreateFile for restore write failed: " + path);
+  }
+  DWORD written = 0;
+  const BOOL ok =
+      len == 0 || WriteFile(h, data, static_cast<DWORD>(len), &written, nullptr);
+  CloseHandle(h);
+  if (!ok || written != len) {
+    return Status::IoError("restore write failed: " + path);
+  }
+  return Status::Ok();
+}
+#endif
+
 std::string RepoJoin(const std::string& repo, const std::string& name) {
   return PathToUtf8(PathFromUtf8(repo) / PathFromUtf8(name));
 }
 
-int FileTypeOrder(FileType type) {
-  if (type == FileType::kDirectory) return 0;
+int FileTypeOrder(const ManifestFileEntry& file) {
+  if (file.file_type == FileType::kDirectory) {
+#ifdef _WIN32
+    if (file.reparse_tag != 0) return 2;
+#endif
+    return 0;
+  }
   return 1;
+}
+
+Status ApplyWinMetaAfterRestore(const std::string& path,
+                                const ManifestFileEntry& file,
+                                const winmeta::AclRestorePolicy& policy,
+                                std::string* soft_issue_reason) {
+  const Status meta = ApplyFileMeta(path, file);
+  if (!meta.ok()) return meta;
+  return winmeta::ApplyWinMetaOnRestore(path, file, policy, soft_issue_reason);
+}
+
+void RecordRestoreIssue(const std::string& path, const std::string& reason,
+                        std::vector<report::BackupPathIssue>* issues) {
+  if (!issues || reason.empty()) return;
+  issues->push_back({path, reason});
 }
 
 }  // namespace
@@ -59,18 +111,67 @@ Status RestoreEngine::SetupEncryption(const RestoreOptions& options) {
   return Status::Ok();
 }
 
-Status RestoreEngine::RestoreEntry(const std::filesystem::path& dest_root,
-                                   const ManifestFileEntry& file) {
-  const std::string rel = NormalizeRepoPath(file.relative_path);
-  const std::filesystem::path out_path = dest_root / PathFromUtf8(rel);
+Status RestoreEngine::RestorePlannedEntry(
+    const std::filesystem::path& dest_root, const ManifestFileEntry& file,
+    const std::string& dest_rel, const RestoreOptions& options,
+    std::unordered_map<RestoreInodeKey, std::string, RestoreInodeKeyHash>*
+        inode_canonical,
+    std::vector<report::BackupPathIssue>* restore_issues) {
+  return RestoreEntry(dest_root, file, dest_rel, options, inode_canonical,
+                      restore_issues);
+}
+
+Status RestoreEngine::RestoreEntry(
+    const std::filesystem::path& dest_root, const ManifestFileEntry& file,
+    const std::string& dest_rel, const RestoreOptions& options,
+    std::unordered_map<RestoreInodeKey, std::string, RestoreInodeKeyHash>* inode_canonical,
+    std::vector<report::BackupPathIssue>* restore_issues) {
+  std::string base_rel = dest_rel;
+  std::string stream_name = file.stream_name;
+#ifdef _WIN32
+  const size_t colon = base_rel.find(':');
+  if (colon != std::string::npos && colon > 0) {
+    if (stream_name.empty()) {
+      stream_name = base_rel.substr(colon + 1);
+    }
+    base_rel = base_rel.substr(0, colon);
+  }
+#endif
+  const std::filesystem::path out_path = dest_root / PathFromUtf8(base_rel);
+  std::string write_path = PathToUtf8(out_path);
+#ifdef _WIN32
+  if (!stream_name.empty()) {
+    write_path += ":" + stream_name;
+  }
+#endif
   std::error_code ec;
+
+#ifdef _WIN32
+  if (file.file_type == FileType::kDirectory && file.reparse_tag != 0) {
+    if (options.reparse_policy.mode == winmeta::ReparseRestorePolicy::Mode::kRecreate) {
+      const Status rp_st = winmeta::RecreateReparsePoint(write_path, file);
+      if (!rp_st.ok()) return rp_st;
+    }
+    std::string soft_issue;
+    const Status meta_st =
+        ApplyWinMetaAfterRestore(write_path, file, options.acl_policy, &soft_issue);
+    if (!meta_st.ok()) return meta_st;
+    RecordRestoreIssue(write_path, soft_issue, restore_issues);
+    return Status::Ok();
+  }
+#endif
 
   if (file.file_type == FileType::kDirectory) {
     std::filesystem::create_directories(out_path, ec);
     if (ec) {
       return Status::IoError("cannot create directory: " + ec.message());
     }
-    return ApplyFileMeta(PathToUtf8(out_path), file);
+    std::string soft_issue;
+    const Status meta_st =
+        ApplyWinMetaAfterRestore(write_path, file, options.acl_policy, &soft_issue);
+    if (!meta_st.ok()) return meta_st;
+    RecordRestoreIssue(write_path, soft_issue, restore_issues);
+    return Status::Ok();
   }
 
   std::filesystem::create_directories(out_path.parent_path(), ec);
@@ -82,11 +183,19 @@ Status RestoreEngine::RestoreEntry(const std::filesystem::path& dest_root,
     if (std::filesystem::exists(out_path, ec)) {
       std::filesystem::remove(out_path, ec);
     }
-    std::filesystem::create_symlink(PathFromUtf8(file.symlink_target), out_path, ec);
+    const std::string link_target =
+        ApplySymlinkTargetRemap(file.symlink_target, options.symlink_remap);
+    std::filesystem::create_symlink(PathFromUtf8(link_target), out_path, ec);
     if (ec) {
       return Status::IoError("symlink restore failed: " + ec.message());
     }
-    return ApplyFileMeta(PathToUtf8(out_path), file);
+    std::string soft_issue;
+    const Status meta_st =
+        ApplyWinMetaAfterRestore(PathToUtf8(out_path), file, options.acl_policy,
+                                 &soft_issue);
+    if (!meta_st.ok()) return meta_st;
+    RecordRestoreIssue(PathToUtf8(out_path), soft_issue, restore_issues);
+    return Status::Ok();
   }
 
 #ifndef _WIN32
@@ -109,7 +218,13 @@ Status RestoreEngine::RestoreEntry(const std::filesystem::path& dest_root,
         return Status::IoError("mknod failed: " + out_path.string());
       }
     }
-    return ApplyFileMeta(PathToUtf8(out_path), file);
+    std::string soft_issue;
+    const Status meta_st =
+        ApplyWinMetaAfterRestore(PathToUtf8(out_path), file, options.acl_policy,
+                                 &soft_issue);
+    if (!meta_st.ok()) return meta_st;
+    RecordRestoreIssue(PathToUtf8(out_path), soft_issue, restore_issues);
+    return Status::Ok();
   }
 #else
   if (file.file_type == FileType::kFifo || file.file_type == FileType::kBlock ||
@@ -118,12 +233,28 @@ Status RestoreEngine::RestoreEntry(const std::filesystem::path& dest_root,
   }
 #endif
 
-  std::ofstream out(out_path, std::ios::binary | std::ios::trunc);
-  if (!out) {
-    return Status::IoError("cannot write restore file: " + out_path.string());
+#ifdef _WIN32
+  if (file.file_type == FileType::kRegular && file.inode_id != 0 && inode_canonical) {
+    const RestoreInodeKey key{file.inode_id, file.stream_name};
+    const auto found = inode_canonical->find(key);
+    if (found != inode_canonical->end()) {
+      if (std::filesystem::exists(out_path, ec)) {
+        std::filesystem::remove(out_path, ec);
+      }
+      const Status hl_st = winmeta::CreateHardLinkUtf8(found->second, write_path);
+      if (!hl_st.ok()) return hl_st;
+      std::string soft_issue;
+      const Status meta_st =
+          ApplyWinMetaAfterRestore(write_path, file, options.acl_policy, &soft_issue);
+      if (!meta_st.ok()) return meta_st;
+      RecordRestoreIssue(write_path, soft_issue, restore_issues);
+      return Status::Ok();
+    }
   }
+#endif
 
-  uint64_t total = 0;
+  std::vector<uint8_t> payload_total;
+  payload_total.reserve(static_cast<size_t>(file.size));
   for (const auto& hex : file.chunk_hashes_hex) {
     uint8_t hash[32];
     if (!HexToBytes(hex, hash, 32)) {
@@ -132,20 +263,47 @@ Status RestoreEngine::RestoreEntry(const std::filesystem::path& dest_root,
     std::vector<uint8_t> payload;
     const Status st = chunk_store_->Get(hash, &payload);
     if (!st.ok()) return st;
-    out.write(reinterpret_cast<const char*>(payload.data()),
-              static_cast<std::streamsize>(payload.size()));
+    payload_total.insert(payload_total.end(), payload.begin(), payload.end());
+  }
+  if (payload_total.size() != file.size) {
+    return Status::Corrupt("restored size mismatch for " + dest_rel);
+  }
+
+#ifdef _WIN32
+  if (!file.stream_name.empty() || write_path.find(':') != std::string::npos) {
+    const Status wr = WritePathBytesWin32(write_path, payload_total.data(),
+                                          payload_total.size());
+    if (!wr.ok()) return wr;
+  } else
+#endif
+  {
+    std::ofstream out(PathFromUtf8(write_path), std::ios::binary | std::ios::trunc);
     if (!out) {
-      return Status::IoError("restore write failed: " + out_path.string());
+      return Status::IoError("cannot write restore file: " + write_path);
     }
-    total += payload.size();
+    out.write(reinterpret_cast<const char*>(payload_total.data()),
+              static_cast<std::streamsize>(payload_total.size()));
+    if (!out) {
+      return Status::IoError("restore write failed: " + write_path);
+    }
+    out.close();
   }
-  out.close();
-  if (total != file.size) {
-    return Status::Corrupt("restored size mismatch for " + rel);
-  }
-  const Status fs = FsyncPath(PathToUtf8(out_path));
+
+  const Status fs = FsyncPath(write_path);
   if (!fs.ok()) return fs;
-  return ApplyFileMeta(PathToUtf8(out_path), file);
+
+#ifdef _WIN32
+  if (file.file_type == FileType::kRegular && file.inode_id != 0 && inode_canonical) {
+    (*inode_canonical)[RestoreInodeKey{file.inode_id, file.stream_name}] = write_path;
+  }
+#endif
+
+  std::string soft_issue;
+  const Status meta_st =
+      ApplyWinMetaAfterRestore(write_path, file, options.acl_policy, &soft_issue);
+  if (!meta_st.ok()) return meta_st;
+  RecordRestoreIssue(write_path, soft_issue, restore_issues);
+  return Status::Ok();
 }
 
 Status RestoreEngine::RunRestore(const std::string& dest_path,
@@ -196,28 +354,59 @@ Status RestoreEngine::RunRestore(const std::string& dest_path,
     }
   }
 
-  std::stable_sort(files.begin(), files.end(),
-                   [](const ManifestFileEntry& a, const ManifestFileEntry& b) {
-                     const int oa = FileTypeOrder(a.file_type);
-                     const int ob = FileTypeOrder(b.file_type);
-                     if (oa != ob) return oa < ob;
-                     return a.relative_path < b.relative_path;
-                   });
+  RestorePlanBuildResult plan{};
+  const Status plan_st = BuildRestorePlan(files, options, &plan);
+  if (!plan_st.ok()) return plan_st;
+  const auto& restore_plan = plan.entries;
+  const auto& dest_rel_by_manifest = plan.dest_rel_by_manifest;
 
   const std::filesystem::path dest_root = PathFromUtf8(dest_path);
-  for (const auto& file : files) {
-    const Status st = RestoreEntry(dest_root, file);
+
+  std::unordered_map<RestoreInodeKey, std::string, RestoreInodeKeyHash> inode_canonical;
+  std::vector<report::BackupPathIssue> restore_issues;
+  for (const auto& [file, dest_rel] : restore_plan) {
+    const Status st = RestoreEntry(dest_root, file, dest_rel, options,
+                                   &inode_canonical, &restore_issues);
     if (!st.ok()) return st;
   }
 
   if (do_content_verify) {
     uint8_t actual_root[32]{};
+    const std::unordered_map<std::string, std::string>* override_ptr =
+        options.path_remap.HasRemap() ? &dest_rel_by_manifest : nullptr;
     const Status merkle_st = audit::ComputeMerkleRootFromRestoredFiles(
-        dest_path, files, chunk_store_, actual_root);
+        dest_path, files, chunk_store_, actual_root, override_ptr);
     if (!merkle_st.ok()) return merkle_st;
     if (std::memcmp(subset_root, actual_root, 32) != 0) {
       return Status::Corrupt("restored content merkle mismatch");
     }
+  }
+
+  if (options.acceptance_out) {
+    std::vector<std::string> paths;
+    uint64_t total_bytes = 0;
+    std::vector<std::pair<std::string, ManifestFileEntry>> restored_files;
+    for (const auto& [file, dest_rel] : restore_plan) {
+      paths.push_back(dest_rel);
+      if (file.file_type == FileType::kRegular) {
+        total_bytes += file.size;
+        restored_files.emplace_back(dest_rel, file);
+      }
+    }
+    std::sort(paths.begin(), paths.end());
+    std::string merkle_hex;
+    if (do_content_verify) {
+      merkle_hex = BytesToHex(subset_root, 32);
+    } else {
+      uint8_t root[32]{};
+      const Status merkle_st = audit::ComputeMerkleRootForFiles(
+          files, root, chunk_store_->digest_algo());
+      if (merkle_st.ok()) merkle_hex = BytesToHex(root, 32);
+    }
+    (void)catalog::BuildRestoreAcceptanceReportWithFiles(
+        restored_files, merkle_hex, doc.txn_id, total_bytes, do_content_verify,
+        chunk_store_->digest_algo(), options.acceptance_out);
+    options.acceptance_out->issues = std::move(restore_issues);
   }
   return Status::Ok();
 }

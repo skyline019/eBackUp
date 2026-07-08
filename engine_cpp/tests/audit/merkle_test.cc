@@ -89,12 +89,12 @@ TEST(MerkleTest, VerifyRestoredFileChunksRoundTrip) {
 
   ManifestDocument doc;
   ASSERT_TRUE(ReadManifestAuto(repo + "/manifest", &doc).ok());
-  ASSERT_EQ(doc.files.size(), 1u);
+  const ManifestFileEntry* file = ebbackup::test::FindManifestFile(doc, "file.bin");
+  ASSERT_NE(file, nullptr);
   const std::string restored =
-      (std::filesystem::path(dest) / doc.files[0].relative_path).string();
+      (std::filesystem::path(dest) / file->relative_path).string();
   EXPECT_TRUE(
-      VerifyRestoredFileChunks(restored, doc.files[0], engine.chunk_store())
-          .ok());
+      VerifyRestoredFileChunks(restored, *file, engine.chunk_store()).ok());
 }
 
 TEST(MerkleTest, VerifyRestoredFileChunksLargeFile) {
@@ -112,13 +112,13 @@ TEST(MerkleTest, VerifyRestoredFileChunksLargeFile) {
 
   ManifestDocument doc;
   ASSERT_TRUE(ReadManifestAuto(repo + "/manifest", &doc).ok());
-  ASSERT_EQ(doc.files.size(), 1u);
-  EXPECT_GE(doc.files[0].chunk_hashes_hex.size(), 2u);
+  const ManifestFileEntry* file = ebbackup::test::FindManifestFile(doc, "large.bin");
+  ASSERT_NE(file, nullptr);
+  EXPECT_GE(file->chunk_hashes_hex.size(), 2u);
   const std::string restored =
-      (std::filesystem::path(dest) / doc.files[0].relative_path).string();
+      (std::filesystem::path(dest) / file->relative_path).string();
   EXPECT_TRUE(
-      VerifyRestoredFileChunks(restored, doc.files[0], engine.chunk_store())
-          .ok());
+      VerifyRestoredFileChunks(restored, *file, engine.chunk_store()).ok());
 }
 
 }  // namespace

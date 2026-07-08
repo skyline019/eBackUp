@@ -7,6 +7,8 @@ import ContextSidebar from "@/shell/ContextSidebar.vue";
 import RepoHome from "@/activities/RepoHome.vue";
 import BackupView from "@/activities/BackupView.vue";
 import SnapshotsView from "@/activities/SnapshotsView.vue";
+import BrowseView from "@/activities/BrowseView.vue";
+import DiffView from "@/activities/DiffView.vue";
 import RestoreView from "@/activities/RestoreView.vue";
 import VerifyView from "@/activities/VerifyView.vue";
 import MaintenanceView from "@/activities/MaintenanceView.vue";
@@ -27,6 +29,10 @@ const mainView = computed(() => {
       return BackupView;
     case "snapshots":
       return SnapshotsView;
+    case "browse":
+      return BrowseView;
+    case "diff":
+      return DiffView;
     case "restore":
       return RestoreView;
     case "verify":

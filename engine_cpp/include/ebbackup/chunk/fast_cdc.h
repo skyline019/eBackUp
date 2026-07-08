@@ -18,6 +18,10 @@ struct FastCdcConfig {
   DigestAlgo digest_algo{DigestAlgo::kLegacy};
 };
 
+struct FastCdcCutCursor {
+  size_t pos{0};
+};
+
 class FastCdcSlice {
  public:
   explicit FastCdcSlice(FastCdcConfig config = {});
@@ -27,6 +31,11 @@ class FastCdcSlice {
 
   Status ChunkCuts(const uint8_t* data, size_t len, std::vector<size_t>* offsets,
                    std::vector<uint32_t>* lengths) const;
+
+  // Resumable cuts for feed-timed replay: emit cuts with offset < until_offset.
+  Status ChunkCutsUntil(const uint8_t* data, size_t len, size_t until_offset,
+                        FastCdcCutCursor* cursor, std::vector<size_t>* offsets,
+                        std::vector<uint32_t>* lengths, bool* complete) const;
 
   const FastCdcConfig& config() const { return config_; }
 

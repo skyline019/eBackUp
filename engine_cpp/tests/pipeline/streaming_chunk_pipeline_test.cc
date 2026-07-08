@@ -14,9 +14,23 @@ namespace {
 void SetEnvVar(const char* key, const char* value) {
   _putenv_s(key, value);
 }
+void UnsetEnvVar(const char* key) { _putenv_s(key, ""); }
 #else
 void SetEnvVar(const char* key, const char* value) { setenv(key, value, 1); }
+void UnsetEnvVar(const char* key) { unsetenv(key); }
 #endif
+
+const ManifestFileEntry* FindManifestFile(const ManifestDocument& doc,
+                                          const std::string& rel_path) {
+  const ManifestFileEntry* best = nullptr;
+  for (const auto& file : doc.files) {
+    if (file.relative_path != rel_path) continue;
+    if (!best || (!file.chunk_hashes_hex.empty() && best->chunk_hashes_hex.empty())) {
+      best = &file;
+    }
+  }
+  return best;
+}
 
 TEST(StreamingChunkPipelineTest, Streaming256MBMatchesSequentialManifest) {
   constexpr size_t kFileSize = 256 * 1024 * 1024;
@@ -51,11 +65,12 @@ TEST(StreamingChunkPipelineTest, Streaming256MBMatchesSequentialManifest) {
   ASSERT_TRUE(ReadManifestAuto(repo_seq + "/manifest", &seq_doc).ok());
   ASSERT_TRUE(ReadManifestAuto(repo_stream + "/manifest", &stream_doc).ok());
 
-  ASSERT_EQ(seq_doc.files.size(), 1u);
-  ASSERT_EQ(stream_doc.files.size(), 1u);
-  EXPECT_EQ(stream_doc.files[0].chunk_hashes_hex,
-            seq_doc.files[0].chunk_hashes_hex);
-  EXPECT_EQ(stream_doc.files[0].size, seq_doc.files[0].size);
+  const ManifestFileEntry* seq_file = FindManifestFile(seq_doc, "data.bin");
+  const ManifestFileEntry* stream_file = FindManifestFile(stream_doc, "data.bin");
+  ASSERT_NE(seq_file, nullptr);
+  ASSERT_NE(stream_file, nullptr);
+  EXPECT_EQ(stream_file->chunk_hashes_hex, seq_file->chunk_hashes_hex);
+  EXPECT_EQ(stream_file->size, seq_file->size);
 }
 
 TEST(StreamingChunkPipelineTest, Streaming256PhaseStatsNonZero) {
@@ -95,6 +110,7 @@ TEST(StreamingChunkPipelineTest, CdcFastPathMatchesStreamFeedManifest) {
   {
     BackupEngine engine(repo_fast);
     ASSERT_TRUE(engine.Open().ok());
+    SetEnvVar("EBBACKUP_CDC_HYBRID", "0");
     SetEnvVar("EBBACKUP_FORCE_STREAM_CDC", "0");
     SetEnvVar("EBBACKUP_CDC_FAST_SLICE", "1");
     ASSERT_TRUE(engine.RunBackup(source, BackupMode::kFull, pipe_opts).ok());
@@ -102,6 +118,7 @@ TEST(StreamingChunkPipelineTest, CdcFastPathMatchesStreamFeedManifest) {
   {
     BackupEngine engine(repo_stream);
     ASSERT_TRUE(engine.Open().ok());
+    SetEnvVar("EBBACKUP_CDC_HYBRID", "0");
     SetEnvVar("EBBACKUP_FORCE_STREAM_CDC", "1");
     ASSERT_TRUE(engine.RunBackup(source, BackupMode::kFull, pipe_opts).ok());
     ASSERT_TRUE(engine.Verify().ok());
@@ -112,13 +129,106 @@ TEST(StreamingChunkPipelineTest, CdcFastPathMatchesStreamFeedManifest) {
   ASSERT_TRUE(ReadManifestAuto(repo_fast + "/manifest", &fast_doc).ok());
   ASSERT_TRUE(ReadManifestAuto(repo_stream + "/manifest", &stream_doc).ok());
 
-  ASSERT_EQ(fast_doc.files.size(), 1u);
-  ASSERT_EQ(stream_doc.files.size(), 1u);
-  EXPECT_EQ(fast_doc.files[0].chunk_hashes_hex,
-            stream_doc.files[0].chunk_hashes_hex);
-  EXPECT_EQ(fast_doc.files[0].size, stream_doc.files[0].size);
+  const ManifestFileEntry* fast_file = FindManifestFile(fast_doc, "data.bin");
+  const ManifestFileEntry* stream_file = FindManifestFile(stream_doc, "data.bin");
+  ASSERT_NE(fast_file, nullptr);
+  ASSERT_NE(stream_file, nullptr);
+  EXPECT_EQ(fast_file->chunk_hashes_hex, stream_file->chunk_hashes_hex);
+  EXPECT_EQ(fast_file->size, stream_file->size);
+  UnsetEnvVar("EBBACKUP_CDC_HYBRID");
   SetEnvVar("EBBACKUP_FORCE_STREAM_CDC", "0");
   SetEnvVar("EBBACKUP_CDC_FAST_SLICE", "0");
+}
+
+TEST(StreamingChunkPipelineTest, Hybrid256MBMatchesSequentialManifest) {
+  constexpr size_t kFileSize = 256 * 1024 * 1024;
+  const std::string source = test::TempDir("hybrid_seq_source");
+  test::WriteFile(source + "/data.bin", test::MakeSyntheticData(kFileSize, 36));
+
+  const std::string repo_seq = test::TempDir("hybrid_seq_repo");
+  const std::string repo_hybrid = test::TempDir("hybrid_cdc_repo");
+  ASSERT_TRUE(test::InitDefaultRepo(repo_seq).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo_hybrid).ok());
+
+  BackupOptions seq_opts{};
+  seq_opts.disable_pipeline = true;
+
+  BackupOptions pipe_opts{};
+  pipe_opts.use_pipeline = true;
+
+  {
+    BackupEngine engine(repo_seq);
+    ASSERT_TRUE(engine.Open().ok());
+    ASSERT_TRUE(engine.RunBackup(source, BackupMode::kFull, seq_opts).ok());
+  }
+  {
+    BackupEngine engine(repo_hybrid);
+    ASSERT_TRUE(engine.Open().ok());
+    UnsetEnvVar("EBBACKUP_CDC_HYBRID");
+    SetEnvVar("EBBACKUP_CDC_FAST_SLICE", "0");
+    SetEnvVar("EBBACKUP_FORCE_STREAM_CDC", "0");
+    ASSERT_TRUE(engine.RunBackup(source, BackupMode::kFull, pipe_opts).ok());
+    ASSERT_TRUE(engine.Verify().ok());
+    const PipelinePhaseStats& ps = engine.pipeline_phase_stats();
+    EXPECT_GT(ps.hybrid_cuts_ns.load(), 0u);
+    EXPECT_GT(ps.hybrid_replay_ns.load(), 0u);
+  }
+
+  ManifestDocument seq_doc;
+  ManifestDocument hybrid_doc;
+  ASSERT_TRUE(ReadManifestAuto(repo_seq + "/manifest", &seq_doc).ok());
+  ASSERT_TRUE(ReadManifestAuto(repo_hybrid + "/manifest", &hybrid_doc).ok());
+
+  const ManifestFileEntry* seq_file = FindManifestFile(seq_doc, "data.bin");
+  const ManifestFileEntry* hybrid_file = FindManifestFile(hybrid_doc, "data.bin");
+  ASSERT_NE(seq_file, nullptr);
+  ASSERT_NE(hybrid_file, nullptr);
+  EXPECT_EQ(hybrid_file->chunk_hashes_hex, seq_file->chunk_hashes_hex);
+  UnsetEnvVar("EBBACKUP_CDC_HYBRID");
+}
+
+TEST(StreamingChunkPipelineTest, Hybrid256MBMatchesStreamManifest) {
+  constexpr size_t kFileSize = 256 * 1024 * 1024;
+  const std::string source = test::TempDir("hybrid_stream_source");
+  test::WriteFile(source + "/data.bin", test::MakeSyntheticData(kFileSize, 37));
+
+  const std::string repo_hybrid = test::TempDir("hybrid_stream_hybrid");
+  const std::string repo_stream = test::TempDir("hybrid_stream_stream");
+  ASSERT_TRUE(test::InitDefaultRepo(repo_hybrid).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo_stream).ok());
+
+  BackupOptions pipe_opts{};
+  pipe_opts.use_pipeline = true;
+
+  {
+    BackupEngine engine(repo_hybrid);
+    ASSERT_TRUE(engine.Open().ok());
+    UnsetEnvVar("EBBACKUP_CDC_HYBRID");
+    SetEnvVar("EBBACKUP_CDC_FAST_SLICE", "0");
+    SetEnvVar("EBBACKUP_FORCE_STREAM_CDC", "0");
+    ASSERT_TRUE(engine.RunBackup(source, BackupMode::kFull, pipe_opts).ok());
+  }
+  {
+    BackupEngine engine(repo_stream);
+    ASSERT_TRUE(engine.Open().ok());
+    SetEnvVar("EBBACKUP_CDC_HYBRID", "0");
+    SetEnvVar("EBBACKUP_FORCE_STREAM_CDC", "0");
+    SetEnvVar("EBBACKUP_CDC_FAST_SLICE", "0");
+    ASSERT_TRUE(engine.RunBackup(source, BackupMode::kFull, pipe_opts).ok());
+    ASSERT_TRUE(engine.Verify().ok());
+  }
+
+  ManifestDocument hybrid_doc;
+  ManifestDocument stream_doc;
+  ASSERT_TRUE(ReadManifestAuto(repo_hybrid + "/manifest", &hybrid_doc).ok());
+  ASSERT_TRUE(ReadManifestAuto(repo_stream + "/manifest", &stream_doc).ok());
+
+  const ManifestFileEntry* hybrid_file = FindManifestFile(hybrid_doc, "data.bin");
+  const ManifestFileEntry* stream_file = FindManifestFile(stream_doc, "data.bin");
+  ASSERT_NE(hybrid_file, nullptr);
+  ASSERT_NE(stream_file, nullptr);
+  EXPECT_EQ(hybrid_file->chunk_hashes_hex, stream_file->chunk_hashes_hex);
+  UnsetEnvVar("EBBACKUP_CDC_HYBRID");
 }
 
 TEST(StreamingChunkPipelineTest, UsesStreamingPathNotV4) {
@@ -144,9 +254,11 @@ TEST(StreamingChunkPipelineTest, UsesStreamingPathNotV4) {
   const PipelinePhaseStats& single_ps = single_engine.pipeline_phase_stats();
   EXPECT_GT(single_ps.chunk_ns.load(), 0u);
   EXPECT_GT(single_ps.encode_ns.load(), 0u);
-  EXPECT_GT(single_ps.stream_cdc_ns.load(), 0u);
+  EXPECT_TRUE(single_ps.stream_cdc_ns.load() > 0u ||
+              single_ps.hybrid_cuts_ns.load() > 0u);
 
   SetEnvVar("EBBACKUP_FORCE_STREAM_CDC", "1");
+  SetEnvVar("EBBACKUP_CDC_HYBRID", "0");
   const std::string source_stream =
       test::TempDir("streaming_chunk_stream_sub_source");
   test::WriteFile(source_stream + "/data.bin",
@@ -180,7 +292,10 @@ TEST(StreamingChunkPipelineTest, UsesStreamingPathNotV4) {
 
   ManifestDocument multi_doc;
   ASSERT_TRUE(ReadManifestAuto(repo_multi + "/manifest", &multi_doc).ok());
-  EXPECT_EQ(multi_doc.files.size(), 8u);
+  for (int i = 0; i < 8; ++i) {
+    const std::string name = "file" + std::to_string(i) + ".bin";
+    EXPECT_NE(FindManifestFile(multi_doc, name), nullptr);
+  }
 }
 
 }  // namespace

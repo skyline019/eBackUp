@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <string>
+#include <vector>
 
 #include "ebbackup/common/status.h"
 #include "ebbackup/engine/backup_engine.h"
@@ -19,6 +20,10 @@ struct ScheduleConfig {
   RetentionPolicy retention_policy{};
   bool auto_prune{true};
   bool auto_gc_after_prune{false};
+  std::string mode;
+  std::string repo_path;
+  std::vector<std::string> job_ids;
+  bool drain_queue{false};
 };
 
 Status LoadScheduleConfig(const std::string& config_path, ScheduleConfig* out);
@@ -30,6 +35,10 @@ Status RunScheduledBackup(const ScheduleConfig& config, int max_runs = -1);
 Status RunWatchBackup(const std::string& source_path, const std::string& repo_path,
                       const BackupOptions& options, int debounce_ms = 2000,
                       int max_triggers = -1);
+
+Status RunJobQueueDrain(const std::string& repo_path, const BackupOptions& options,
+                        const std::vector<std::string>& pre_enqueue_job_ids = {},
+                        int max_cycles = -1, int interval_seconds = 3600);
 
 std::string ScheduleRepoPath(const std::string& repo_base);
 
@@ -43,5 +52,11 @@ std::string
 MakeRotatedRepoPath(const std::string& repo_base);
 
 void PruneRotatedRepos(const std::string& repo_base, int retain_count);
+
+void RequestDaemonStop();
+void ResetDaemonStop();
+bool IsDaemonStopRequested();
+
+Status RunScheduleConfig(const ScheduleConfig& config, int max_runs = -1);
 
 }  // namespace ebbackup

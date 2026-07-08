@@ -5,9 +5,11 @@ import {
   Coin,
   Upload,
   Clock,
+  FolderOpened,
   Download,
   DocumentChecked,
   Tools,
+  ScaleToOriginal,
 } from "@element-plus/icons-vue";
 
 const ui = useUiStore();
@@ -16,6 +18,8 @@ const icons: Record<ActivityId, object> = {
   repo: Coin,
   backup: Upload,
   snapshots: Clock,
+  browse: FolderOpened,
+  diff: ScaleToOriginal,
   restore: Download,
   verify: DocumentChecked,
   maintenance: Tools,

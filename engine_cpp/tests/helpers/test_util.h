@@ -8,6 +8,7 @@
 
 #include "ebbackup/common/status.h"
 #include "ebbackup/engine/backup_engine.h"
+#include "ebbackup/engine/manifest.h"
 #include "ebbackup/state/superblock.h"
 
 namespace ebbackup {
@@ -84,6 +85,18 @@ inline std::string MakeSyntheticData(size_t size, uint8_t seed = 0) {
     data[i] = static_cast<char>((seed + i * 17 + (i >> 8)) & 0xFF);
   }
   return data;
+}
+
+inline const ManifestFileEntry* FindManifestFile(const ManifestDocument& doc,
+                                                 const std::string& rel_path) {
+  const ManifestFileEntry* best = nullptr;
+  for (const auto& file : doc.files) {
+    if (file.relative_path != rel_path) continue;
+    if (!best || (!file.chunk_hashes_hex.empty() && best->chunk_hashes_hex.empty())) {
+      best = &file;
+    }
+  }
+  return best;
 }
 
 }  // namespace test

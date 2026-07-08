@@ -16,7 +16,7 @@
 
 \title{ebbackup 答辩演讲稿\\（课程版 8--10 分钟 + 技术版 15--20 分钟）}
 \author{recoveryProjects / 《软件开发综合实验》}
-\date{2026-07-07 \quad commit \gitdesc{1fca9d7}}
+\date{2026-07-08 \quad commit \gitdesc{965431b}}
 
 \begin{document}
 \maketitle
@@ -133,8 +133,16 @@ Sprint 4 实现两条 CDC 路径：Phase B 在 stream feed 上做 seg1 bulk scan
 \showrunbackup
 \showpanelsurface
 
+\section{能力 Wave 弧（Wave A--T，ABI v29）}
+\timing{—}{18--19\,min}
+\begin{say}
+\vtag{0.9.5} 在性能 Wave 5 之后，我们按 \filepath{CAPABILITY\_ROADMAP.md} 完成能力 sprint Wave A 到 Wave T：Wave B/E 写入 Manifest v5 与 Windows ADS/硬链/junction；Wave F/G 引入 \filepath{jobs.json} 与 GUI 作业管理；Wave I 默认 Hybrid CDC；Wave M 实现三路就地恢复；Wave N--O+ 补齐可达性、RPO、Windows 服务与 Workbench 多 Profile；Wave P/Q 接入 SQLite/Registry/VHDX 垂直插件；Wave R 提供可解释的智能排除建议；Wave T 闭合备份窗口与 deadline 自适应降级。
+
+当前 C API ABI 为 v29，gtest 363 用例，ctest 三套件全绿。完整归档见 \filepath{docs/WAVE\_ARCHIVE.md}；工程技术细节见 \filepath{kernel-manual} 第 21 章；生态叙事见 \filepath{ecosystem-evolution} 第 13 章。
+\end{say}
+
 \section{架构与构件（技术版收尾）}
-\timing{—}{18.5--19.5\,min}
+\timing{—}{19--20\,min}
 \input{chapters/figures-architecture.tex}
 \showshim
 \begin{say}

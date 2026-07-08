@@ -73,7 +73,7 @@ defineExpose({ openHelpTab });
             <li v-for="(line, i) in currentGuide.body" :key="i">{{ line }}</li>
           </ul>
         </section>
-        <p class="help-meta">活动切换：Ctrl+1 … Ctrl+6</p>
+        <p class="help-meta">活动切换：Ctrl+1 … Ctrl+7</p>
       </el-tab-pane>
 
       <el-tab-pane label="常见问题" name="faq">

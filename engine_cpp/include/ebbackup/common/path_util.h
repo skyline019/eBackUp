@@ -32,4 +32,25 @@ inline Status RelativePathFromRoot(const std::string& source_root,
   }
 }
 
+// Literal prefix strip — does not follow junctions/symlinks (Windows scan/backup).
+inline Status RelativePathFromRootNoFollow(const std::string& source_root,
+                                           const std::string& file_path,
+                                           std::string* out) {
+  if (!out) return Status::InvalidArgument("out is null");
+  std::string root = NormalizeRepoPath(source_root);
+  std::string file = NormalizeRepoPath(file_path);
+  while (root.size() > 1 && root.back() == '/') root.pop_back();
+  if (root.empty()) return Status::InvalidArgument("empty source root");
+  if (root == file) {
+    *out = ".";
+    return Status::Ok();
+  }
+  const std::string prefix = root + "/";
+  if (file.size() > prefix.size() && file.compare(0, prefix.size(), prefix) == 0) {
+    *out = file.substr(prefix.size());
+    return Status::Ok();
+  }
+  return RelativePathFromRoot(source_root, file_path, out);
+}
+
 }  // namespace ebbackup

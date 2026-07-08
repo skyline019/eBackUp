@@ -13,7 +13,7 @@
 \title{ebbackup 数据备份软件}
 \subtitle{\slidesubtitle\\《软件开发综合实验》答辩}
 \author{recoveryProjects}
-\date{2026-07-07 \quad commit \gitdesc{1fca9d7}}
+\date{2026-07-08 \quad commit \gitdesc{965431b}}
 
 \begin{document}
 
@@ -31,7 +31,7 @@
   \vspace{0.4em}
   \begin{itemize}
     \item 内核即产品；不做云网盘、不做多租户
-    \item 233 gtest + L1--L7 bench 硬门禁
+    \item 363 gtest + L1--L7 bench 硬门禁
     \item 可选桌面 Workbench（Tauri + Vue）
   \end{itemize}
   \note{强调与课程「数据备份软件」一致，但工程深度超出 baseline。}
@@ -149,7 +149,7 @@
 %--- 13 测试 ---
 \begin{frame}{测试与门禁}
   \begin{itemize}
-    \item \textbf{233} gtest + L1--L7 bench + powerfail + Rust IT
+    \item \textbf{363} gtest + L1--L7 bench + powerfail + Rust IT
     \item immutable：reuse $\geq$90\%、ratio $\geq$0.90
     \item GitHub Actions：Windows + Linux
   \end{itemize}
@@ -176,12 +176,40 @@
   \note{来自真实联调，非编造。}
 \end{frame}
 
+%--- 15b 可证明备份 ---
+\begin{frame}{可证明备份（Wave A--M）}
+  \begin{itemize}
+    \item \textbf{路径索引}：\texttt{path\_index.jsonl} + 分页 \texttt{browse-page}（ABI v14）
+    \item \textbf{Merkle Diff}：\texttt{added/modified} 附 \texttt{merkle\_proof}（v15）
+    \item \textbf{恢复验收}：\texttt{export\_restore\_report} + GUI「验收报告」
+    \item \textbf{三路就地}：base/target/live + \texttt{both\_changed}（Wave M, v23）
+    \item \textbf{Win 元数据}：Manifest v5 + ADS/hardlink/junction（Wave B/E, v16）
+  \end{itemize}
+\end{frame}
+
+%--- 15c 能力 Wave 弧 ---
+\begin{frame}{能力 Wave 弧（N$\rightarrow$T）}
+  \small
+  \begin{tabular}{@{}llp{7.5cm}@{}}
+  \toprule
+  Wave & ABI & 交付 \\
+  \midrule
+  N--O+ & v24--26 & 可达性、RPO、服务化、多 Profile \\
+  P--Q & v27 & SQLite/Registry/VHDX 插件 \\
+  R & v28 & 智能排除建议 + GUI 采纳 \\
+  T & v29 & 备份窗口 + deadline 降级 \\
+  \bottomrule
+  \end{tabular}
+  \vspace{0.4em}\\
+  \footnotesize 归档：\filepath{docs/WAVE\_ARCHIVE.md} · 363 gtest 全绿
+\end{frame}
+
 %--- 16 总结 ---
 \begin{frame}{总结}
   \begin{enumerate}
     \item \textbf{功能}：课程基础 + 多项扩展（无网络）
-    \item \textbf{工程}：宪法 + bench 门禁 + 233 测试
-    \item \textbf{经历}：Wave5 正确性 / 3.2 剪枝 / Phase A 止损
+    \item \textbf{工程}：宪法 + bench 门禁 + 363 测试 + ABI v29
+    \item \textbf{经历}：Wave5 正确性 / 3.2 剪枝 / Phase A 止损 / Wave A--T 能力弧
     \item \textbf{交付}：CLI + DLL + Workbench + CMake + CI
   \end{enumerate}
   \vspace{0.5em}

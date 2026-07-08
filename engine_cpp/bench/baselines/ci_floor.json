@@ -6,6 +6,7 @@
   "pipeline_ratio_256MB_min": 0.90,
   "backup_pipeline_MBps_min": 0,
   "backup_pipeline_256MBps_min": 105,
+  "hybrid_stream_ratio_min": 0.95,
   "backup_pipeline_2GBps_min": 112,
   "backup_pipeline_multi_MBps_min": 550,
   "ampl_ratio_post_compact_max": 1.05,

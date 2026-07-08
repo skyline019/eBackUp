@@ -48,6 +48,14 @@ export const MAINTENANCE_PHASES: TaskPhase[] = [
   { id: "apply", label: "应用变更" },
 ];
 
+export const MAINTENANCE_WIZARD_PHASES: TaskPhase[] = [
+  { id: "analyze", label: "分析" },
+  { id: "prune", label: "Prune" },
+  { id: "gc", label: "GC" },
+  { id: "compact", label: "Compact" },
+  { id: "done", label: "完成" },
+];
+
 export function phasesForKind(kind: TaskKind): TaskPhase[] {
   switch (kind) {
     case "backup":

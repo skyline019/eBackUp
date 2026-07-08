@@ -211,9 +211,16 @@ Wave & 版本 & 主题 \\
 4 & \versiontag{0.8.0} & Pipeline v4、L7 multi-file、PipelinePhaseStats、ExistsMany \\
 5 & \versiontag{0.9.0}--.4 & ChunkStore 并发修复、Streaming、Stage 3.1/3.2、L3a/L3b \\
 Sprint 4 & \versiontag{0.9.4} & CDC Phase B seg1 bulk、FastCdcSlice opt-in \\
+\midrule
+\multicolumn{3}{l}{\textbf{能力 Wave（ABI v14--v29）}} \\
+A--T & \versiontag{0.8+}--.5 & 见 \cref{ch:capability-waves} 与 \filepath{docs/WAVE\_ARCHIVE.md} \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\section{Manifest v5 与 Win 元数据}
+
+v5 在 \texttt{DocumentUsesV5} 时写入 \texttt{EBMANIFEST5}（ACL、inode、reparse、ADS \texttt{stream\_name}）。Windows 单文件备份可能含 ADS 附加条目——测试用 \texttt{test::FindManifestFile} 定位主文件。
 
 \section{EbHcrboStats 字段索引}
 

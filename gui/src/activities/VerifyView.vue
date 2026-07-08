@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { verifyRepo, recoverRepo, setAuditKey, setPassword, pathExists } from "@/api/ebbackup";
+import { verifyRepo, recoverRepo, setAuditKey, setPassword, pathExists, listOpsAudit } from "@/api/ebbackup";
 import { useRepoStore } from "@/stores/repoStore";
 import { useUiStore } from "@/stores/uiStore";
 import { setActivityRunner } from "@/composables/useActivityRunners";
@@ -18,6 +18,8 @@ const password = ref("");
 const auditKey = ref("");
 const repoEncrypted = ref(false);
 const busy = ref(false);
+const opsAuditBusy = ref(false);
+const opsAuditPreview = ref("");
 
 const FLAG_REQUIRE_ANCHOR = 0x0004;
 
@@ -111,6 +113,24 @@ async function recover() {
     busy.value = false;
   }
 }
+
+async function refreshOpsAudit() {
+  if (!repo.isOpen) {
+    ui.pushLog("请先打开仓库", "error");
+    return;
+  }
+  opsAuditBusy.value = true;
+  try {
+    const res = await listOpsAudit();
+    ui.setAuditResult(res);
+    opsAuditPreview.value = JSON.stringify(res, null, 2);
+    ui.pushLog(`已加载 ${res.entries?.length ?? 0} 条维护操作审计`, "meta");
+  } catch (e) {
+    ui.pushLog(formatVerifyError(await enrichError(e)), "error");
+  } finally {
+    opsAuditBusy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -197,6 +217,21 @@ async function recover() {
         Recover
       </el-button>
     </section>
+
+    <section class="panel-card audit-panel">
+      <div class="head-row">
+        <h2>维护操作审计</h2>
+        <el-button size="small" :loading="opsAuditBusy" :disabled="!repo.isOpen" @click="refreshOpsAudit">
+          刷新
+        </el-button>
+      </div>
+      <p class="desc">
+        GUI 执行的 Prune / GC / Compact / 就地 Apply（非 dry-run）会 append-only 写入
+        <code>audit/rar.chain</code>（kind=ops）。
+      </p>
+      <pre v-if="opsAuditPreview" class="ops-audit-preview">{{ opsAuditPreview }}</pre>
+      <p v-else class="desc">点击刷新查看最近 ops 条目；完整 JSON 亦可在输出面板「审计链」页签查看。</p>
+    </section>
   </div>
 </template>
 
@@ -235,5 +270,16 @@ async function recover() {
 .anchor-alert {
   margin-bottom: 12px;
   max-width: 560px;
+}
+.ops-audit-preview {
+  margin: 0;
+  padding: 10px;
+  max-height: 220px;
+  overflow: auto;
+  font-size: 11px;
+  border-radius: 6px;
+  background: var(--hover-bg);
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

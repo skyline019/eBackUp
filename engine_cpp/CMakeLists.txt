@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchLZ4.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchZSTD.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildSQLite.cmake")
 
 enable_language(C)
 
@@ -20,6 +21,7 @@ set(EBBACKUP_CORE_SOURCES
   src/common/digest_pool.cc
   src/common/fsync.cc
   src/common/path_encoding.cc
+  src/common/hook_runner.cc
   src/chunk/fast_cdc.cc
   src/chunk/fast_cdc_simd.cc
   src/chunk/cfi_bloom.cc
@@ -35,8 +37,10 @@ set(EBBACKUP_CORE_SOURCES
   src/io/mmap_reader.cc
   src/io/file_meta.cc
   src/scan/scan_entry.cc
+  src/scan/scan_hint_options.cc
   src/scan/backup_filter.cc
   src/scan/filter_loader.cc
+  src/scan/exclude_suggestions.cc
   src/crypto/aes_block.cc
   src/crypto/gcm_portable.cc
   src/crypto/aes_gcm.cc
@@ -44,6 +48,7 @@ set(EBBACKUP_CORE_SOURCES
   src/archive/eb_bundle.cc
   src/daemon/backup_daemon.cc
   src/audit/merkle.cc
+  src/audit/merkle_proof.cc
   src/audit/rar_chain.cc
   src/audit/rar_sign.cc
   src/audit/carl_anchor.cc
@@ -54,6 +59,7 @@ set(EBBACKUP_CORE_SOURCES
   src/store/eb_pack_compactor.cc
   src/store/repo_stats.cc
   src/store/orphan_gc.cc
+  src/store/orphan_explain.cc
   src/store/snapshot_store.cc
   src/store/retention_policy.cc
   src/state/superblock.cc
@@ -63,6 +69,28 @@ set(EBBACKUP_CORE_SOURCES
   src/pipeline/file_scheduler.cc
   src/engine/backup_engine.cc
   src/engine/restore_engine.cc
+  src/engine/restore_plan.cc
+  src/engine/restore_path_remap.cc
+  src/engine/restore_options_json.cc
+  src/store/maintenance_wizard.cc
+  src/catalog/path_index.cc
+  src/catalog/manifest_browse_index.cc
+  src/catalog/manifest_diff.cc
+  src/catalog/restore_acceptance.cc
+  src/catalog/snapshot_meta.cc
+  src/catalog/job_report.cc
+  src/catalog/snapshot_reachability.cc
+  src/winmeta/win_meta.cc
+  src/report/backup_report.cc
+  src/report/rpo_summary.cc
+  src/job/job_config.cc
+  src/job/backup_window.cc
+  src/plugin/plugin_registry.cc
+  src/plugin/sqlite_checkpoint_plugin.cc
+  src/plugin/registry_hive_plugin.cc
+  src/plugin/vhdx_scan_plugin.cc
+  src/restore/in_place_restore.cc
+  src/queue/job_queue.cc
   src/engine/eb_backup_capi.cc
 )
 
@@ -74,6 +102,13 @@ target_include_directories(ebbackup_core
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
+if (WIN32)
+  target_link_libraries(ebbackup_core PRIVATE advapi32)
+endif()
+if(EBBACKUP_HAVE_SQLITE3)
+  target_link_libraries(ebbackup_core PRIVATE ebbackup_sqlite3)
+  target_compile_definitions(ebbackup_core PUBLIC EBBACKUP_HAVE_SQLITE3)
+endif()
 target_link_libraries(ebbackup_core PRIVATE lz4_static libzstd_static)
 if(WIN32)
   target_link_libraries(ebbackup_core PRIVATE bcrypt)
@@ -90,10 +125,19 @@ else()
   endif()
 endif()
 
-add_executable(eb cli/eb_main.cc)
+add_executable(eb cli/eb_main.cc cli/eb_service_win.cc)
 target_link_libraries(eb PRIVATE ebbackup_core)
+if(WIN32)
+  target_link_libraries(eb PRIVATE advapi32)
+endif()
 if(MSVC)
   target_link_options(eb PRIVATE $<$<CONFIG:Release>:/LTCG>)
+endif()
+
+add_executable(ebrecover cli/ebrecover_main.cc)
+target_link_libraries(ebrecover PRIVATE ebbackup_core)
+if(MSVC)
+  target_link_options(ebrecover PRIVATE $<$<CONFIG:Release>:/LTCG>)
 endif()
 
 add_executable(ebbackup_bench tests/bench/chunk_bench.cc)
@@ -160,6 +204,7 @@ if(EBBACKUP_BUILD_TESTS)
     tests/store/repo_stats_test.cc
     tests/store/snapshot_store_test.cc
     tests/store/retention_policy_test.cc
+    tests/store/maintenance_wizard_test.cc
     tests/store/chunk_store_lz4_test.cc
     tests/state/superblock_test.cc
     tests/state/sync_executor_test.cc
@@ -171,6 +216,8 @@ if(EBBACKUP_BUILD_TESTS)
     tests/engine/snapshot_gc_test.cc
     tests/engine/snapshot_verify_test.cc
     tests/engine/backup_engine_test.cc
+    tests/engine/backup_report_integration_test.cc
+    tests/engine/manifest_index_integration_test.cc
     tests/engine/recovery_test.cc
     tests/engine/coalesced_meta_test.cc
     tests/engine/eb_hcrbo_test.cc
@@ -181,15 +228,43 @@ if(EBBACKUP_BUILD_TESTS)
     tests/engine/restore_meta_test.cc
     tests/engine/restore_encrypt_test.cc
     tests/engine/selective_restore_test.cc
+    tests/engine/restore_path_remap_test.cc
+    tests/engine/symlink_remap_test.cc
+    tests/restore/in_place_restore_test.cc
+    tests/restore/in_place_three_way_integration_test.cc
+    tests/catalog/path_index_test.cc
+    tests/catalog/manifest_browse_index_test.cc
+    tests/catalog/manifest_diff_test.cc
+    tests/catalog/snapshot_reachability_test.cc
+    tests/report/backup_report_test.cc
+    tests/report/rpo_summary_test.cc
+    tests/engine/manifest_v5_test.cc
+    tests/winmeta/win_meta_test.cc
+    tests/winmeta/hardlink_backup_restore_test.cc
+    tests/winmeta/acl_restore_test.cc
+    tests/queue/job_queue_test.cc
+    tests/queue/job_queue_integration_test.cc
+    tests/job/job_config_test.cc
+    tests/job/backup_window_test.cc
+    tests/job/multi_job_backup_test.cc
+    tests/job/job_report_test.cc
+    tests/store/prune_immutability_test.cc
     tests/scan/special_files_test.cc
+    tests/scan/scan_errors_test.cc
+    tests/scan/win_reparse_scan_test.cc
+    tests/scan/ads_backup_restore_test.cc
     tests/scan/backup_filter_test.cc
     tests/scan/filter_loader_test.cc
+    tests/scan/exclude_suggestions_test.cc
     tests/store/chunk_store_encrypt_test.cc
     tests/archive/eb_bundle_test.cc
+    tests/archive/eb_bundle_delta_test.cc
     tests/daemon/schedule_smoke_test.cc
+    tests/daemon/schedule_hooks_test.cc
     tests/daemon/schedule_json_test.cc
     tests/daemon/schedule_snapshot_test.cc
     tests/daemon/watch_smoke_test.cc
+    tests/daemon/daemon_stop_test.cc
     tests/crypto/aes_gcm_portable_test.cc
     tests/crypto/aes_gcm_nist_test.cc
     tests/crypto/pbkdf2_test.cc
@@ -198,9 +273,12 @@ if(EBBACKUP_BUILD_TESTS)
     tests/engine/digest_dual_test.cc
     tests/pipeline/pipeline_encrypt_filter_test.cc
     tests/audit/merkle_test.cc
+    tests/audit/merkle_proof_test.cc
     tests/audit/rar_chain_test.cc
+    tests/audit/ops_audit_test.cc
     tests/audit/carl_anchor_test.cc
     tests/store/orphan_gc_test.cc
+    tests/store/orphan_explain_test.cc
     tests/pipeline/pipeline_parity_test.cc
     tests/pipeline/pipeline_v3_test.cc
     tests/pipeline/pipeline_v4_test.cc
@@ -209,6 +287,14 @@ if(EBBACKUP_BUILD_TESTS)
     tests/failure/powerfail_test.cc
     tests/failure/balanced_durability_test.cc
     tests/cli/restore_cli_test.cc
+    tests/cli/queue_cli_test.cc
+    tests/cli/service_cli_test.cc
+    tests/cli/plugin_cli_test.cc
+    tests/cli/suggest_excludes_cli_test.cc
+    tests/plugin/plugin_framework_test.cc
+    tests/plugin/sqlite_checkpoint_plugin_test.cc
+    tests/plugin/registry_hive_plugin_test.cc
+    tests/plugin/vhdx_scan_plugin_test.cc
     tests/helpers/test_util.cc
     tests/helpers/tree_util.cc
     tests/helpers/fixture_util.cc
@@ -221,12 +307,16 @@ if(EBBACKUP_BUILD_TESTS)
     tests/engine/real_fixture_test.cc
     tests/engine/media_fixture_test.cc
     tests/pipeline/pipeline_resilience_test.cc
+    tests/pipeline/pipeline_skip_issues_test.cc
     tests/failure/powerfail_extended_test.cc
     tests/failure/chaos_test.cc
   )
 
   add_library(ebbackup_testlib OBJECT ${EBBACKUP_TEST_SOURCES})
   target_link_libraries(ebbackup_testlib PUBLIC ebbackup_core GTest::gtest)
+  if(EBBACKUP_HAVE_SQLITE3)
+    target_link_libraries(ebbackup_testlib PRIVATE ebbackup_sqlite3)
+  endif()
   target_include_directories(ebbackup_testlib PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/helpers"
   )

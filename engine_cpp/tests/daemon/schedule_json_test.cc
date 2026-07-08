@@ -4,6 +4,7 @@
 
 #include "ebbackup/daemon/backup_daemon.h"
 #include "ebbackup/engine/backup_engine.h"
+#include "ebbackup/job/job_config.h"
 #include "test_util.h"
 
 namespace ebbackup {
@@ -114,6 +115,47 @@ TEST(ScheduleJsonTest, CompressAndDurabilityFields) {
   EXPECT_EQ(cfg.backup_options.compress_mode, CompressMode::kZstd);
   EXPECT_EQ(cfg.backup_options.cpu_budget_permille, 600u);
   EXPECT_EQ(cfg.backup_options.durability, DurabilityMode::kBalanced);
+}
+
+TEST(ScheduleJsonTest, QueueDrainModeRunsEnqueuedJobs) {
+  const std::string repo = test::TempDir("json_qdrain_repo");
+  const std::string source_a = test::TempDir("json_qdrain_src_a");
+  const std::string source_b = test::TempDir("json_qdrain_src_b");
+  const std::string config_path = test::TempDir("json_qdrain_cfg") + "/schedule.json";
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
+  test::WriteFile(source_a + "/one.txt", "one");
+  test::WriteFile(source_b + "/two.txt", "two");
+
+  job::BackupJob job_a{};
+  job_a.id = "job_a";
+  job_a.source_path = source_a;
+  job::BackupJob job_b{};
+  job_b.id = "job_b";
+  job_b.source_path = source_b;
+  ASSERT_TRUE(job::UpsertJob(repo, job_a).ok());
+  ASSERT_TRUE(job::UpsertJob(repo, job_b).ok());
+
+  const std::string json =
+      "{\n"
+      "  \"mode\": \"queue_drain\",\n"
+      "  \"repo_path\": \"" +
+      JsonPath(repo) + "\",\n"
+               "  \"job_ids\": \"job_a,job_b\",\n"
+               "  \"interval_seconds\": 1\n"
+               "}\n";
+  test::WriteFile(config_path, json);
+
+  ScheduleConfig cfg{};
+  ASSERT_TRUE(LoadScheduleConfigAuto(config_path, &cfg).ok());
+  EXPECT_EQ(cfg.mode, "queue_drain");
+  ASSERT_EQ(cfg.job_ids.size(), 2u);
+  ASSERT_TRUE(RunJobQueueDrain(repo, cfg.backup_options, cfg.job_ids, 1).ok());
+
+  BackupEngine engine(repo);
+  ASSERT_TRUE(engine.Open().ok());
+  std::vector<SnapshotEntry> snaps;
+  ASSERT_TRUE(engine.ListSnapshots(&snaps).ok());
+  EXPECT_GE(snaps.size(), 2u);
 }
 
 }  // namespace

@@ -11,6 +11,7 @@
 #include "ebbackup/engine/backup_engine.h"
 #include "ebbackup/engine/manifest.h"
 #include "ebbackup/pipeline/pipeline_phase_stats.h"
+#include "ebbackup/report/backup_report.h"
 #include "ebbackup/store/chunk_store.h"
 
 namespace ebbackup {
@@ -30,6 +31,7 @@ struct BackupPipelineOptions {
   DurabilityMode durability{DurabilityMode::kStrict};
   ContentClassStats* content_stats{nullptr};
   PipelinePhaseStats* phase_stats{nullptr};
+  std::vector<report::BackupPathIssue>* scan_issues{nullptr};
 };
 
 struct BackupPipelineResult {

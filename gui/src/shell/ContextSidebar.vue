@@ -2,10 +2,15 @@
 import { computed } from "vue";
 import { useUiStore } from "@/stores/uiStore";
 import { useRepoStore } from "@/stores/repoStore";
+import { useJobStore } from "@/stores/jobStore";
+import { enrichError, formatBackupError } from "@/utils/errorMessages";
 import { RefreshRight } from "@element-plus/icons-vue";
 
 const ui = useUiStore();
 const repo = useRepoStore();
+const jobs = useJobStore();
+
+const quickJobs = computed(() => jobs.jobs.slice(0, 5));
 
 const title = computed(() => {
   switch (ui.activity) {
@@ -15,6 +20,8 @@ const title = computed(() => {
       return "备份上下文";
     case "snapshots":
       return "快照";
+    case "browse":
+      return "备份内容";
     case "restore":
       return "恢复";
     case "verify":
@@ -39,6 +46,28 @@ function openRecent(path: string) {
 
 function goRestore(txnId: number) {
   ui.goRestoreWithTxn(txnId);
+}
+
+function goBrowse(txnId: number) {
+  ui.goBrowseWithTxn(txnId);
+}
+
+function goBackupJobs() {
+  ui.setActivity("backup");
+}
+
+async function quickRunJob(jobId: string) {
+  if (!repo.isOpen) return;
+  ui.setActivity("backup");
+  ui.pushLog(`运行作业: ${jobId}`, "cmd");
+  try {
+    const stats = await jobs.runJob(jobId, true, 0x0020 | 0x0001 | 0x0002);
+    ui.setTaskResult(stats);
+    ui.pushLog(`作业 ${jobId} 完成 — 文件 ${stats.files_processed}`, "success");
+    await repo.refreshSnapshots();
+  } catch (e) {
+    ui.pushLog(formatBackupError(await enrichError(e)), "error");
+  }
 }
 </script>
 
@@ -68,12 +97,20 @@ function goRestore(txnId: number) {
 
       <template v-else-if="ui.activity === 'backup' && repo.isOpen">
         <dl class="stats-dl">
-          <dt>上次源目录</dt>
-          <dd class="mono">{{ repo.lastSourcePath || "—" }}</dd>
+          <dt>作业数</dt>
+          <dd>{{ jobs.jobs.length }}</dd>
           <dt>快照数</dt>
           <dd>{{ repo.snapshots.length }}</dd>
         </dl>
-        <p class="muted">F1 打开帮助 · 菜单可一键运行备份</p>
+        <ul v-if="quickJobs.length" class="snap-list">
+          <li v-for="j in quickJobs" :key="j.id" class="snap-item">
+            <strong>{{ j.name }}</strong>
+            <span class="muted mono">{{ j.id }}</span>
+            <el-button link type="primary" size="small" @click="quickRunJob(j.id)">运行</el-button>
+          </li>
+        </ul>
+        <p v-else class="muted">尚无保存的作业</p>
+        <el-button link type="primary" @click="goBackupJobs">管理作业 →</el-button>
       </template>
 
       <template v-else-if="ui.activity === 'snapshots' && repo.isOpen">
@@ -85,6 +122,21 @@ function goRestore(txnId: number) {
           </li>
         </ul>
         <p v-if="!repo.snapshots.length" class="muted">尚无快照</p>
+      </template>
+
+      <template v-else-if="ui.activity === 'browse' && repo.isOpen">
+        <p class="muted">选择 Txn 后刷新，可搜索路径查看 manifest 中的文件与目录。</p>
+        <ul v-if="repo.snapshots.length" class="snap-list">
+          <li
+            v-for="s in repo.snapshots.slice(0, 8)"
+            :key="s.txn_id"
+            class="snap-item clickable"
+            @click="goBrowse(s.txn_id)"
+          >
+            <strong>#{{ s.txn_id }}</strong>
+            <span class="muted">{{ s.file_count }} 文件</span>
+          </li>
+        </ul>
       </template>
 
       <template v-else-if="ui.activity === 'restore' && repo.isOpen">

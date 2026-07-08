@@ -15,6 +15,30 @@ namespace {
 constexpr size_t kParallelHashMinBytes = 1024 * 1024;
 constexpr size_t kParallelHashMinChunks = 2;
 
+size_t NextChunkCutEnd(const uint8_t* data, size_t len, size_t pos,
+                       const FastCdcConfig& cfg, uint32_t mask,
+                       const uint32_t gear[256]) {
+  const size_t remaining = len - pos;
+  if (remaining <= cfg.min_size) return len;
+
+  const uint32_t w = cfg.window_size;
+  const size_t scan_start = pos + cfg.min_size;
+  size_t cut = std::min(pos + cfg.max_size, len);
+  bool found = false;
+
+  if (scan_start >= w && scan_start < cut) {
+    fastcdc_internal::ScanGearCut(data, scan_start, cut, w, mask, gear, &cut,
+                                  &found);
+  }
+
+  if (!found && remaining > cfg.max_size) {
+    cut = pos + cfg.max_size;
+  } else if (!found) {
+    cut = len;
+  }
+  return cut;
+}
+
 void HashChunkRegions(DigestAlgo algo, const uint8_t* data,
                       const std::vector<size_t>& offsets,
                       const std::vector<uint32_t>& lengths,
@@ -102,38 +126,63 @@ Status FastCdcSlice::ChunkCuts(const uint8_t* data, size_t len,
   }
 
   const uint32_t mask = Mask();
-  const uint32_t w = config_.window_size;
+  size_t pos = 0;
   offsets->reserve(len / config_.min_size + 1);
   lengths->reserve(offsets->capacity());
-
-  size_t pos = 0;
   while (pos < len) {
-    const size_t remaining = len - pos;
-    if (remaining <= config_.min_size) {
-      offsets->push_back(pos);
-      lengths->push_back(static_cast<uint32_t>(remaining));
-      break;
-    }
-
-    const size_t scan_start = pos + config_.min_size;
-    size_t cut = std::min(pos + config_.max_size, len);
-    bool found = false;
-
-    if (scan_start >= w && scan_start < cut) {
-      fastcdc_internal::ScanGearCut(data, scan_start, cut, w, mask, gear_,
-                                    &cut, &found);
-    }
-
-    if (!found && remaining > config_.max_size) {
-      cut = pos + config_.max_size;
-    } else if (!found) {
-      cut = len;
-    }
-
+    const size_t cut = NextChunkCutEnd(data, len, pos, config_, mask, gear_);
     offsets->push_back(pos);
     lengths->push_back(static_cast<uint32_t>(cut - pos));
     pos = cut;
   }
+  return Status::Ok();
+}
+
+Status FastCdcSlice::ChunkCutsUntil(const uint8_t* data, size_t len,
+                                    size_t until_offset,
+                                    FastCdcCutCursor* cursor,
+                                    std::vector<size_t>* offsets,
+                                    std::vector<uint32_t>* lengths,
+                                    bool* complete) const {
+  if (!cursor || !offsets || !lengths || !complete) {
+    return Status::InvalidArgument("out is null");
+  }
+  offsets->clear();
+  lengths->clear();
+  *complete = false;
+  if (len == 0) {
+    *complete = true;
+    return Status::Ok();
+  }
+
+  if (len <= config_.min_size) {
+    if (cursor->pos == 0 && until_offset > 0) {
+      offsets->push_back(0);
+      lengths->push_back(static_cast<uint32_t>(len));
+    }
+    cursor->pos = len;
+    *complete = true;
+    return Status::Ok();
+  }
+
+  if (cursor->pos >= len) {
+    *complete = true;
+    return Status::Ok();
+  }
+
+  const uint32_t mask = Mask();
+  while (cursor->pos < len) {
+    if (cursor->pos >= until_offset) {
+      *complete = cursor->pos >= len;
+      return Status::Ok();
+    }
+    const size_t cut =
+        NextChunkCutEnd(data, len, cursor->pos, config_, mask, gear_);
+    offsets->push_back(cursor->pos);
+    lengths->push_back(static_cast<uint32_t>(cut - cursor->pos));
+    cursor->pos = cut;
+  }
+  *complete = true;
   return Status::Ok();
 }
 

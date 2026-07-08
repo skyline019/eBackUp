@@ -1,9 +1,15 @@
 #include "ebbackup/store/retention_policy.h"
 
 #include <algorithm>
+#include <ctime>
 #include <cstdlib>
 #include <map>
 #include <set>
+
+#include "ebbackup/catalog/snapshot_meta.h"
+#include "ebbackup/common/path_util.h"
+#include "ebbackup/engine/manifest.h"
+#include "ebbackup/state/superblock.h"
 
 namespace ebbackup {
 
@@ -113,18 +119,34 @@ bool IsKeptByPolicy(const std::vector<SnapshotEntry>& entries,
 
 Status PruneSnapshots(const std::string& repo_path,
                       const RetentionPolicy& policy, bool dry_run,
-                      PruneReport* report) {
+                      PruneReport* report, const PruneOptions& options) {
   if (!report) return Status::InvalidArgument("report is null");
   *report = PruneReport{};
+
+  BackupSuperBlock sb{};
+  BackupSuperBlockStore store(RepoJoinUtf8(repo_path, "superblock.bin"));
+  const Status sb_st = store.Load(&sb);
+  if (!sb_st.ok()) return sb_st;
+  if (RepoUsesImmutable(sb) && !dry_run && !options.authorized) {
+    return Status::Conflict("immutable repo: audit authorization required");
+  }
 
   std::vector<SnapshotEntry> entries;
   const Status load_st = ListSnapshots(repo_path, &entries);
   if (!load_st.ok()) return load_st;
   if (entries.empty()) return Status::Ok();
 
+  std::unordered_map<uint64_t, catalog::SnapshotMetaRecord> meta;
+  (void)catalog::LoadSnapshotMetaMap(repo_path, &meta);
+  const int64_t now = static_cast<int64_t>(std::time(nullptr));
+
   std::unordered_set<uint64_t> keep;
   ComputeKeepSet(entries, policy, &keep);
-  report->kept_count = keep.size();
+  for (const auto& kv : meta) {
+    if (kv.second.immutable_until_unix > now) {
+      keep.insert(kv.first);
+    }
+  }
 
   for (const auto& e : entries) {
     if (keep.count(e.txn_id) > 0) continue;
@@ -135,6 +157,7 @@ Status PruneSnapshots(const std::string& repo_path,
       if (!del.ok()) return del;
     }
   }
+  report->kept_count = entries.size() - report->pruned_txn_ids.size();
   return Status::Ok();
 }
 

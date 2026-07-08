@@ -1,9 +1,9 @@
-\chapter{C API 与 ABI v12}
+\chapter{C API 与 ABI v29}
 \label{ch:c-api}
 
 \section{概述}
 
-稳定 C API 定义于 \filepath{include/ebbackup/eb\_backup.h}，实现于 \filepath{src/engine/eb\_backup\_capi.cc}。当前 \texttt{EB\_BACKUP\_ABI\_VERSION = 12}。\versiontag{0.7.0}--\versiontag{0.9.4} \textbf{无 breaking ABI 变更}。
+稳定 C API 定义于 \filepath{include/ebbackup/eb\_backup.h}，实现于 \filepath{src/engine/eb\_backup\_capi.cc}。当前 \texttt{EB\_BACKUP\_ABI\_VERSION = 29}。\versiontag{0.6.0}--\versiontag{0.9.4} 维持 v7--v12 兼容面；\versiontag{0.8+} 起能力 Wave 递增至 v29（见 \cref{ch:capability-waves}）。
 
 集成方应在运行时调用 \texttt{eb\_backup\_abi\_version()} 并与编译期 \texttt{EB\_BACKUP\_ABI\_VERSION} 比对。
 
@@ -19,6 +19,31 @@ v9 & \versiontag{0.2.0} & \texttt{eb\_backup\_init\_repo\_ex}、\texttt{LEGACY\_
 v10 & \versiontag{0.3.0} & \texttt{eb\_backup\_compact}、\texttt{repo\_stats}、\texttt{INIT\_LEGACY} \\
 v11 & \versiontag{0.4.0} & \texttt{list\_snapshots}、\texttt{prune\_snapshots}、\texttt{restore\_at}/\texttt{verify\_at} \\
 v12 & \versiontag{0.6.0} & 默认 EbPack + coalesced meta；\texttt{NO\_PIPELINE} \\
+\bottomrule
+\end{longtable}
+
+\section{ABI 版本演进表（v13--v29，能力 Wave）}
+
+\begin{longtable}{@{}clp{7.5cm}@{}}
+\toprule
+ABI & Wave & 关键新增 \\
+\midrule
+v13 & — & \texttt{set\_filter\_json}；preview restore；maintenance wizard \\
+v14 & L & path index build/query；manifest page JSON \\
+v15 & L & snapshot diff；restore acceptance export \\
+v16 & B/E & Manifest v5 Win 元数据 \\
+v17 & C/D & backup report JSON；pre/post hooks \\
+v18 & F & \texttt{jobs.json} CRUD；\texttt{run\_job} \\
+v19--v20 & M/I & in-place preview/apply；Hybrid CDC 默认 \\
+v21 & K & delta bundle；symlink remap；orphan policy \\
+v22 & L & manifest browse sidecar；job queue C API \\
+v23 & M & three-way merge；dry-run；overwrite 语义 \\
+v24 & N & reachability；RPO summary；queue drain \\
+v25 & O & orphan explain；ops audit $\rightarrow$ RAR \\
+v26 & O+ & \texttt{eb service}；Workbench multi-profile \\
+v27 & P/Q & vertical plugins；report \texttt{plugins[]} \\
+v28 & R & smart exclude suggestions；\texttt{exclude\_paths[]} \\
+v29 & T & backup window；durability adaptive；截断报告 \\
 \bottomrule
 \end{longtable}
 

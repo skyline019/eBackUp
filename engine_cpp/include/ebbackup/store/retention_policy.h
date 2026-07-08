@@ -26,6 +26,10 @@ struct PruneReport {
   std::vector<uint64_t> pruned_txn_ids;
 };
 
+struct PruneOptions {
+  bool authorized{false};
+};
+
 RetentionPolicy DefaultRetentionPolicy();
 
 Status ParseRetentionTiers(const std::string& spec, RetentionPolicy* out);
@@ -36,7 +40,8 @@ void ComputeKeepSet(const std::vector<SnapshotEntry>& entries,
 
 Status PruneSnapshots(const std::string& repo_path,
                       const RetentionPolicy& policy, bool dry_run,
-                      PruneReport* report);
+                      PruneReport* report,
+                      const PruneOptions& options = PruneOptions{});
 
 bool IsKeptByPolicy(const std::vector<SnapshotEntry>& entries,
                     const RetentionPolicy& policy, uint64_t txn_id);

@@ -1,0 +1,145 @@
+\chapter{阶段五：能力 Wave（Wave A--T，ABI v14--v29）}
+\label{ch:phase-capability-waves}
+
+\section{从性能 sprint 到能力 sprint}
+
+Wave 2--5 解决的是 \textbf{P1 吞吐}（L5/L7 数字）；\versiontag{0.9.4} 之后，主压力转为 \textbf{P4 可交付}与\textbf{产品缺口}——用户要的不只是「快」，而是可证明、可运维、可嵌入 Windows 生态的备份内核。
+
+\begin{philobox}[两套 Wave 编号]
+\textbf{Wave 1--5}：性能 sprint（v0.1--0.9.4），见 \cref{ch:phase-waves,ch:phase-streaming}。\\
+\textbf{Wave A--T}：能力 sprint（Phase 0--11），本文归档；与 ABI v14--v29 一一对应。
+\end{philobox}
+
+权威 Markdown 归档：\filepath{docs/WAVE\_ARCHIVE.md}；缺口表：\filepath{docs/product/BACKUP\_CAPABILITY\_GAPS.md}。
+
+\section{Wave A：缺口基线与治理（Phase 0）}
+
+\textbf{压力}：P5 维护带宽——没有结构化缺口表，功能会无限膨胀。
+
+\textbf{决策}：先写「不做什么」（无 VSS、无 cloud sync），再写 Phase 路线图。
+
+\textbf{交付}：\filepath{BACKUP\_CAPABILITY\_GAPS.md}、\filepath{CAPABILITY\_ROADMAP.md}、\filepath{docs/README.md} 索引。
+
+\textbf{结果}：\outcome{正向}——后续每个 Wave 有明确 GAP-ID 闭合标准。
+
+\section{Wave B--E：Windows 保真与尽力一致（Phase 3--4，ABI v16--v17）}
+
+\subsection{Wave B：Manifest v5}
+
+\textbf{压力}：P4——Windows 用户期望 ACL、硬链、联接点、ADS 可恢复。
+
+\textbf{修改}：\texttt{EBMANIFEST5} 扩展 \texttt{security\_descriptor\_b64}、\texttt{inode\_id}、\texttt{reparse\_*}、\texttt{stream\_name}；\filepath{win\_meta.cc} 采集。
+
+\subsection{Wave C--D：尽力一致 Completion + 深化}
+
+\textbf{压力}：P3——扫描遇不可读路径不能 abort 整库；P4——用户需要知道「跳过了什么」。
+
+\textbf{修改}：
+\begin{itemize}[nosep]
+  \item \filepath{scan\_entry.cc}：\texttt{ScanResult}、深度上限、issue 收集；
+  \item 备份报告 \filepath{reports/<txn>.json} + hooks；
+  \item Pipeline per-path skip；\texttt{BackupReportPanel.vue}。
+\end{itemize}
+
+\textbf{剪枝}：明确不做 VSS（GAP-CONSIST-01）——成本与生态边界不可控。
+
+\subsection{Wave E 深化}
+
+硬链 dedup、junction 恢复、ACL best\_effort、ADS E2E——Windows 测试矩阵从 0 到 4 套专项 gtest。
+
+\section{Wave F--G：多 Job 与 GUI 作业（Phase 5，ABI v18）}
+
+\textbf{压力}：P4——单源单策略无法满足「DB  nightly + 文档 hourly」。
+
+\textbf{修改}：\filepath{jobs.json} CRUD；\texttt{RunJob}；\texttt{snapshot\_meta.jsonl}（\texttt{job\_id}、WORM）；GUI \filepath{BackupView} 作业 CRUD。
+
+\textbf{结果}：\outcome{正向}——内核从「单次 backup CLI」变为「策略容器」；\outcome{遗留}——GAP-JOB-05 备份窗口留待 Wave T。
+
+\section{Wave I：Hybrid CDC（Sprint 5，ABI v20 默认）}
+
+\textbf{压力}：P1——Streaming 路径 chunk 占 83\% 仍不够；P5——不能无限加 worker。
+
+\textbf{决策}：Hybrid CDC 默认启用（FastCdcSlice + stream replay 混合），而非再加 Pipeline v5。
+
+\textbf{数据}：bench \texttt{hybrid\_stream\_ratio} $\geq$ 0.95；profile 中 \texttt{hybrid\_cuts\_ns} 替代部分 \texttt{stream\_cdc\_ns}。
+
+\textbf{剪枝}：\texttt{EBBACKUP\_CDC\_HYBRID=0} opt-out；Phase A 仍 opt-in。
+
+\section{Wave K--M：灾备闭环（Phase 6，ABI v19--v23）}
+
+\begin{table}[htbp]
+\centering
+\caption{灾备 Wave 交付}
+\small
+\begin{tabular}{@{}llp{7cm}@{}}
+\toprule
+Wave & ABI & 主题 \\
+\midrule
+K & v21 & Symlink remap；EBB v2 delta bundle \\
+M & v23 & 三路合并就地恢复；RestoreView bulk conflict；\texttt{ebrecover} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{压力}：P3——「只能恢复到新目录」在 DR 场景不可接受；P4——冲突必须可预览、可 bulk 决议。
+
+\textbf{结果}：\outcome{正向}——DR 从 demo 变为可演练工作流；gtest 363 含 \texttt{in\_place} 与 \texttt{three\_way} 专项。
+
+\section{Wave L：规模（Phase 7，ABI v22）}
+
+Manifest browse sidecar（\filepath{catalog/manifest\_browse/<txn>.mbi}）；持久化 Job 队列 \filepath{job\_queue.jsonl}；百万文件 browse 不再全量读 manifest。
+
+\section{Wave N--O+：平台与合规（Phase 8，ABI v24--v26）}
+
+\begin{longtable}{@{}lp{10cm}@{}}
+\toprule
+Wave & 交付 \\
+\midrule
+N & 增量链可达性；RPO 摘要；队列 GUI + \texttt{queue\_drain}；滞后告警 MVP \\
+O & 孤儿解释 JSON；GUI ops 审计 $\rightarrow$ RAR \\
+O+ & Windows SCM \texttt{eb service}；systemd timer；Workbench 多 Profile \\
+\bottomrule
+\end{longtable}
+
+\textbf{压力}：P4——「能 backup」$\neq$「能 7$\times$24 运维」。
+
+\section{Wave P--Q：垂直插件（Phase 9，ABI v27）}
+
+\textbf{决策}：插件走 \texttt{IBackupPlugin} 生命周期（Quiesce/ExtraScanRoots/Thaw），而非 fork 进程。
+
+\textbf{内置}：\texttt{sqlite\_checkpoint}、\texttt{registry\_hive}、\texttt{vhdx\_scan}。
+
+Wave Q 打磨：报告 \texttt{plugins[]}、schedule \texttt{plugins=}、VHDX 条件 E2E。
+
+\section{Wave R：智能排除（Phase 10，ABI v28）}
+
+\textbf{压力}：P4——用户不会写 filter；误排除比慢备份更致命。
+
+\textbf{决策}：建议必须\textbf{可解释 + 须确认}，不自动生效。
+
+\textbf{修改}：浅扫描 catalog（\texttt{.git}、\texttt{node\_modules}、\texttt{Thumbs.db} 等）；\texttt{--include-ide}；GUI 逐条「添加」。
+
+\section{Wave T：备份窗口（Phase 11，ABI v29）}
+
+\textbf{压力}：GAP-JOB-05——生产环境只允许夜间备份；deadline 前必须完成或优雅降级。
+
+\textbf{修改}：
+\begin{itemize}[nosep]
+  \item \filepath{job/backup\_window.cc}：\texttt{IsWithinBackupWindow}、跨午夜；
+  \item 窗外 \texttt{Conflict}；queue drain 跳过；
+  \item deadline grace 内 Strict$\rightarrow$Balanced；超时 \texttt{TruncatePendingFilesAt}；
+  \item 报告 \texttt{durability\_downgraded}、\texttt{window\_truncated}。
+\end{itemize}
+
+\textbf{结果}：\outcome{正向}——策略容器补齐「何时跑」维度；ctest 363/363 全绿。
+
+\section{能力 Wave 阶段总结}
+
+\begin{philobox}[Wave A--T 教给我的事]
+\begin{enumerate}[nosep]
+  \item \textbf{ABI 版本}是生态契约——每个 Wave 合并前更新 \filepath{ABI\_AND\_FEATURES.md} 与 Workbench shim；
+  \item \textbf{Windows ADS/Zone.Identifier} 让「单文件测试」在 manifest 出现 2 条记录——测试须 \texttt{FindManifestFile} 而非 \texttt{files.size()==1}；
+  \item \textbf{Hybrid CDC} 改变 profile 语义——\texttt{stream\_cdc\_ns} 可为 0，须同时看 \texttt{hybrid\_cuts\_ns}；
+  \item 性能 Wave 与能力 Wave \textbf{可并行叙事}，但 merge 门禁不变：Stage 3.1 blocking floors。
+\end{enumerate}
+\end{philobox}

@@ -1,0 +1,7 @@
+{
+  "mode": "queue_drain",
+  "repo_path": "C:\\ebbackup-data\\repo",
+  "interval_seconds": 3600,
+  "job_ids": [],
+  "plugins": ""
+}

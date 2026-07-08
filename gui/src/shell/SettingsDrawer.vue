@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useUiStore } from "@/stores/uiStore";
+import { useProfileStore } from "@/stores/profileStore";
+import { deleteProfile, renameProfile } from "@/api/ebbackup";
+import { isTauriRuntime } from "@/utils/tauriRuntime";
 import {
   defaultUiSettings,
   hasActiveWallpaper,
@@ -10,13 +13,14 @@ import {
   WALLPAPER_READABILITY_FLOORS,
 } from "@/utils/themeSettings";
 import { useWallpaperFiles } from "@/composables/useWallpaperFiles";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 
 const props = defineProps<{ modelValue: boolean }>();
 const emit = defineEmits<{ (e: "update:modelValue", v: boolean): void }>();
 
 const ui = useUiStore();
-const tab = ref<"theme" | "wallpaper" | "layout">("theme");
+const profile = useProfileStore();
+const tab = ref<"theme" | "wallpaper" | "layout" | "profile">("theme");
 
 const visible = computed({
   get: () => props.modelValue,
@@ -79,6 +83,38 @@ async function onSave() {
   const where = ui.settingsFilePath || "localStorage";
   ui.pushLog(`外观设置已保存 (${where})`, "success");
   visible.value = false;
+}
+
+async function onRenameProfile(p: { id: string; name: string }) {
+  if (!isTauriRuntime()) return;
+  try {
+    const { value } = await ElMessageBox.prompt("新名称", "重命名 Profile", {
+      inputValue: p.name,
+      confirmButtonText: "保存",
+      cancelButtonText: "取消",
+    });
+    if (!value?.trim() || value.trim() === p.name) return;
+    await renameProfile(p.id, value.trim());
+    await profile.refresh();
+    ElMessage.success("已重命名");
+  } catch {
+    /* cancelled */
+  }
+}
+
+async function onDeleteProfile(p: { id: string; name: string }) {
+  if (!isTauriRuntime() || p.id === "default") return;
+  try {
+    await ElMessageBox.confirm(`删除 Profile「${p.name}」？`, "确认", { type: "warning" });
+    await deleteProfile(p.id);
+    await profile.refresh();
+    if (profile.activeProfileId === p.id) {
+      await profile.switchTo("default");
+    }
+    ElMessage.success("已删除");
+  } catch {
+    /* cancelled */
+  }
 }
 </script>
 
@@ -296,7 +332,38 @@ async function onSave() {
           <el-form-item label="默认折叠输出面板">
             <el-switch v-model="ui.settings.logCollapsed" @change="onPreview" />
           </el-form-item>
+          <el-form-item label="备份滞后告警（天）">
+            <el-input-number
+              v-model="ui.settings.staleBackupAlertDays"
+              :min="1"
+              :max="365"
+              @change="onPreview"
+            />
+          </el-form-item>
         </el-form>
+      </el-tab-pane>
+
+      <el-tab-pane v-if="isTauriRuntime()" label="Profile" name="profile">
+        <p class="wallpaper-opacity-hint">
+          每个 Profile 独立保存主题、壁纸、最近仓库与备份滞后告警；切换时自动关闭当前仓库。
+        </p>
+        <el-table :data="profile.profiles" size="small" style="width: 100%">
+          <el-table-column prop="name" label="名称" />
+          <el-table-column label="操作" width="140">
+            <template #default="{ row }">
+              <el-button link type="primary" size="small" @click="onRenameProfile(row)">重命名</el-button>
+              <el-button
+                link
+                type="danger"
+                size="small"
+                :disabled="row.id === 'default' || row.id === profile.activeProfileId"
+                @click="onDeleteProfile(row)"
+              >
+                删除
+              </el-button>
+            </template>
+          </el-table-column>
+        </el-table>
       </el-tab-pane>
     </el-tabs>
 

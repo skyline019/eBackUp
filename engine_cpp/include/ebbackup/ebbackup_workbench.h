@@ -41,6 +41,10 @@ EBBACKUP_WORKBENCH_API int ebbackup_workbench_list_snapshots_json(EbBackupEngine
                                                                     char* out,
                                                                     size_t out_cap);
 
+/** JSON: manifest file list for txn_id (0 = latest) */
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_list_manifest_files_json(
+    EbBackupEngine* eng, uint64_t txn_id, char* out, size_t out_cap);
+
 /** JSON: backup stats after run */
 EBBACKUP_WORKBENCH_API int ebbackup_workbench_run_backup_json(EbBackupEngine* eng,
                                                                 const char* source_path,
@@ -56,6 +60,39 @@ EBBACKUP_WORKBENCH_API int ebbackup_workbench_run_restore_json(EbBackupEngine* e
                                                                  uint32_t flags,
                                                                  char* out,
                                                                  size_t out_cap);
+
+/** JSON: restore with optional filter/remap JSON */
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_run_restore_ex_json(
+    EbBackupEngine* eng, const char* dest_path, uint64_t txn_id, uint32_t flags,
+    const char* filter_json, const char* remap_json, char* out, size_t out_cap);
+
+/** JSON: preview selective restore subset */
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_preview_restore_json(
+    EbBackupEngine* eng, uint64_t txn_id, const char* filter_json, char* out,
+    size_t out_cap);
+
+/** JSON: in-place restore preview (optional filter_json, in_place_options_json) */
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_preview_in_place_json(
+    EbBackupEngine* eng, uint64_t txn_id, const char* target_root,
+    const char* filter_json, const char* in_place_options_json, char* out,
+    size_t out_cap);
+
+/** JSON: in-place restore apply (conflict_policy: skip|fail|overwrite) */
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_apply_in_place_json(
+    EbBackupEngine* eng, uint64_t txn_id, const char* target_root,
+    const char* conflict_policy, const char* orphan_policy,
+    const char* filter_json, const char* in_place_options_json, char* out,
+    size_t out_cap);
+
+/** JSON: export repo delta bundle (repo-level; optional password for encrypt) */
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_export_delta_json(
+    const char* repo_path, const char* bundle_path, uint64_t base_txn_id,
+    uint64_t target_txn_id, const char* password, char* out, size_t out_cap);
+
+/** JSON: import delta bundle into new repo from base + delta */
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_import_delta_json(
+    const char* base_path, const char* delta_path, const char* out_repo_path,
+    char* out, size_t out_cap);
 
 /** JSON: verify result */
 EBBACKUP_WORKBENCH_API int ebbackup_workbench_verify_json(EbBackupEngine* eng,
@@ -86,6 +123,10 @@ EBBACKUP_WORKBENCH_API int ebbackup_workbench_prune_snapshots_json(
     EbBackupEngine* eng, const char* retention_tiers, int retain_min, int dry_run,
     char* out, size_t out_cap);
 
+/** JSON: maintenance wizard report */
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_run_maintenance_wizard_json(
+    EbBackupEngine* eng, const char* options_json, char* out, size_t out_cap);
+
 /** JSON: {"ok":true,"abi_version":N,"workbench":"ebbackup"} — no engine required */
 EBBACKUP_WORKBENCH_API int ebbackup_workbench_runtime_info_json(char* out, size_t out_cap);
 
@@ -98,6 +139,29 @@ EBBACKUP_WORKBENCH_API int ebbackup_workbench_last_error_json(EbBackupEngine* en
 EBBACKUP_WORKBENCH_API int ebbackup_workbench_get_stats_json(EbBackupEngine* eng,
                                                                char* out,
                                                                size_t out_cap);
+
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_build_path_index_json(
+    EbBackupEngine* eng, int full_rebuild, char* out, size_t out_cap);
+
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_query_path_history_json(
+    EbBackupEngine* eng, const char* path, uint64_t offset, uint64_t limit,
+    char* out, size_t out_cap);
+
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_list_manifest_page_json(
+    EbBackupEngine* eng, uint64_t txn_id, const char* prefix, uint64_t offset,
+    uint64_t limit, char* out, size_t out_cap);
+
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_diff_snapshots_json(
+    EbBackupEngine* eng, uint64_t txn_a, uint64_t txn_b, char* out, size_t out_cap);
+
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_export_restore_report_json(
+    EbBackupEngine* eng, char* out, size_t out_cap);
+
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_get_backup_report_json(
+    EbBackupEngine* eng, uint64_t txn_id, char* out, size_t out_cap);
+
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_set_backup_hooks_json(
+    EbBackupEngine* eng, const char* json, char* out, size_t out_cap);
 
 #ifdef __cplusplus
 }

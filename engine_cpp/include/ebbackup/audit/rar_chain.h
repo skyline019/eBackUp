@@ -51,5 +51,18 @@ std::string BuildRarBodyJson(uint64_t txn_id, uint32_t manifest_crc32,
 
 std::string ComputeRarSha256(const std::string& body_json, DigestAlgo algo);
 
+std::string BuildOpsBodyJson(const std::string& op,
+                             const std::string& payload_json);
+
+Status AppendOpsAuditEntry(const std::string& repo_path, const std::string& op,
+                           const std::string& payload_json,
+                           DigestAlgo algo = DigestAlgo::kLegacy,
+                           const std::string& audit_key = "");
+
+Status ListOpsAuditEntries(const std::string& repo_path,
+                           std::vector<RarChainEntry>* out);
+
+std::string OpsAuditEntriesToJson(const std::vector<RarChainEntry>& entries);
+
 }  // namespace audit
 }  // namespace ebbackup

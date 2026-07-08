@@ -4,6 +4,7 @@ import { useUiStore } from "@/stores/uiStore";
 import { useRepoStore } from "@/stores/repoStore";
 import { useMenuActions } from "@/composables/useMenuActions";
 import { topMenus, type MenuNode } from "@/utils/topMenus";
+import ProfileSwitcher from "@/shell/ProfileSwitcher.vue";
 import { RefreshRight, Setting, Upload, QuestionFilled } from "@element-plus/icons-vue";
 
 const ui = useUiStore();
@@ -71,6 +72,7 @@ async function refreshRepo() {
     </nav>
 
     <div class="ribbon-actions">
+      <ProfileSwitcher />
       <span class="status-pill" :class="statusClass">
         <span class="status-pill-dot" />
         <span class="status-pill-text">{{ statusText }}</span>

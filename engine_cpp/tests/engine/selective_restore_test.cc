@@ -5,6 +5,7 @@
 #include "ebbackup/audit/merkle.h"
 #include "ebbackup/engine/backup_engine.h"
 #include "ebbackup/engine/manifest.h"
+#include "ebbackup/engine/restore_path_remap.h"
 #include "ebbackup/scan/backup_filter.h"
 #include "test_util.h"
 
@@ -35,6 +36,11 @@ TEST(SelectiveRestoreTest, IncludePathRestoresSubtree) {
   std::string got((std::istreambuf_iterator<char>(in)),
                   std::istreambuf_iterator<char>());
   EXPECT_EQ(got, "keep-data");
+
+  EXPECT_TRUE(engine.has_restore_acceptance());
+  const std::string report_json = engine.ExportRestoreReportJson();
+  EXPECT_NE(report_json.find("ok"), std::string::npos);
+  EXPECT_NE(report_json.find("merkle"), std::string::npos);
 }
 
 TEST(SelectiveRestoreTest, ExcludeGlobSkipsTmp) {
@@ -203,6 +209,33 @@ TEST(SelectiveRestoreTest, EncryptedSelectiveRestore) {
   const std::string got((std::istreambuf_iterator<char>(in)),
                         std::istreambuf_iterator<char>());
   EXPECT_EQ(got.size(), 8192u);
+}
+
+TEST(SelectiveRestoreTest, StripPrefixWithMerkle) {
+  const std::string repo = test::TempDir("sel_strip_repo");
+  const std::string source = test::TempDir("sel_strip_source");
+  const std::string dest = test::TempDir("sel_strip_dest");
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
+
+  test::WriteFile(source + "/keep/nested.txt", "strip-data");
+  test::WriteFile(source + "/drop/other.txt", "drop-data");
+
+  BackupEngine engine(repo);
+  ASSERT_TRUE(engine.Open().ok());
+  ASSERT_TRUE(engine.RunBackup(source).ok());
+
+  RestoreOptions opts{};
+  opts.filter.include_paths = {"keep"};
+  opts.path_remap.mode = RestoreLayoutMode::kStripPrefix;
+  opts.path_remap.strip_prefix = "keep";
+  ASSERT_TRUE(engine.Restore(dest, opts).ok());
+
+  EXPECT_TRUE(std::filesystem::exists(dest + "/nested.txt"));
+  EXPECT_FALSE(std::filesystem::exists(dest + "/drop/other.txt"));
+  std::ifstream in(dest + "/nested.txt");
+  std::string got((std::istreambuf_iterator<char>(in)),
+                  std::istreambuf_iterator<char>());
+  EXPECT_EQ(got, "strip-data");
 }
 
 }  // namespace

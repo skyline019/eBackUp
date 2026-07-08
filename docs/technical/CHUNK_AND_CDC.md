@@ -92,6 +92,18 @@ Stream sub：cdc ~82%，digest ~16%，carry ~1.7%
 
 **后续优化方向**（文档记录，非承诺）：Hybrid ChunkCuts + feed-timed replay（Sprint 5）以恢复 encode overlap。
 
+### Sprint 5 — Hybrid CDC（Wave I）
+
+**环境变量**：默认启用；`EBBACKUP_CDC_HYBRID=0` opt-out。生产路径复用 `FastCdcStreamFeed`；`ChunkCutsUntil` parity 由 CI 保障。
+
+**实现**：`ChunkFileStreamingHybrid()` → 复用 `FastCdcStreamFeed` 分窗引擎（与 stream 路径相同吞吐）；`ChunkCutsUntil` 在 CI parity 测试中验证 cut 边界与整文件 `ChunkCuts` 一致。
+
+1. 32MB feed 窗口内 CDC + digest（`digest_base` 优化）
+2. 分批 push 到 encode worker，恢复 pipeline overlap
+3. `PipelinePhaseStats`：`hybrid_cuts_ns`（cdc_scan）/ `hybrid_replay_ns`（digest+carry）
+
+路由顺序：Hybrid → FastSlice → 默认 Stream。
+
 ---
 
 ## 测试与 parity

@@ -12,6 +12,7 @@ import {
   uiSettingsExists,
   uiSettingsPath,
 } from "@/api/ebbackup";
+import { useProfileStore } from "@/stores/profileStore";
 import { isTauriRuntime } from "@/utils/tauriRuntime";
 import type { ActivityId } from "@/utils/activities";
 
@@ -42,7 +43,10 @@ export const useUiStore = defineStore("ui", {
     showHelpCenter: false,
     helpCenterTab: "quickstart",
     restoreTxnPrefill: null as number | null,
-    outputTab: "messages" as "messages" | "results" | "audit" | "task",
+    browseTxnPrefill: null as number | null,
+    diffTxnPrefill: null as { txnA: number; txnB: number } | null,
+    restoreSelectionPrefill: null as import("@/api/ebbackup").RestoreSelectionPrefill | null,
+    outputTab: "messages" as "messages" | "results" | "audit" | "task" | "acceptance" | "backupReport",
     logAutoFollow: true,
     logFilterKind: "all" as "all" | LogKind,
     logKeyword: "",
@@ -51,6 +55,8 @@ export const useUiStore = defineStore("ui", {
     settingsFilePath: "" as string,
     lastResultJson: "" as string,
     lastTaskJson: "" as string,
+    lastAcceptanceJson: "" as string,
+    lastBackupReportJson: "" as string,
     lastAuditJson: "" as string,
   }),
   getters: {
@@ -75,7 +81,7 @@ export const useUiStore = defineStore("ui", {
     },
   },
   actions: {
-    async load() {
+    async load(profileId?: string) {
       try {
         const rawLogs = localStorage.getItem(LS_LOGS);
         if (rawLogs) this.logs = JSON.parse(rawLogs) as LogLine[];
@@ -85,9 +91,9 @@ export const useUiStore = defineStore("ui", {
 
         if (isTauriRuntime()) {
           const [exists, disk, path] = await Promise.all([
-            uiSettingsExists(),
-            getUiSettings(),
-            uiSettingsPath(),
+            uiSettingsExists(profileId),
+            getUiSettings(profileId),
+            uiSettingsPath(profileId),
           ]);
           if (path) this.settingsFilePath = path;
           const legacyRaw = localStorage.getItem(LS_UI);
@@ -113,6 +119,10 @@ export const useUiStore = defineStore("ui", {
       } catch {
         this.settings = sanitizeUiSettings(defaultUiSettings);
       }
+      this.applyThemeVars();
+    },
+    applyProfileSettings(settings: UiSettings) {
+      this.settings = sanitizeUiSettings({ ...defaultUiSettings, ...settings });
       this.applyThemeVars();
     },
     save() {
@@ -141,9 +151,10 @@ export const useUiStore = defineStore("ui", {
       this.settings = sanitizeUiSettings(this.settings);
       if (isTauriRuntime()) {
         try {
-          await setUiSettings(this.settings);
+          const profileId = useProfileStore().activeProfileId;
+          await setUiSettings(this.settings, profileId);
           if (!this.settingsFilePath) {
-            this.settingsFilePath = (await uiSettingsPath()) ?? "";
+            this.settingsFilePath = (await uiSettingsPath(profileId)) ?? "";
           }
         } catch (e) {
           this.pushLog(`设置保存失败: ${e}`, "error");
@@ -199,9 +210,37 @@ export const useUiStore = defineStore("ui", {
       this.restoreTxnPrefill = txnId;
       this.activity = "restore";
     },
+    goRestoreWithSelection(txnId: number, includePaths: string[]) {
+      this.restoreSelectionPrefill = { txnId, includePaths };
+      this.restoreTxnPrefill = txnId;
+      this.activity = "restore";
+    },
+    goBrowseWithTxn(txnId: number) {
+      this.browseTxnPrefill = txnId;
+      this.activity = "browse";
+    },
+    goDiffWithTxns(txnA: number, txnB: number) {
+      this.diffTxnPrefill = { txnA, txnB };
+      this.activity = "diff";
+    },
+    consumeRestoreSelection(): import("@/api/ebbackup").RestoreSelectionPrefill | null {
+      const v = this.restoreSelectionPrefill;
+      this.restoreSelectionPrefill = null;
+      return v;
+    },
     consumeRestoreTxn(): number | null {
       const v = this.restoreTxnPrefill;
       this.restoreTxnPrefill = null;
+      return v;
+    },
+    consumeBrowseTxn(): number | null {
+      const v = this.browseTxnPrefill;
+      this.browseTxnPrefill = null;
+      return v;
+    },
+    consumeDiffTxns(): { txnA: number; txnB: number } | null {
+      const v = this.diffTxnPrefill;
+      this.diffTxnPrefill = null;
       return v;
     },
     persistSidebar() {
@@ -219,6 +258,14 @@ export const useUiStore = defineStore("ui", {
     setTaskResult(obj: unknown) {
       this.lastTaskJson = JSON.stringify(obj, null, 2);
       this.outputTab = "task";
+    },
+    setAcceptanceResult(obj: unknown) {
+      this.lastAcceptanceJson = JSON.stringify(obj, null, 2);
+      this.outputTab = "acceptance";
+    },
+    setBackupReportResult(obj: unknown) {
+      this.lastBackupReportJson = JSON.stringify(obj, null, 2);
+      this.outputTab = "backupReport";
     },
     setAuditResult(obj: unknown) {
       this.lastAuditJson = JSON.stringify(obj, null, 2);

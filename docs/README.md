@@ -13,16 +13,19 @@
 | [engineering/kernel-manual/](engineering/kernel-manual/) | **LaTeX 工程技术手册**（v1.1 完整扩写，193 页 PDF，XeLaTeX） |
 | [engineering/ecosystem-evolution/](engineering/ecosystem-evolution/) | **LaTeX 生态理念与本土化发展实录**（压力驱动时间线、剪枝、流程反思；**第 12 章 L1–L7 实测数据**） |
 | [engineering/defense-presentation/](engineering/defense-presentation/) | **答辩演讲稿**（Beamer 幻灯片 + 逐字稿双 PDF；课程 8–10 min / 技术 15–20 min） |
-| [VERSION_HISTORY.md](VERSION_HISTORY.md) | **主归档**：v0.1–v0.9.4 时间线、逐版本技术档案、ABI/Feature/Bench 演进 |
+| [WAVE_ARCHIVE.md](WAVE_ARCHIVE.md) | **Wave 1–T 深化归档**（性能 Wave + 能力 Wave A–T、ABI v14–v29） |
+| [VERSION_HISTORY.md](VERSION_HISTORY.md) | **主归档**：v0.1–v0.9.5 时间线、逐版本技术档案、ABI/Feature/Bench 演进 |
 | [CHANGELOG_ARCHIVE.md](CHANGELOG_ARCHIVE.md) | CHANGELOG 完整镜像（与根目录同步归档） |
 | [reference/PERF_BASELINE.md](reference/PERF_BASELINE.md) | L1–L7 性能基线、CI 门禁、Stage 3.1/3.2、各版本实测表 |
 | [technical/ARCHITECTURE.md](technical/ARCHITECTURE.md) | 分层架构、备份 FSM、Pipeline 拓扑演进 |
 | [technical/STORAGE_AND_DURABILITY.md](technical/STORAGE_AND_DURABILITY.md) | 仓库布局、EbPack、索引、快照、提交点耐久性 |
 | [technical/CHUNK_AND_CDC.md](technical/CHUNK_AND_CDC.md) | FastCDC、HCRBO、CFI、流式 CDC、Sprint 4 双路径 |
-| [technical/ABI_AND_FEATURES.md](technical/ABI_AND_FEATURES.md) | C API ABI v7–v12、Feature Flags、Init 默认行为 |
+| [technical/ABI_AND_FEATURES.md](technical/ABI_AND_FEATURES.md) | C API ABI v7–v29、Feature Flags、Init 默认行为 |
 | [technical/TEST_AND_CI.md](technical/TEST_AND_CI.md) | 测试分层、fixture、CI/ASan、bench ctest 门禁 |
 | [technical/ENVIRONMENT_VARIABLES.md](technical/ENVIRONMENT_VARIABLES.md) | 运行时/测试/ bench 环境变量 |
 | [product/WORKBENCH_GUI.md](product/WORKBENCH_GUI.md) | 桌面 Workbench GUI（Tauri + Vue） |
+| [product/BACKUP_CAPABILITY_GAPS.md](product/BACKUP_CAPABILITY_GAPS.md) | **备份能力缺口表**（非网络、创新命题、状态跟踪） |
+| [technical/CAPABILITY_ROADMAP.md](technical/CAPABILITY_ROADMAP.md) | **能力创新路线图**（分阶段 API/文件/测试） |
 
 ---
 
@@ -47,7 +50,7 @@
 | v0.9.0 | ~142–149 MB/s | ~0.96–0.98 | ~598 MB/s | Wave 5 并发修复 + Stage 3 分层 |
 | v0.8.0 | ~146 MB/s | — | ~554 MB/s | Pipeline v4 + L7 门禁 |
 
-当前：**C API ABI v12** · ctest **232** gtest（+ C API + bench 门禁）· CMake `project VERSION 0.6.0`（与 CHANGELOG v0.9.4 不同步，见 VERSION_HISTORY 说明）。
+当前：**C API ABI v29** · ctest **363** gtest（+ C API + bench 门禁）· Wave A–T 能力 sprint 已归档（见 [WAVE_ARCHIVE.md](WAVE_ARCHIVE.md)）。
 
 ---
 

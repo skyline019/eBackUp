@@ -127,8 +127,12 @@ npm run build:desktop
 |--------|---------------|------|
 | `ebbackup_workbench_init_repo_json` | `init_repo` | 初始化仓库 |
 | `ebbackup_workbench_repo_info_json` | `repo_info` | 打开后统计（`eb_backup_repo_stats`） |
-| `ebbackup_workbench_list_snapshots_json` | `list_snapshots` | 快照列表 |
-| `ebbackup_workbench_run_backup_json` | `run_backup` | 备份 |
+| `ebbackup_workbench_list_snapshots_json` | `list_snapshots` | 快照列表（含 `job_id` / `immutable_until_unix` meta） |
+| `ebbackup_workbench_run_backup_json` | `run_backup` | 快速备份（ad-hoc 源目录） |
+| `eb_backup_list_jobs_json` | `list_jobs` | 读取 `jobs.json` |
+| `eb_backup_upsert_job_json` | `upsert_job` | 新建/更新作业 |
+| `eb_backup_delete_job` | `delete_job` | 删除作业 |
+| `eb_backup_run_job` | `run_job` | 按作业 ID 运行备份 |
 | `ebbackup_workbench_run_restore_json` | `run_restore` | 恢复 |
 | `ebbackup_workbench_verify_json` | `verify_repo` | 验证 |
 | `ebbackup_workbench_recover_json` | `recover_repo` | 恢复中断事务 |
@@ -140,6 +144,13 @@ npm run build:desktop
 | `ebbackup_workbench_get_stats_json` | `get_backup_stats` | 末次备份统计 |
 
 会话：`open_repo` / `close_repo` 由 Rust `SESSION` 管理 `EbBackupEngine*` 生命周期。
+
+### 6.1 备份页作业管理（Wave G）
+
+- **快速备份**：原有 ad-hoc 源目录 + filter/hooks
+- **已保存作业**：表格 CRUD；运行作业调用 `run_job`（自动应用作业内 `exclude_globs` 与 retention/WORM 策略）
+- **备份报告 / 快照列表**：展示 `job_id`、`retention_tag`、`immutable_until_unix`
+- **Prune**：非 dry-run 时可填 audit key（WORM 仓库）
 
 ---
 

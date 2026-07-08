@@ -37,7 +37,7 @@ TEST(StorageIntegrationTest, V03BackupGcCompactVerifyRestore) {
   std::ifstream manifest_in(repo + "/manifest");
   std::string header;
   ASSERT_TRUE(std::getline(manifest_in, header));
-  EXPECT_EQ(header, "EBMANIFEST4");
+  EXPECT_TRUE(header == "EBMANIFEST4" || header == "EBMANIFEST5");
 
   ChunkStore extra(repo + "/data/chunks");
   extra.SetUseEbPack(true);

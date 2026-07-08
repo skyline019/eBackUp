@@ -42,8 +42,33 @@
 \versiontag{0.9.2} & P1 & +5 MB/s; L7 601 不变 & 154 & — \\
 \versiontag{0.9.3} & P1 & digest 38\%$\rightarrow$16\% & 159--163 & Phase3C \\
 \versiontag{0.9.4} & P1 & +6--9\%; A/B 105 vs 172 & 170--172 & A 默认关 \\
+\versiontag{0.9.5} & P4 & ABI v29；363 gtest；Wave T 窗口 & — & — \\
 \bottomrule
 \end{longtable}
+
+\section{能力 Wave 时间线（Phase 0--11）}
+
+\begin{table}[htbp]
+\centering
+\caption{能力 sprint 与 ABI（2026-07）}
+\small
+\begin{tabular}{@{}clll@{}}
+\toprule
+Phase & Wave & ABI & 闭合 GAP 示例 \\
+\midrule
+3--4 & B--E & v16--v17 & WIN-01--04；CONSIST-02/03 \\
+5 & F--G & v18 & JOB-01--04 \\
+6 & I,K,M & v20--v23 & RESTORE-01/04；Hybrid CDC \\
+7 & L & v22 & CATALOG-04；ENGINE-02 \\
+8 & N,O,O+ & v24--v26 & KEYS-02/03；PLATFORM-01/02 \\
+9 & P--Q & v27 & VERTICAL-01--04 \\
+10 & R & v28 & JOB-02 \\
+11 & T & v29 & JOB-05 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+详述见 \cref{ch:phase-capability-waves}。
 
 \section{性能主线：L5 256MB 完整序列}
 

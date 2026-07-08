@@ -30,6 +30,7 @@ export interface UiSettings {
   borderContrast: number;
   panelBrightness: number;
   logHighlightIntensity: number;
+  staleBackupAlertDays: number;
 }
 
 /** Full-range opacity for workspace cards & output panel (5%–100%). */
@@ -82,6 +83,7 @@ export const defaultUiSettings: UiSettings = {
   borderContrast: 1,
   panelBrightness: 1,
   logHighlightIntensity: 1,
+  staleBackupAlertDays: 7,
 };
 
 export type SettingsPreset = {
@@ -263,6 +265,11 @@ export function sanitizeUiSettings(input: Partial<UiSettings>): UiSettings {
       num(input.logHighlightIntensity, d.logHighlightIntensity),
       0.75,
       1.4
+    ),
+    staleBackupAlertDays: clamp(
+      Math.round(num(input.staleBackupAlertDays, d.staleBackupAlertDays)),
+      1,
+      365
     ),
   };
   return applyWallpaperOpacityFloors(base);

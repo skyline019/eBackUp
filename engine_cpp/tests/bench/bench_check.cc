@@ -33,9 +33,20 @@ struct BenchFloors {
   double backup_pipeline_256MBps_min{0.0};
   double backup_pipeline_2GBps_min{0.0};
   double backup_pipeline_multi_MBps_min{0.0};
+  double hybrid_stream_ratio_min{0.95};
   double ampl_ratio_post_compact_max{1.05};
   double content_auto_vs_lz4_max{1.10};
 };
+
+#if defined(_WIN32)
+void SetBenchEnv(const char* key, const char* value) {
+  _putenv_s(key, value);
+}
+#else
+void SetBenchEnv(const char* key, const char* value) {
+  setenv(key, value, 1);
+}
+#endif
 
 std::string MakeSyntheticData(size_t size, uint8_t seed) {
   std::string data(size, '\0');
@@ -513,6 +524,56 @@ bool RunPipeline256Bench(BenchFloors* floors) {
   return true;
 }
 
+bool RunPipeline256HybridBench(BenchFloors* floors) {
+  if (floors->hybrid_stream_ratio_min <= 0.0) return true;
+
+  constexpr size_t kFileSize = 256 * 1024 * 1024;
+  const auto base =
+      ebbackup::test::TestOutputRoot() / "eb_bench_check_pipeline_l5_hybrid";
+  const std::string source = (base / "source").string();
+  const std::string repo_stream = (base / "repo_stream").string();
+  const std::string repo_hybrid = (base / "repo_hybrid").string();
+  std::error_code ec;
+  std::filesystem::remove_all(base, ec);
+  std::filesystem::create_directories(base);
+  std::filesystem::create_directories(source);
+  WriteSyntheticFile(source + "/data.bin", kFileSize, 46);
+
+  ebbackup::test::InitDefaultRepo(repo_stream);
+  ebbackup::test::InitDefaultRepo(repo_hybrid);
+
+  ebbackup::BackupOptions pipe_opts{};
+  pipe_opts.use_pipeline = true;
+
+  SetBenchEnv("EBBACKUP_CDC_FAST_SLICE", "0");
+  SetBenchEnv("EBBACKUP_FORCE_STREAM_CDC", "0");
+  SetBenchEnv("EBBACKUP_CDC_HYBRID", "0");
+  const double stream_sec = RunBackupSeconds(repo_stream, source, pipe_opts);
+
+  SetBenchEnv("EBBACKUP_CDC_HYBRID", "1");
+  const double hybrid_sec = RunBackupSeconds(repo_hybrid, source, pipe_opts);
+  SetBenchEnv("EBBACKUP_CDC_HYBRID", "0");
+
+  const uint64_t nbytes = static_cast<uint64_t>(kFileSize);
+  const double stream_MBps =
+      ebbackup::bench::ThroughputMBps(nbytes, stream_sec);
+  const double hybrid_MBps =
+      ebbackup::bench::ThroughputMBps(nbytes, hybrid_sec);
+  const double ratio = stream_MBps > 0 ? hybrid_MBps / stream_MBps : 0.0;
+
+  std::printf(
+      "bench_check L5 hybrid: stream_256MBps=%.2f hybrid_256MBps=%.2f "
+      "hybrid_stream_ratio=%.2f\n",
+      stream_MBps, hybrid_MBps, ratio);
+
+  if (ratio + 1e-6 < floors->hybrid_stream_ratio_min) {
+    std::fprintf(stderr, "hybrid_stream_ratio %.2f below floor %.2f\n", ratio,
+                 floors->hybrid_stream_ratio_min);
+    return false;
+  }
+  return true;
+}
+
 void WriteSyntheticFile(const std::string& path, size_t size, uint8_t seed) {
   std::ofstream out(path, std::ios::binary);
   constexpr size_t kBlock = 64u * 1024u;
@@ -626,11 +687,12 @@ int main() {
   BenchFloors floors = LoadFloors();
   std::printf(
       "bench_check floors: fastcdc>=%.1f MB/s hcrbo>=%.1f MB/s reuse>=%.1f%% "
-      "ratio>=%.2f ratio256>=%.2f pipe32>=%.1f MB/s pipe256>=%.1f MB/s "
-      "pipe2GB>=%.1f MB/s pipeMulti>=%.1f MB/s ampl_after<=%.2f auto/lz4<=%.2f\n",
+      "ratio>=%.2f ratio256>=%.2f hybridRatio>=%.2f pipe32>=%.1f MB/s "
+      "pipe256>=%.1f MB/s pipe2GB>=%.1f MB/s pipeMulti>=%.1f MB/s "
+      "ampl_after<=%.2f auto/lz4<=%.2f\n",
       floors.fastcdc_MBps_min, floors.hcrbo_incr_MBps_min,
       floors.reuse_pct_min, floors.pipeline_ratio_min,
-      floors.pipeline_ratio_256MB_min,
+      floors.pipeline_ratio_256MB_min, floors.hybrid_stream_ratio_min,
       floors.backup_pipeline_MBps_min, floors.backup_pipeline_256MBps_min,
       floors.backup_pipeline_2GBps_min, floors.backup_pipeline_multi_MBps_min,
       floors.ampl_ratio_post_compact_max,
@@ -652,6 +714,9 @@ int main() {
     return 1;
   }
   if (!RunPipeline256Bench(&floors)) {
+    return 1;
+  }
+  if (!RunPipeline256HybridBench(&floors)) {
     return 1;
   }
   if (!RunPipeline2GBBench(&floors)) {

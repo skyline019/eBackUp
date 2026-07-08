@@ -476,6 +476,57 @@ eb verify /backup/repo
 eb schedule /etc/ebbackup/schedule.json
 \end{lstlisting}
 
+\subsection{常驻服务（Wave O+）}
+
+\textbf{Windows}：以管理员运行 \texttt{eb service install --config PATH} 注册 SCM 服务；\texttt{eb service run} 作为 ServiceMain 入口执行 \texttt{RunScheduleConfig}；\texttt{scripts/install\_service.ps1} 封装安装。Daemon 循环支持 \texttt{RequestDaemonStop()} 分片 sleep 优雅退出。
+
+\textbf{Linux systemd}：模板 \filepath{deploy/ebbackup.service} + \filepath{deploy/ebbackup.timer}；\texttt{ExecStart=eb schedule /etc/ebbackup/queue\_drain.json --once}；配合 timer 周期性 drain job 队列。
+
+\begin{lstlisting}[caption={eb service 子命令},label={lst:eb-service}]
+eb service run --config /etc/ebbackup/queue_drain.json
+eb service install --config /etc/ebbackup/queue_drain.json --name EbbackupDaemon
+eb service status --name EbbackupDaemon
+eb service uninstall --name EbbackupDaemon
+\end{lstlisting}
+
+\subsection{垂直插件（Wave P / ABI v27）}
+
+\begin{lstlisting}[caption={插件列表与备份},label={lst:eb-plugins}]
+eb plugin list
+eb backup /backup/repo /data/source --plugins sqlite_checkpoint
+eb job add /backup/repo --json '{"id":"db","name":"DB","source_path":"/data","plugins":["sqlite_checkpoint"]}'
+\end{lstlisting}
+
+Schedule / daemon JSON 或 INI 同样支持逗号分隔 \texttt{plugins}（与 \texttt{job\_ids} 风格一致）：
+
+\begin{lstlisting}[caption={schedule 插件配置},label={lst:schedule-plugins}]
+# schedule.ini
+plugins=sqlite_checkpoint,registry_hive
+
+# queue_drain.json
+{"mode":"queue_drain","repo_path":"/backup/repo","plugins":"sqlite_checkpoint"}
+\end{lstlisting}
+
+备份完成后 \filepath{reports/<txn>.json} 含可选 \texttt{"plugins":[...]} 各插件运行摘要。
+
+\subsection{智能排除建议（Wave R / ABI v28）}
+
+\begin{lstlisting}[caption={排除建议与作业},label={lst:eb-suggest-excludes}]
+eb suggest-excludes /data/source --json
+eb suggest-excludes /data/source --filter-file /etc/ebbackup/filter.conf --include-ide
+eb job add /backup/repo --json '{"id":"dev","name":"Dev","source_path":"/data/source","exclude_paths":["/data/source/node_modules"],"exclude_globs":["Thumbs.db"]}'
+\end{lstlisting}
+
+C API \texttt{eb\_backup\_suggest\_exclude\_filters\_json} 接受 \texttt{source\_path}、可选 \texttt{max\_depth}、\texttt{include\_ide\_dirs} 与 \texttt{existing} filter；返回 \texttt{items[]} 与 \texttt{recommended}。建议须用户确认后写入 \texttt{exclude\_paths} / \texttt{exclude\_globs} 或会话 filter。
+
+\subsection{备份窗口（Wave T / ABI v29）}
+
+\begin{lstlisting}[caption={作业备份窗口},label={lst:eb-job-window}]
+eb job add /backup/repo --json '{"id":"nightly","name":"Nightly","source_path":"/data/source","window_start":"02:00","window_end":"06:00","deadline_grace_seconds":300,"durability_adaptive":true}'
+\end{lstlisting}
+
+窗外 \texttt{RunJob} 返回 \texttt{outside backup window}；队列 drain 跳过。距 \texttt{window\_end} 不足 grace 秒时 durability 降级为 Balanced；超时截断写入报告 \texttt{window\_truncated}。
+
 \subsection{选择性恢复}
 
 \begin{lstlisting}[caption={filter 恢复 + 内容校验},label={lst:workflow-restore}]

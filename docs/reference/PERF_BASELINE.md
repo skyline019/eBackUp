@@ -139,6 +139,7 @@ These floors in [`ci_floor.json`](../../engine_cpp/bench/baselines/ci_floor.json
 | `reuse_pct_min` | **90** | HCRBO incremental reuse after 1-byte edit @ 5MB (L1/L2) |
 | `pipeline_ratio_min` | **0.90** | L3a adaptive path must not regress vs sequential |
 | `pipeline_ratio_256MB_min` | **0.90** | L3b real pipeline must not regress vs sequential |
+| `hybrid_stream_ratio_min` | **0.95** | L5 Hybrid CDC must stay within 5% of stream-feed throughput |
 
 ## Stage 3.1 vs 3.2
 

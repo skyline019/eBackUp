@@ -77,6 +77,9 @@ export function useMenuActions() {
       case "goto-snapshots":
         ui.setActivity("snapshots");
         break;
+      case "goto-browse":
+        ui.setActivity("browse");
+        break;
       case "goto-restore":
         ui.setActivity("restore");
         break;

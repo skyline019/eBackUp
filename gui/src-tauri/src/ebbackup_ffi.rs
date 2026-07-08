@@ -33,8 +33,95 @@ type JsonRestoreFn = unsafe extern "C" fn(
     *mut c_char,
     usize,
 ) -> c_int;
+type JsonRestoreExFn = unsafe extern "C" fn(
+    *mut EbBackupEngine,
+    *const c_char,
+    u64,
+    c_uint,
+    *const c_char,
+    *const c_char,
+    *mut c_char,
+    usize,
+) -> c_int;
+type JsonPreviewRestoreFn = unsafe extern "C" fn(
+    *mut EbBackupEngine,
+    u64,
+    *const c_char,
+    *mut c_char,
+    usize,
+) -> c_int;
+type JsonPreviewInPlaceFn = unsafe extern "C" fn(
+    *mut EbBackupEngine,
+    u64,
+    *const c_char,
+    *const c_char,
+    *const c_char,
+    *mut c_char,
+    usize,
+) -> c_int;
+type JsonApplyInPlaceFn = unsafe extern "C" fn(
+    *mut EbBackupEngine,
+    u64,
+    *const c_char,
+    *const c_char,
+    *const c_char,
+    *const c_char,
+    *const c_char,
+    *mut c_char,
+    usize,
+) -> c_int;
+type JsonExportDeltaFn = unsafe extern "C" fn(
+    *const c_char,
+    *const c_char,
+    u64,
+    u64,
+    *const c_char,
+    *mut c_char,
+    usize,
+) -> c_int;
+type JsonImportDeltaFn = unsafe extern "C" fn(
+    *const c_char,
+    *const c_char,
+    *const c_char,
+    *mut c_char,
+    usize,
+) -> c_int;
+type JsonMaintenanceWizardFn = unsafe extern "C" fn(
+    *mut EbBackupEngine,
+    *const c_char,
+    *mut c_char,
+    usize,
+) -> c_int;
 type JsonVerifyFn =
     unsafe extern "C" fn(*mut EbBackupEngine, u64, c_uint, *mut c_char, usize) -> c_int;
+type JsonManifestFn =
+    unsafe extern "C" fn(*mut EbBackupEngine, u64, *mut c_char, usize) -> c_int;
+type JsonPathHistoryFn = unsafe extern "C" fn(
+    *mut EbBackupEngine,
+    *const c_char,
+    u64,
+    u64,
+    *mut c_char,
+    usize,
+) -> c_int;
+type JsonManifestPageFn = unsafe extern "C" fn(
+    *mut EbBackupEngine,
+    u64,
+    *const c_char,
+    u64,
+    u64,
+    *mut c_char,
+    usize,
+) -> c_int;
+type JsonDiffFn = unsafe extern "C" fn(
+    *mut EbBackupEngine,
+    u64,
+    u64,
+    *mut c_char,
+    usize,
+) -> c_int;
+type JsonPathIndexFn =
+    unsafe extern "C" fn(*mut EbBackupEngine, c_int, *mut c_char, usize) -> c_int;
 type JsonDryRunFn =
     unsafe extern "C" fn(*mut EbBackupEngine, c_int, *mut c_char, usize) -> c_int;
 type JsonPruneFn = unsafe extern "C" fn(
@@ -46,11 +133,30 @@ type JsonPruneFn = unsafe extern "C" fn(
     usize,
 ) -> c_int;
 type JsonPlainFn = unsafe extern "C" fn(*mut c_char, usize) -> c_int;
+type JsonHooksFn = unsafe extern "C" fn(
+    *mut EbBackupEngine,
+    *const c_char,
+    *mut c_char,
+    usize,
+) -> c_int;
 type SetProgressFn = unsafe extern "C" fn(
     *mut EbBackupEngine,
     Option<unsafe extern "C" fn(u64, *mut c_void)>,
     *mut c_void,
 );
+type ListJobsJsonFn = unsafe extern "C" fn(*const c_char) -> *mut c_char;
+type RepoJsonFn = unsafe extern "C" fn(*const c_char, *const c_char) -> *mut c_char;
+type EngTxnJsonFn = unsafe extern "C" fn(*mut EbBackupEngine, u64) -> *mut c_char;
+type EngOpJsonFn = unsafe extern "C" fn(*mut EbBackupEngine, *const c_char) -> *mut c_char;
+type EngOptionsJsonFn = unsafe extern "C" fn(*mut EbBackupEngine, *const c_char) -> *mut c_char;
+type EngPlainJsonFn = unsafe extern "C" fn(*mut EbBackupEngine) -> *mut c_char;
+type UpsertJobFn = unsafe extern "C" fn(*const c_char, *const c_char) -> c_int;
+type DeleteJobFn = unsafe extern "C" fn(*const c_char, *const c_char) -> c_int;
+type RunJobFn =
+    unsafe extern "C" fn(*mut EbBackupEngine, *const c_char, c_int, c_uint) -> c_int;
+type FreeStringFn = unsafe extern "C" fn(*mut c_char);
+type SetFilterJsonFn = unsafe extern "C" fn(*mut EbBackupEngine, *const c_char) -> c_int;
+type SuggestExcludeFiltersJsonFn = unsafe extern "C" fn(*const c_char) -> *mut c_char;
 
 pub struct EbbackupApi {
     _lib: Library,
@@ -62,8 +168,16 @@ pub struct EbbackupApi {
     pub init_repo_json: JsonInitFn,
     pub repo_info_json: JsonEngFn,
     pub list_snapshots_json: JsonEngFn,
+    pub list_manifest_files_json: JsonManifestFn,
     pub run_backup_json: JsonBackupFn,
     pub run_restore_json: JsonRestoreFn,
+    pub run_restore_ex_json: JsonRestoreExFn,
+    pub preview_restore_json: JsonPreviewRestoreFn,
+    pub preview_in_place_json: JsonPreviewInPlaceFn,
+    pub apply_in_place_json: JsonApplyInPlaceFn,
+    pub export_delta_json: JsonExportDeltaFn,
+    pub import_delta_json: JsonImportDeltaFn,
+    pub run_maintenance_wizard_json: JsonMaintenanceWizardFn,
     pub verify_json: JsonVerifyFn,
     pub recover_json: JsonEngFn,
     pub compact_json: JsonDryRunFn,
@@ -72,7 +186,29 @@ pub struct EbbackupApi {
     pub runtime_info_json: JsonPlainFn,
     pub last_error_json: JsonEngFn,
     pub get_stats_json: JsonEngFn,
+    pub build_path_index_json: JsonPathIndexFn,
+    pub query_path_history_json: JsonPathHistoryFn,
+    pub list_manifest_page_json: JsonManifestPageFn,
+    pub diff_snapshots_json: JsonDiffFn,
+    pub export_restore_report_json: JsonEngFn,
+    pub get_backup_report_json: JsonManifestFn,
+    pub set_backup_hooks_json: JsonHooksFn,
     pub set_progress: SetProgressFn,
+    pub list_jobs_json: ListJobsJsonFn,
+    pub upsert_job_json: UpsertJobFn,
+    pub delete_job: DeleteJobFn,
+    pub run_job: RunJobFn,
+    pub enqueue_job_json: RepoJsonFn,
+    pub run_job_queue_json: EngOptionsJsonFn,
+    pub job_queue_status_json: ListJobsJsonFn,
+    pub snapshot_reachability_json: EngTxnJsonFn,
+    pub rpo_summary_json: EngPlainJsonFn,
+    pub orphan_explain_json: EngTxnJsonFn,
+    pub append_ops_audit_json: EngOpJsonFn,
+    pub list_ops_audit_json: EngPlainJsonFn,
+    pub set_filter_json: SetFilterJsonFn,
+    pub suggest_exclude_filters_json: SuggestExcludeFiltersJsonFn,
+    pub free_string: FreeStringFn,
 }
 
 static API: OnceCell<EbbackupApi> = OnceCell::new();
@@ -122,8 +258,19 @@ pub fn api() -> Result<&'static EbbackupApi, String> {
             init_repo_json: load_sym!(lib, "ebbackup_workbench_init_repo_json"),
             repo_info_json: load_sym!(lib, "ebbackup_workbench_repo_info_json"),
             list_snapshots_json: load_sym!(lib, "ebbackup_workbench_list_snapshots_json"),
+            list_manifest_files_json: load_sym!(lib, "ebbackup_workbench_list_manifest_files_json"),
             run_backup_json: load_sym!(lib, "ebbackup_workbench_run_backup_json"),
             run_restore_json: load_sym!(lib, "ebbackup_workbench_run_restore_json"),
+            run_restore_ex_json: load_sym!(lib, "ebbackup_workbench_run_restore_ex_json"),
+            preview_restore_json: load_sym!(lib, "ebbackup_workbench_preview_restore_json"),
+            preview_in_place_json: load_sym!(lib, "ebbackup_workbench_preview_in_place_json"),
+            apply_in_place_json: load_sym!(lib, "ebbackup_workbench_apply_in_place_json"),
+            export_delta_json: load_sym!(lib, "ebbackup_workbench_export_delta_json"),
+            import_delta_json: load_sym!(lib, "ebbackup_workbench_import_delta_json"),
+            run_maintenance_wizard_json: load_sym!(
+                lib,
+                "ebbackup_workbench_run_maintenance_wizard_json"
+            ),
             verify_json: load_sym!(lib, "ebbackup_workbench_verify_json"),
             recover_json: load_sym!(lib, "ebbackup_workbench_recover_json"),
             compact_json: load_sym!(lib, "ebbackup_workbench_compact_json"),
@@ -132,7 +279,32 @@ pub fn api() -> Result<&'static EbbackupApi, String> {
             runtime_info_json: load_sym!(lib, "ebbackup_workbench_runtime_info_json"),
             last_error_json: load_sym!(lib, "ebbackup_workbench_last_error_json"),
             get_stats_json: load_sym!(lib, "ebbackup_workbench_get_stats_json"),
+            build_path_index_json: load_sym!(lib, "ebbackup_workbench_build_path_index_json"),
+            query_path_history_json: load_sym!(lib, "ebbackup_workbench_query_path_history_json"),
+            list_manifest_page_json: load_sym!(lib, "ebbackup_workbench_list_manifest_page_json"),
+            diff_snapshots_json: load_sym!(lib, "ebbackup_workbench_diff_snapshots_json"),
+            export_restore_report_json: load_sym!(
+                lib,
+                "ebbackup_workbench_export_restore_report_json"
+            ),
+            get_backup_report_json: load_sym!(lib, "ebbackup_workbench_get_backup_report_json"),
+            set_backup_hooks_json: load_sym!(lib, "ebbackup_workbench_set_backup_hooks_json"),
             set_progress: load_sym!(lib, "eb_backup_set_progress"),
+            list_jobs_json: load_sym!(lib, "eb_backup_list_jobs_json"),
+            upsert_job_json: load_sym!(lib, "eb_backup_upsert_job_json"),
+            delete_job: load_sym!(lib, "eb_backup_delete_job"),
+            run_job: load_sym!(lib, "eb_backup_run_job"),
+            enqueue_job_json: load_sym!(lib, "eb_backup_enqueue_job_json"),
+            run_job_queue_json: load_sym!(lib, "eb_backup_run_job_queue_json"),
+            job_queue_status_json: load_sym!(lib, "eb_backup_job_queue_status_json"),
+            snapshot_reachability_json: load_sym!(lib, "eb_backup_snapshot_reachability_json"),
+            rpo_summary_json: load_sym!(lib, "eb_backup_rpo_summary_json"),
+            orphan_explain_json: load_sym!(lib, "eb_backup_orphan_explain_json"),
+            append_ops_audit_json: load_sym!(lib, "eb_backup_append_ops_audit_json"),
+            list_ops_audit_json: load_sym!(lib, "eb_backup_list_ops_audit_json"),
+            set_filter_json: load_sym!(lib, "eb_backup_set_filter_json"),
+            suggest_exclude_filters_json: load_sym!(lib, "eb_backup_suggest_exclude_filters_json"),
+            free_string: load_sym!(lib, "eb_backup_free_string"),
             _lib: lib,
         };
         API.set(api).map_err(|_| "API init race".to_string())?;
@@ -145,6 +317,8 @@ unsafe impl Send for EnginePtr {}
 unsafe impl Sync for EnginePtr {}
 
 pub struct Session {
+    #[allow(dead_code)]
+    pub profile_id: String,
     pub path: String,
     pub eng: EnginePtr,
 }
@@ -183,4 +357,56 @@ where
             .to_string());
     }
     Ok(v)
+}
+
+pub fn call_jobs_json(repo_path: &str) -> Result<serde_json::Value, String> {
+    let api = api()?;
+    let path = cstr(repo_path)?;
+    unsafe {
+        let ptr = (api.list_jobs_json)(path.as_ptr());
+        if ptr.is_null() {
+            return Err("list_jobs_json returned null".to_string());
+        }
+        let text = std::ffi::CStr::from_ptr(ptr)
+            .to_string_lossy()
+            .into_owned();
+        (api.free_string)(ptr);
+        let v: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("list_jobs json parse: {e}"))?;
+        if v.get("ok").and_then(|x| x.as_bool()) == Some(false) {
+            return Err(v
+                .get("error")
+                .and_then(|x| x.as_str())
+                .unwrap_or("list_jobs failed")
+                .to_string());
+        }
+        Ok(v)
+    }
+}
+
+pub fn call_free_json<F>(f: F) -> Result<serde_json::Value, String>
+where
+    F: FnOnce() -> *mut c_char,
+{
+    let api = api()?;
+    unsafe {
+        let ptr = f();
+        if ptr.is_null() {
+            return Err("C API returned null".to_string());
+        }
+        let text = std::ffi::CStr::from_ptr(ptr)
+            .to_string_lossy()
+            .into_owned();
+        (api.free_string)(ptr);
+        let v: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("json parse: {e}"))?;
+        if v.get("ok").and_then(|x| x.as_bool()) == Some(false) {
+            return Err(v
+                .get("error")
+                .and_then(|x| x.as_str())
+                .unwrap_or("operation failed")
+                .to_string());
+        }
+        Ok(v)
+    }
 }

@@ -17,6 +17,17 @@ namespace ebbackup {
 
 namespace {
 
+std::atomic<bool> g_daemon_stop_requested{false};
+
+bool SleepSecondsInterruptible(int total_seconds) {
+  const int secs = std::max(1, total_seconds);
+  for (int i = 0; i < secs; ++i) {
+    if (g_daemon_stop_requested.load()) return false;
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+  }
+  return !g_daemon_stop_requested.load();
+}
+
 std::string Trim(const std::string& s) {
   size_t start = 0;
   while (start < s.size() && (s[start] == ' ' || s[start] == '\t' || s[start] == '\r' ||
@@ -94,6 +105,38 @@ void ApplyScheduleField(const std::string& key, const std::string& value,
     } else {
       cfg->backup_options.durability = DurabilityMode::kStrict;
     }
+  } else if (key == "pre_backup_cmd") {
+    cfg->backup_options.pre_backup_cmd = value;
+  } else if (key == "post_backup_cmd") {
+    cfg->backup_options.post_backup_cmd = value;
+  } else if (key == "mode") {
+    cfg->mode = value;
+  } else if (key == "repo_path") {
+    cfg->repo_path = value;
+  } else if (key == "drain_queue") {
+    cfg->drain_queue = ParseBool(value);
+  } else if (key == "job_ids") {
+    cfg->job_ids.clear();
+    size_t start = 0;
+    while (start < value.size()) {
+      const size_t comma = value.find(',', start);
+      const std::string part = Trim(value.substr(
+          start, comma == std::string::npos ? std::string::npos : comma - start));
+      if (!part.empty()) cfg->job_ids.push_back(part);
+      if (comma == std::string::npos) break;
+      start = comma + 1;
+    }
+  } else if (key == "plugins") {
+    cfg->backup_options.plugins.clear();
+    size_t start = 0;
+    while (start < value.size()) {
+      const size_t comma = value.find(',', start);
+      const std::string part = Trim(value.substr(
+          start, comma == std::string::npos ? std::string::npos : comma - start));
+      if (!part.empty()) cfg->backup_options.plugins.push_back(part);
+      if (comma == std::string::npos) break;
+      start = comma + 1;
+    }
   }
 }
 
@@ -155,7 +198,12 @@ bool ParseJsonSchedule(const std::string& text, ScheduleConfig* out) {
     }
     ApplyScheduleField(key, UnquoteJsonString(value), &cfg);
   }
-  if (cfg.source_path.empty() || cfg.repo_base.empty()) return false;
+  const bool queue_drain = cfg.mode == "queue_drain" || cfg.drain_queue;
+  if (queue_drain) {
+    if (cfg.repo_path.empty() && cfg.repo_base.empty()) return false;
+  } else if (cfg.source_path.empty() || cfg.repo_base.empty()) {
+    return false;
+  }
   *out = cfg;
   return true;
 }
@@ -186,7 +234,12 @@ Status LoadScheduleConfig(const std::string& config_path, ScheduleConfig* out) {
     const std::string value = Trim(line.substr(eq + 1));
     ApplyScheduleField(key, value, &cfg);
   }
-  if (cfg.source_path.empty() || cfg.repo_base.empty()) {
+  const bool queue_drain = cfg.mode == "queue_drain" || cfg.drain_queue;
+  if (queue_drain) {
+    if (cfg.repo_path.empty() && cfg.repo_base.empty()) {
+      return Status::InvalidArgument("queue_drain config requires repo_path or repo_base");
+    }
+  } else if (cfg.source_path.empty() || cfg.repo_base.empty()) {
     return Status::InvalidArgument("config requires source and repo_base");
   }
   *out = cfg;
@@ -282,6 +335,7 @@ Status RunScheduledBackup(const ScheduleConfig& config, int max_runs) {
 
   int runs = 0;
   while (max_runs < 0 || runs < max_runs) {
+    if (g_daemon_stop_requested.load()) break;
     BackupOptions opts = config.backup_options;
     opts.encryption_password = config.encryption_password;
     const BackupMode mode =
@@ -310,7 +364,7 @@ Status RunScheduledBackup(const ScheduleConfig& config, int max_runs) {
     }
     ++runs;
     if (max_runs >= 0 && runs >= max_runs) break;
-    std::this_thread::sleep_for(std::chrono::seconds(config.interval_seconds));
+    if (!SleepSecondsInterruptible(config.interval_seconds)) break;
   }
   return Status::Ok();
 }
@@ -328,6 +382,7 @@ Status RunWatchBackup(const std::string& source_path, const std::string& repo_pa
 
   int triggers = 0;
   while (max_triggers < 0 || triggers < max_triggers) {
+    if (g_daemon_stop_requested.load()) break;
     const Status wait_st = watch.WaitForChange(debounce_ms);
     if (!wait_st.ok()) return wait_st;
     const Status st =
@@ -336,6 +391,57 @@ Status RunWatchBackup(const std::string& source_path, const std::string& repo_pa
     ++triggers;
   }
   return Status::Ok();
+}
+
+Status RunJobQueueDrain(const std::string& repo_path, const BackupOptions& options,
+                        const std::vector<std::string>& pre_enqueue_job_ids,
+                        int max_cycles, int interval_seconds) {
+  if (repo_path.empty()) {
+    return Status::InvalidArgument("repo_path required");
+  }
+  BackupEngine engine(repo_path);
+  const Status open_st = engine.Open();
+  if (!open_st.ok()) return open_st;
+
+  const BackupOptions opts = options;
+  for (const auto& job_id : pre_enqueue_job_ids) {
+    if (job_id.empty()) continue;
+    const Status enq_st = engine.EnqueueJob(job_id);
+    if (!enq_st.ok()) return enq_st;
+  }
+
+  int cycles = 0;
+  for (;;) {
+    if (g_daemon_stop_requested.load()) break;
+    const Status st = engine.RunJobQueue(true, opts);
+    if (!st.ok()) return st;
+    ++cycles;
+    if (max_cycles >= 0 && cycles >= max_cycles) break;
+    if (max_cycles < 0 || cycles < max_cycles) {
+      if (!SleepSecondsInterruptible(std::max(1, interval_seconds))) break;
+    }
+  }
+  return Status::Ok();
+}
+
+void RequestDaemonStop() { g_daemon_stop_requested.store(true); }
+
+void ResetDaemonStop() { g_daemon_stop_requested.store(false); }
+
+bool IsDaemonStopRequested() { return g_daemon_stop_requested.load(); }
+
+Status RunScheduleConfig(const ScheduleConfig& config, int max_runs) {
+  ResetDaemonStop();
+  if (config.mode == "queue_drain" || config.drain_queue) {
+    const std::string repo = config.repo_path.empty()
+                                 ? ScheduleRepoPath(config.repo_base)
+                                 : config.repo_path;
+    BackupOptions opts = config.backup_options;
+    opts.encryption_password = config.encryption_password;
+    return RunJobQueueDrain(repo, opts, config.job_ids, max_runs,
+                            config.interval_seconds);
+  }
+  return RunScheduledBackup(config, max_runs);
 }
 
 }  // namespace ebbackup

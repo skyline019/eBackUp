@@ -1,10 +1,10 @@
-//! Workbench UI settings persisted to `{app_config_dir}/settings.json`.
-
-use std::fs;
-use std::path::PathBuf;
+//! Workbench UI settings persisted per profile under `{app_config_dir}/profiles/{id}/settings.json`.
 
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
+
+use crate::profile_store::{
+    ensure_initialized, read_profile_settings, write_profile_settings, DEFAULT_PROFILE_ID,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -36,6 +36,7 @@ pub struct UiSettings {
     pub border_contrast: f32,
     pub panel_brightness: f32,
     pub log_highlight_intensity: f32,
+    pub stale_backup_alert_days: f32,
 }
 
 impl Default for UiSettings {
@@ -68,50 +69,43 @@ impl Default for UiSettings {
             border_contrast: 1.0,
             panel_brightness: 1.0,
             log_highlight_intensity: 1.0,
+            stale_backup_alert_days: 7.0,
         }
     }
 }
 
-fn settings_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("app_config_dir failed: {e}"))?;
-    Ok(dir.join("settings.json"))
+fn active_profile_id(app: &tauri::AppHandle) -> String {
+    crate::profile_store::get_active_profile(app.clone())
+        .unwrap_or_else(|_| DEFAULT_PROFILE_ID.to_string())
 }
 
 #[tauri::command]
-pub fn get_ui_settings(app: tauri::AppHandle) -> UiSettings {
-    let path = match settings_file_path(&app) {
-        Ok(p) => p,
-        Err(_) => return UiSettings::default(),
-    };
-    let Ok(text) = fs::read_to_string(&path) else {
-        return UiSettings::default();
-    };
-    serde_json::from_str::<UiSettings>(&text).unwrap_or_default()
+pub fn get_ui_settings(app: tauri::AppHandle, profile_id: Option<String>) -> UiSettings {
+    let _ = ensure_initialized(&app);
+    let id = profile_id.unwrap_or_else(|| active_profile_id(&app));
+    read_profile_settings(&app, &id)
 }
 
 #[tauri::command]
-pub fn set_ui_settings(app: tauri::AppHandle, settings: UiSettings) -> Result<(), String> {
-    let path = settings_file_path(&app)?;
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)
-            .map_err(|e| format!("failed to create config dir {}: {e}", dir.display()))?;
-    }
-    let text = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-    fs::write(&path, text).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-    Ok(())
+pub fn set_ui_settings(
+    app: tauri::AppHandle,
+    settings: UiSettings,
+    profile_id: Option<String>,
+) -> Result<(), String> {
+    let id = profile_id.unwrap_or_else(|| active_profile_id(&app));
+    write_profile_settings(&app, &id, &settings)
 }
 
 #[tauri::command]
-pub fn ui_settings_path(app: tauri::AppHandle) -> Result<String, String> {
-    settings_file_path(&app).map(|p| p.display().to_string())
+pub fn ui_settings_path(app: tauri::AppHandle, profile_id: Option<String>) -> Result<String, String> {
+    let id = profile_id.unwrap_or_else(|| active_profile_id(&app));
+    crate::profile_store::profile_settings_path(&app, &id).map(|p| p.display().to_string())
 }
 
 #[tauri::command]
-pub fn ui_settings_exists(app: tauri::AppHandle) -> bool {
-    settings_file_path(&app)
+pub fn ui_settings_exists(app: tauri::AppHandle, profile_id: Option<String>) -> bool {
+    let id = profile_id.unwrap_or_else(|| active_profile_id(&app));
+    crate::profile_store::profile_settings_path(&app, &id)
         .map(|p| p.is_file())
         .unwrap_or(false)
 }

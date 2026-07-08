@@ -18,6 +18,8 @@ struct PipelinePhaseStats {
   std::atomic<uint64_t> stream_cdc_ns{0};
   std::atomic<uint64_t> stream_digest_ns{0};
   std::atomic<uint64_t> stream_carry_ns{0};
+  std::atomic<uint64_t> hybrid_cuts_ns{0};
+  std::atomic<uint64_t> hybrid_replay_ns{0};
 };
 
 inline void ResetPipelinePhaseStats(PipelinePhaseStats* stats) {
@@ -32,6 +34,8 @@ inline void ResetPipelinePhaseStats(PipelinePhaseStats* stats) {
   stats->stream_cdc_ns.store(0);
   stats->stream_digest_ns.store(0);
   stats->stream_carry_ns.store(0);
+  stats->hybrid_cuts_ns.store(0);
+  stats->hybrid_replay_ns.store(0);
 }
 
 inline void PrintPipelinePhaseStats(const PipelinePhaseStats& stats,

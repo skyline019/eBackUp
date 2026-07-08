@@ -1,0 +1,162 @@
+\chapter{能力 Wave 深化（Wave A--T）}
+\label{ch:capability-waves}
+
+本章归档 \versiontag{0.9.4} 之后的能力 sprint：从可证明备份（ABI v14）到备份窗口（ABI v29）。性能 Wave 1--5 见 \cref{ch:overview,ch:pipeline-v4,ch:streaming-cdc}；完整索引见 \filepath{docs/WAVE\_ARCHIVE.md}。
+
+\section{Wave 命名与 Phase 对照}
+
+\begin{table}[htbp]
+\centering
+\caption{能力 Phase 与 Wave 字母对照}
+\small
+\begin{tabular}{@{}clll@{}}
+\toprule
+Phase & Wave & ABI & 主题 \\
+\midrule
+0 & A & — & 缺口表与路线图 \\
+1--2 & — & v14--v15 & 路径索引、Merkle Diff、恢复验收 \\
+3 & B, E & v16 & Manifest v5、Win 元数据保真 \\
+4 & C, D & v17 & 扫描容错、备份报告、hooks \\
+5 & F, G & v18 & 多 Job、GUI 作业 \\
+6 & I, K, M & v19--v23 & Hybrid CDC、EBB v2、三路就地恢复 \\
+7 & L & v22 & Browse sidecar、Job 队列 \\
+8 & N, O, O+ & v24--v26 & 可达性、RPO、服务化、多 Profile \\
+9 & P, Q & v27 & 垂直插件 \\
+10 & R & v28 & 智能排除 \\
+11 & T & v29 & 备份窗口 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Wave B/E：Manifest v5 与 Windows 元数据}
+
+\subsection{Manifest v5 触发条件}
+
+\texttt{WriteManifestAuto} 在 \texttt{DocumentUsesV5(doc)} 时写入 \texttt{EBMANIFEST5}（见 \filepath{manifest.cc}）。任一文件含 Win 扩展字段即触发 v5。
+
+\subsection{扫描 enrichment}
+
+\filepath{scan\_entry.cc} 在 \texttt{\_WIN32} 下调用 \texttt{EnrichScanEntriesWinMeta}：
+\begin{itemize}[nosep]
+  \item 常规文件采集 ACL、inode、reparse；
+  \item \texttt{AppendAlternateStreams}：\texttt{FindFirstStreamW} 枚举 ADS，\texttt{relative\_path} 追加 \texttt{:stream}。
+\end{itemize}
+
+\subsection{恢复}
+
+\filepath{restore\_engine.cc}：硬链 dedup（\texttt{CreateHardLinkW}）；联接点 \texttt{RecreateReparsePoint}；ADS 写入 \texttt{path:stream}。
+
+\section{Wave C/D：尽力一致与备份报告}
+
+\begin{lstlisting}[caption={备份报告 JSON 字段（节选）},label={lst:backup-report}]
+{
+  "txn_id": 42,
+  "scan_issues": { "unreadable": 1, "depth_exceeded": 0 },
+  "reparse_junction": 2,
+  "hook_failed": false
+}
+\end{lstlisting}
+
+Hooks：\texttt{eb\_backup\_set\_backup\_hooks}；CLI \texttt{--pre-cmd}/\texttt{--post-cmd}。
+
+\section{Wave F/G：多 Job 模型}
+
+\filepath{catalog/jobs.json} 结构（节选）：
+
+\begin{lstlisting}[caption={jobs.json 作业条目},label={lst:jobs-json}]
+{
+  "id": "nightly-docs",
+  "name": "Documents",
+  "source_path": "C:/Users/me/Documents",
+  "exclude_globs": ["Thumbs.db"],
+  "exclude_paths": [],
+  "plugins": [],
+  "window_start": "02:00",
+  "window_end": "06:00",
+  "deadline_grace_seconds": 300,
+  "durability_adaptive": true
+}
+\end{lstlisting}
+
+\texttt{RunJob} 合并 filter + plugins + window；\texttt{snapshot\_meta.jsonl} 记录 \texttt{job\_id}、\texttt{immutable\_until\_unix}。
+
+\section{Wave I：Hybrid CDC}
+
+默认路径（\versiontag{0.10+}）：\texttt{FastCdcSlice} 切分 + stream replay 混合。环境变量：
+\begin{itemize}[nosep]
+  \item \texttt{EBBACKUP\_CDC\_HYBRID=0} — 禁用混合，回退纯 stream；
+  \item \texttt{EBBACKUP\_FORCE\_STREAM\_CDC=1} — 强制 stream-feed。
+\end{itemize}
+
+\texttt{PipelinePhaseStats}：\texttt{hybrid\_cuts\_ns}、\texttt{hybrid\_replay\_ns} 与 \texttt{stream\_cdc\_ns} 互斥计数——测试断言须 OR 组合。
+
+\section{Wave M：三路就地恢复}
+
+Preview JSON 分类：\texttt{added}、\texttt{removed}、\texttt{modified}、\texttt{conflict}、\texttt{both\_changed}。
+
+C API：\texttt{eb\_backup\_preview\_in\_place\_json} / \texttt{eb\_backup\_apply\_in\_place\_json} 支持 \texttt{base\_txn\_id}、\texttt{use\_three\_way}、\texttt{dry\_run}。
+
+\section{Wave L/N：Catalog 与合规}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Sidecar & 路径 \\
+\midrule
+Path index & \filepath{catalog/path\_index.jsonl} \\
+Manifest browse & \filepath{catalog/manifest\_browse/<txn>.mbi} \\
+Job queue & \filepath{catalog/job\_queue.jsonl} \\
+Job reports & \filepath{catalog/jobs/<job\_id>.jsonl} \\
+Ops audit & \filepath{audit/rar.chain}（GUI append） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Wave P/Q：插件接口}
+
+\begin{lstlisting}[caption={IBackupPlugin 生命周期},label={lst:plugin-lifecycle}]
+Quiesce() -> ExtraScanRoots() + ScanHints() -> [backup scan/chunk] -> Thaw()
+\end{lstlisting}
+
+内置插件 ID：\texttt{sqlite\_checkpoint}、\texttt{registry\_hive}、\texttt{vhdx\_scan}。
+
+\section{Wave R：智能排除}
+
+\filepath{exclude\_suggestions.cc} catalog 含 \texttt{.git}、\texttt{node\_modules}、\texttt{.next}、\texttt{.turbo}、\texttt{Thumbs.db}、\texttt{*.log} 等。
+
+C API \texttt{eb\_backup\_suggest\_exclude\_filters\_json} 参数 \texttt{include\_ide\_dirs} 控制 \texttt{.vscode}/\texttt{.idea} 建议。
+
+\section{Wave T：备份窗口}
+
+\filepath{job/backup\_window.cc}：
+\begin{itemize}[nosep]
+  \item \texttt{IsWithinBackupWindow(start, end, now)} — 支持跨午夜；
+  \item \texttt{ShouldDowngradeDurability(end, grace, now)}；
+  \item \texttt{WindowEndUnix(...)} — 报告字段。
+\end{itemize}
+
+\texttt{RunBackup} 中途 \texttt{MaybeAdaptBackupWindow}；超时 \texttt{TruncatePendingFilesAt}。
+
+\section{源码索引（能力 Wave 新增/主要修改）}
+
+\begin{longtable}{@{}lp{9cm}@{}}
+\toprule
+路径 & Wave \\
+\midrule
+\filepath{src/catalog/path\_index.cc} & v14 \\
+\filepath{src/catalog/manifest\_diff.cc} & v15 \\
+\filepath{src/winmeta/win\_meta.cc} & B/E \\
+\filepath{src/scan/scan\_entry.cc} & C/D/E \\
+\filepath{src/scan/exclude\_suggestions.cc} & R \\
+\filepath{src/job/job\_config.cc} & F/T \\
+\filepath{src/job/backup\_window.cc} & T \\
+\filepath{src/job/job\_queue.cc} & L/N \\
+\filepath{src/plugins/} & P/Q \\
+\filepath{src/engine/restore\_engine.cc} & M/K \\
+\filepath{gui/src/activities/BackupView.vue} & G/R/T \\
+\filepath{gui/src/activities/RestoreView.vue} & M \\
+\filepath{gui/src/activities/MaintenanceView.vue} & O \\
+\bottomrule
+\end{longtable}

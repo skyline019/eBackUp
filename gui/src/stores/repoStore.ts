@@ -1,14 +1,20 @@
 import { defineStore } from "pinia";
 import {
   closeRepo,
+  getProfileState,
   initRepo,
   listSnapshots,
   openRepo,
   repoInfo,
+  setProfileState,
+  type ProfileStateDto,
   type RepoInfoDto,
   type SnapshotDto,
 } from "@/api/ebbackup";
 import { useUiStore } from "@/stores/uiStore";
+import { useJobStore } from "@/stores/jobStore";
+import { useProfileStore } from "@/stores/profileStore";
+import { isTauriRuntime } from "@/utils/tauriRuntime";
 
 const LS_RECENT = "ebbackup_workbench_recent";
 const LS_LAST_SOURCE = "ebbackup_workbench_last_source";
@@ -24,7 +30,20 @@ export const useRepoStore = defineStore("repo", {
     busy: false,
   }),
   actions: {
-    loadLocal() {
+    applyProfileState(state: ProfileStateDto) {
+      this.recent = state.recentRepos ?? [];
+      this.lastSourcePath = state.lastSourcePath ?? "";
+    },
+    async loadLocal(profileId?: string) {
+      if (isTauriRuntime()) {
+        try {
+          const state = await getProfileState(profileId);
+          this.applyProfileState(state);
+          return;
+        } catch {
+          /* fall through */
+        }
+      }
       try {
         const r = localStorage.getItem(LS_RECENT);
         if (r) this.recent = JSON.parse(r) as string[];
@@ -33,15 +52,27 @@ export const useRepoStore = defineStore("repo", {
         this.recent = [];
       }
     },
+    async persistLocalState() {
+      if (isTauriRuntime()) {
+        const profile = useProfileStore();
+        await setProfileState(profile.activeProfileId, {
+          recentRepos: this.recent,
+          lastSourcePath: this.lastSourcePath,
+        });
+        return;
+      }
+      localStorage.setItem(LS_RECENT, JSON.stringify(this.recent));
+      localStorage.setItem(LS_LAST_SOURCE, this.lastSourcePath);
+    },
     remember(path: string) {
       const norm = path.trim();
       if (!norm) return;
       this.recent = [norm, ...this.recent.filter((p) => p !== norm)].slice(0, 12);
-      localStorage.setItem(LS_RECENT, JSON.stringify(this.recent));
+      void this.persistLocalState();
     },
     setLastSource(path: string) {
       this.lastSourcePath = path;
-      localStorage.setItem(LS_LAST_SOURCE, path);
+      void this.persistLocalState();
     },
     async createRepo(parentDir: string, name: string, flags = 0) {
       const ui = useUiStore();
@@ -69,6 +100,7 @@ export const useRepoStore = defineStore("repo", {
         try {
           await this.refreshInfo();
           await this.refreshSnapshots();
+          await useJobStore().refreshJobs();
         } catch (e) {
           await this.close();
           const msg = e instanceof Error ? e.message : String(e);
@@ -86,6 +118,7 @@ export const useRepoStore = defineStore("repo", {
       this.path = "";
       this.info = null;
       this.snapshots = [];
+      useJobStore().clear();
       ui.pushLog("仓库已关闭", "meta");
     },
     async refreshInfo() {

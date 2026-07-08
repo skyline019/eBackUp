@@ -29,6 +29,7 @@
 #include "ebbackup/crypto/aes_gcm.h"
 #include "ebbackup/io/mmap_reader.h"
 #include "ebbackup/pipeline/file_scheduler.h"
+#include "ebbackup/report/backup_report.h"
 #include "ebbackup/pipeline/pipeline_phase_stats.h"
 #include "ebbackup/store/eb_pack.h"
 
@@ -210,6 +211,14 @@ struct PipelineShared {
   BoundedQueue<ChunkTask>* chunk_q{nullptr};
   BoundedQueue<EncodedChunkTask>* encoded_q{nullptr};
   mutable std::mutex stats_mu;
+  std::vector<report::BackupPathIssue>* scan_issues{nullptr};
+  mutable std::mutex scan_issues_mu;
+
+  void RecordPipelineIssue(const std::string& path, const std::string& reason) {
+    if (!scan_issues) return;
+    std::lock_guard<std::mutex> lock(scan_issues_mu);
+    scan_issues->push_back({path, reason});
+  }
 
   void MergeContentClassStats(const ContentClassStats& delta) {
     if (!options.content_stats) return;
@@ -281,6 +290,15 @@ void MergeStreamProfileToPhaseStats(const FastCdcStreamProfile& profile,
       profile.digest_ns, std::memory_order_relaxed);
   shared->phase_stats->stream_carry_ns.fetch_add(
       profile.carry_copy_ns, std::memory_order_relaxed);
+}
+
+void MergeHybridProfileToPhaseStats(const FastCdcStreamProfile& profile,
+                                    PipelineShared* shared) {
+  if (!shared || !shared->phase_stats) return;
+  shared->phase_stats->hybrid_cuts_ns.fetch_add(
+      profile.cdc_scan_ns, std::memory_order_relaxed);
+  shared->phase_stats->hybrid_replay_ns.fetch_add(
+      profile.digest_ns + profile.carry_copy_ns, std::memory_order_relaxed);
 }
 
 void ChunkFileStreaming(FileData item, PipelineShared* shared,
@@ -396,6 +414,87 @@ void TryFinalizeFile(const std::shared_ptr<FilePipelineState>& file,
   MaybeFinalizeFileLocked(file, shared);
 }
 
+void ChunkFileStreamingFeed(FileData item, PipelineShared* shared,
+                            BoundedQueue<ChunkTask>* chunk_q,
+                            bool hybrid_stats) {
+  const auto t0 = std::chrono::steady_clock::now();
+  auto file_state = std::make_shared<FilePipelineState>();
+  file_state->index = item.index;
+  file_state->relative_path = item.relative_path;
+  file_state->view = std::make_shared<FileView>(std::move(item.view));
+  file_state->file_size = file_state->view->size();
+  const uint8_t* bytes = file_state->view->data();
+  const size_t byte_len = file_state->view->size();
+
+  EbHcrboConfig hcrbo_cfg =
+      EbHcrboConfigForFileSize(byte_len, shared->options.chunk_profile,
+                               shared->options.digest_algo);
+  FastCdcStreamState stream_state{};
+  FastCdcStreamInit(&stream_state, hcrbo_cfg.fast);
+  stream_state.digest_base = bytes;
+
+  const size_t hash_slot_capacity =
+      byte_len == 0 ? 0
+                    : std::max<size_t>(1, byte_len / hcrbo_cfg.fast.min_size + 2);
+  file_state->chunk_hashes_hex.assign(hash_slot_capacity, std::string());
+
+  size_t off = 0;
+  size_t chunk_index = 0;
+  const size_t feed_bytes = StreamFeedBytesForFile(byte_len);
+  while (off < byte_len) {
+    const size_t n = std::min(feed_bytes, byte_len - off);
+    const bool last = (off + n >= byte_len);
+    std::vector<ChunkDescriptor> batch;
+    const Status st =
+        FastCdcStreamFeed(&stream_state, bytes + off, n, last, &batch);
+    if (!st.ok()) {
+      shared->SetError(st);
+      return;
+    }
+    off += n;
+    if (batch.empty()) continue;
+
+    AppendWeakCfiAnchors(batch, bytes, byte_len, &file_state->cfi);
+    {
+      std::lock_guard<std::mutex> lock(file_state->finalize_mu);
+      file_state->total_chunks = chunk_index + batch.size();
+      if (file_state->total_chunks > file_state->chunk_hashes_hex.size()) {
+        shared->SetError(Status::Internal("streaming chunk index overflow"));
+        return;
+      }
+    }
+    std::vector<bool> store_exists;
+    FillStoreExists(shared->store, shared, batch, &store_exists);
+    for (size_t bi = 0; bi < batch.size(); ++bi) {
+      ChunkTask task{};
+      task.file = file_state;
+      task.chunk_index = chunk_index + bi;
+      task.descriptor = batch[bi];
+      task.store_exists = store_exists[bi];
+      if (!chunk_q->Push(std::move(task))) {
+        shared->SetError(Status::Internal("pipeline chunk queue closed early"));
+        return;
+      }
+    }
+    chunk_index += batch.size();
+  }
+
+  file_state->chunking_complete.store(true, std::memory_order_release);
+  TryFinalizeFile(file_state, shared);
+
+  if (hybrid_stats) {
+    MergeHybridProfileToPhaseStats(stream_state.profile, shared);
+  } else {
+    MergeStreamProfileToPhaseStats(stream_state.profile, shared);
+  }
+
+  const auto t1 = std::chrono::steady_clock::now();
+  shared->AddPhaseNs(
+      shared->phase_stats ? &shared->phase_stats->chunk_ns : nullptr,
+      static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+}
+
 void RecordStoredChunkHash(const std::shared_ptr<FilePipelineState>& file,
                            size_t chunk_index, const uint8_t hash[32],
                            PipelineShared* shared) {
@@ -483,6 +582,23 @@ bool ForceStreamCdc() {
 bool CdcFastSliceEnabled() {
   const char* env = std::getenv("EBBACKUP_CDC_FAST_SLICE");
   return env && env[0] == '1';
+}
+
+bool CdcHybridEnabled() {
+  const char* env = std::getenv("EBBACKUP_CDC_HYBRID");
+  if (!env || env[0] == '\0') return true;
+  if (env[0] == '0') return false;
+  return true;
+}
+
+bool UseCdcHybridPath(const PipelineShared* shared, const uint8_t* bytes,
+                      size_t byte_len) {
+  if (!CdcHybridEnabled()) return false;
+  if (!shared || !bytes || byte_len == 0) return false;
+  if (ForceStreamCdc()) return false;
+  if (shared->mode != BackupMode::kFull) return false;
+  if (byte_len <= kStreamFeedBytes) return false;
+  return true;
 }
 
 bool UseCdcFastPath(const PipelineShared* shared, const uint8_t* bytes,
@@ -633,87 +749,25 @@ void ChunkFileStreamingFastSlice(FileData item, PipelineShared* shared,
           std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
 }
 
+void ChunkFileStreamingHybrid(FileData item, PipelineShared* shared,
+                              BoundedQueue<ChunkTask>* chunk_q) {
+  ChunkFileStreamingFeed(std::move(item), shared, chunk_q, true);
+}
+
 void ChunkFileStreaming(FileData item, PipelineShared* shared,
                         BoundedQueue<ChunkTask>* chunk_q) {
   const uint8_t* bytes_preview = item.view.data();
   const size_t byte_len_preview = item.view.size();
+  if (UseCdcHybridPath(shared, bytes_preview, byte_len_preview)) {
+    ChunkFileStreamingHybrid(std::move(item), shared, chunk_q);
+    return;
+  }
   if (UseCdcFastPath(shared, bytes_preview, byte_len_preview)) {
     ChunkFileStreamingFastSlice(std::move(item), shared, chunk_q);
     return;
   }
 
-  const auto t0 = std::chrono::steady_clock::now();
-  auto file_state = std::make_shared<FilePipelineState>();
-  file_state->index = item.index;
-  file_state->relative_path = item.relative_path;
-  file_state->view = std::make_shared<FileView>(std::move(item.view));
-  file_state->file_size = file_state->view->size();
-  const uint8_t* bytes = file_state->view->data();
-  const size_t byte_len = file_state->view->size();
-
-  EbHcrboConfig hcrbo_cfg =
-      EbHcrboConfigForFileSize(byte_len, shared->options.chunk_profile,
-                               shared->options.digest_algo);
-  FastCdcStreamState stream_state{};
-  FastCdcStreamInit(&stream_state, hcrbo_cfg.fast);
-  stream_state.digest_base = bytes;
-
-  const size_t hash_slot_capacity =
-      byte_len == 0 ? 0
-                    : std::max<size_t>(1, byte_len / hcrbo_cfg.fast.min_size + 2);
-  file_state->chunk_hashes_hex.assign(hash_slot_capacity, std::string());
-
-  size_t off = 0;
-  size_t chunk_index = 0;
-  const size_t feed_bytes = StreamFeedBytesForFile(byte_len);
-  while (off < byte_len) {
-    const size_t n = std::min(feed_bytes, byte_len - off);
-    const bool last = (off + n >= byte_len);
-    std::vector<ChunkDescriptor> batch;
-    const Status st =
-        FastCdcStreamFeed(&stream_state, bytes + off, n, last, &batch);
-    if (!st.ok()) {
-      shared->SetError(st);
-      return;
-    }
-    off += n;
-    if (batch.empty()) continue;
-
-    AppendWeakCfiAnchors(batch, bytes, byte_len, &file_state->cfi);
-    {
-      std::lock_guard<std::mutex> lock(file_state->finalize_mu);
-      file_state->total_chunks = chunk_index + batch.size();
-      if (file_state->total_chunks > file_state->chunk_hashes_hex.size()) {
-        shared->SetError(Status::Internal("streaming chunk index overflow"));
-        return;
-      }
-    }
-    std::vector<bool> store_exists;
-    FillStoreExists(shared->store, shared, batch, &store_exists);
-    for (size_t bi = 0; bi < batch.size(); ++bi) {
-      ChunkTask task{};
-      task.file = file_state;
-      task.chunk_index = chunk_index + bi;
-      task.descriptor = batch[bi];
-      task.store_exists = store_exists[bi];
-      if (!chunk_q->Push(std::move(task))) {
-        shared->SetError(Status::Internal("pipeline chunk queue closed early"));
-        return;
-      }
-    }
-    chunk_index += batch.size();
-  }
-
-  file_state->chunking_complete.store(true, std::memory_order_release);
-  TryFinalizeFile(file_state, shared);
-
-  MergeStreamProfileToPhaseStats(stream_state.profile, shared);
-
-  const auto t1 = std::chrono::steady_clock::now();
-  shared->AddPhaseNs(
-      shared->phase_stats ? &shared->phase_stats->chunk_ns : nullptr,
-      static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+  ChunkFileStreamingFeed(std::move(item), shared, chunk_q, false);
 }
 
 Status StoreChunkInline(const ChunkTask& task, PipelineShared* shared) {
@@ -1037,6 +1091,24 @@ Status RunSingleFileInlinePipeline(const std::string& path,
   return Status::Ok();
 }
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+std::string ClassifyReadFailureReason() {
+  const DWORD err = GetLastError();
+  if (err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION) {
+    return "locked";
+  }
+  return "unreadable";
+}
+#endif
+
 void ReaderStage(BoundedQueue<FileInput>* in, BoundedQueue<FileData>* out,
                  PipelineShared* shared) {
   FileInput item{};
@@ -1050,16 +1122,24 @@ void ReaderStage(BoundedQueue<FileInput>* in, BoundedQueue<FileData>* out,
       MmapReader reader;
       const Status st = reader.Open(item.path);
       if (!st.ok()) {
-        shared->SetError(st);
-        break;
+#ifdef _WIN32
+        shared->RecordPipelineIssue(item.path, ClassifyReadFailureReason());
+#else
+        shared->RecordPipelineIssue(item.path, "unreadable");
+#endif
+        continue;
       }
       data.view.use_mmap = true;
       data.view.mmap = std::move(reader);
     } else {
       std::ifstream file(PathFromUtf8(item.path), std::ios::binary);
       if (!file) {
-        shared->SetError(Status::IoError("read failed: " + item.path));
-        break;
+#ifdef _WIN32
+        shared->RecordPipelineIssue(item.path, ClassifyReadFailureReason());
+#else
+        shared->RecordPipelineIssue(item.path, "unreadable");
+#endif
+        continue;
       }
       data.view.owned.assign(std::istreambuf_iterator<char>(file),
                              std::istreambuf_iterator<char>());
@@ -1227,6 +1307,7 @@ Status RunBackupPipeline(const std::vector<std::string>& file_paths,
   shared.progress_cb = progress_cb;
   shared.progress_user = progress_user;
   shared.phase_stats = options.phase_stats;
+  shared.scan_issues = options.scan_issues;
   shared.total_files = file_paths.size();
   result->manifest_files.clear();
   result->manifest_files.resize(file_paths.size());

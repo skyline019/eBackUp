@@ -1,7 +1,7 @@
 \chapter*{摘要}
 \addcontentsline{toc}{chapter}{摘要}
 
-本文档为 \textbf{ebbackup 备份内核}（目录 \filepath{engine\_cpp/}）与 \textbf{运维质量闭环}（bench L1--L7、compact/GC、232 项 gtest、C API ABI v12）的\textbf{完整扩写版}工程技术手册。目标篇幅 \textbf{120+ 页}（含附录与索引），较 v1.0 摘要版显著加深：每一核心子系统均给出字节级布局、算法步骤、字段表、版本对照与实测基准。
+本文档为 \textbf{ebbackup 备份内核}（目录 \filepath{engine\_cpp/}）与 \textbf{运维质量闭环}（bench L1--L7、compact/GC、363 项 gtest、C API ABI v29）的\textbf{完整扩写版}工程技术手册。
 
 \textbf{Part I} 自底向上解析备份内核：Content ID 恒为 \texttt{SHA256(content)}；增量路径 HCRBO + CFI 锚点 reuse；提交点耐久性要求 manifest 写入 superblock 前必须 \texttt{ChunkStore::Flush()}（fsync）。Pipeline 自 \wave{4}（\versiontag{0.8.0}）支持全局 chunk 队列；\wave{5}（\versiontag{0.9.0}）修复 ChunkStore 并发并引入 Stage 3.1/3.2 分层门禁；\versiontag{0.9.4} Sprint 4 在流式 CDC 上增加 Phase B seg1 bulk 与 Phase A \texttt{FastCdcSlice} opt-in 路由。
 
@@ -20,7 +20,7 @@
 \noindent\textbf{文档约定：}
 \begin{itemize}[nosep]
   \item 源码路径均相对于仓库根 \filepath{E:/recoveryProjects/}；
-  \item 流程图使用 TikZ；代码清单摘录自头文件/实现，行号以文档编写时 commit \texttt{4a7ac94}（\versiontag{0.9.4}）为准；
+  \item 流程图使用 TikZ；代码清单摘录以 commit \texttt{965431b}（\versiontag{0.9.5}）为准；
   \item 吞吐单位默认 \textbf{SI MB/s}（$10^6$ B/s），与 \filepath{docs/reference/PERF\_BASELINE.md} 一致；
   \item 版本演进详见 \filepath{CHANGELOG.md}、\filepath{docs/VERSION\_HISTORY.md}。
 \end{itemize}
@@ -32,8 +32,9 @@
 Part & 章节 \\
 \midrule
 Part I 内核 & 概述、架构、不变量、BackupEngine、FastCDC/HCRBO、Digest/Crypto、ChunkStore/EbPack、Manifest/Snapshot、Pipeline v4、流式 CDC、恢复/校验、审计/RAR、CLI/daemon \\
-Part II 运维 & bench L1--L7、C API ABI、compact/GC、测试/CI \\
-附录 & 源码索引、术语表、环境变量、manifest v4/HXID 字节参考、Wave 演进、统计字段索引 \\
+Part II 运维 & bench L1--L7、C API ABI v29、compact/GC、测试/CI \\
+Part I 扩展 & 第 21 章能力 Wave A--T（ABI v14--v29） \\
+附录 & 源码索引、术语表、环境变量、manifest v4/v5、Wave 演进、统计字段索引 \\
 \bottomrule
 \end{longtable}
 
@@ -45,5 +46,6 @@ Part II 运维 & bench L1--L7、C API ABI、compact/GC、测试/CI \\
 \midrule
 2026-07-07 & v1.0 & 首版：Part I 内核 12 章 + Part II 运维 4 章 + 附录（摘要级） \\
 2026-07-07 & v1.1 & \textbf{完整扩写}：01/02/03/17--20/99 深度重写；目标 120+ 页；对齐 \versiontag{0.9.4} ABI v12、232 gtest、Stage 3.1 floors \\
+2026-07-08 & v1.2 & 第 21 章能力 Wave A--T；C API 扩至 ABI v29；363 gtest；\filepath{docs/WAVE\_ARCHIVE.md} 交叉引用 \\
 \bottomrule
 \end{longtable}

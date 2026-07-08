@@ -1,0 +1,12 @@
+[Unit]
+Description=ebbackup scheduled backup drain
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/eb schedule /etc/ebbackup/queue_drain.json --once
+User=ebbackup
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

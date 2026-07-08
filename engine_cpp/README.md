@@ -67,14 +67,94 @@ eb restore ./repo ./dest --include keep/ --exclude-glob "*.tmp"
 # Full restore with optional post-write content verification
 eb restore ./repo ./dest --verify-content
 
+# Selective restore with layout remap (ABI v13)
+eb restore ./repo ./dest --include keep/ --strip-prefix keep
+eb restore ./repo ./dest --include keep/ --flatten --on-conflict suffix
+eb restore ./repo ./dest --preview --include keep/
+
+# In-place restore preview (ABI v19): compare live source tree vs snapshot
+eb restore ./repo ./source --in-place --preview
+
+# In-place restore apply (ABI v20+): write snapshot content into live tree
+eb restore ./repo ./source --in-place
+eb restore ./repo ./source --in-place --in-place-conflict fail
+eb restore ./repo ./source --in-place --in-place-conflict overwrite
+eb restore ./repo ./source --in-place --in-place-orphans delete
+eb restore ./repo ./source --in-place --base-at 1 --preview
+eb restore ./repo ./source --in-place --dry-run
+
+# Symlink target remap (restore to new directory)
+eb restore ./repo ./dest --symlink-remap-from C:/old --symlink-remap-to D:/new
+
 # Skip content Merkle verification (selective or full)
 eb restore ./repo ./dest --include keep/ --skip-content-verify
+
+# Provable backup: path history index, snapshot diff, restore acceptance report
+eb path-index ./repo --rebuild
+eb browse-page ./repo --prefix src/ --offset 0 --limit 100
+eb diff ./repo --at 1 --at 2
+eb restore ./repo ./dest --acceptance-report ./acceptance.json
 
 # Watch with same filter semantics as backup
 eb watch ./repo ./source --filter-file ./filters.conf --once
 
 # Scheduled backup (JSON or key=value config)
 eb schedule ./schedule.json --once
+
+# Multi-job backup (ABI v18+) and job reuse reports (ABI v19)
+eb job list ./repo
+eb job add ./repo --json '{"id":"docs","name":"Docs","source_path":"./source","retention_tag":3,"immutability_days":7,"worm":false,"exclude_globs":["*.tmp"]}'
+eb job remove ./repo docs
+eb job reports ./repo docs --limit 20
+eb backup ./repo --job docs
+eb prune-snapshots ./repo --audit-key <authorized-key>
+
+# Persistent job queue (ABI v22+)
+eb queue list ./repo
+eb queue add ./repo docs
+eb queue add ./repo docs --incremental
+eb queue run ./repo --once
+eb queue run ./repo --drain
+eb queue drain ./repo
+
+# Snapshot chain reachability + RPO summary (ABI v24+)
+eb verify-chain ./repo [--at TXN] [--json]
+eb rpo-summary ./repo [--json]
+
+# Orphan explain + maintenance ops audit (ABI v25+)
+eb orphan-explain ./repo [--json] [--limit N]
+eb audit-ops list ./repo [--json]
+
+# Vertical backup plugins (ABI v27+)
+eb plugin list
+eb backup ./repo ./source --plugins sqlite_checkpoint,registry_hive
+
+# Smart exclude suggestions (ABI v28+)
+eb suggest-excludes ./source [--json] [--max-depth 4] [--filter-file ./rules.filter] [--include-ide]
+
+# Job with backup window (ABI v29+)
+eb job add ./repo --json '{"id":"nightly","name":"Nightly","source_path":"./source","window_start":"02:00","window_end":"06:00","durability_adaptive":true}'
+
+# Schedule queue drain (JSON: mode=queue_drain, repo_path=..., job_ids=job_a,job_b, plugins=sqlite_checkpoint)
+eb schedule ./queue_drain.json --once
+
+# Windows Service (run as elevated for install/uninstall)
+eb service install --config ./config/queue_drain.example.json --name EbbackupDaemon
+eb service run --config ./config/queue_drain.example.json
+eb service status --name EbbackupDaemon
+eb service uninstall --name EbbackupDaemon
+
+# Linux: copy deploy/ebbackup.service + ebbackup.timer to /etc/systemd/system/
+# then: systemctl enable --now ebbackup.timer
+
+# Portable bundle export/import
+eb export ./repo ./backup.ebb
+eb import ./backup.ebb ./restored_repo
+
+# Delta bundle (base snapshot + incremental payload)
+eb export ./repo ./delta.ebb --delta --base-at 1
+eb import ./base.ebb ./delta.ebb ./restored_repo
+eb import --delta ./delta.ebb ./existing_repo
 ```
 
 ### Filter file format (key=value)
@@ -103,10 +183,27 @@ After restore, the engine can re-hash restored files on disk and compare against
 
 Verification reads restored files in chunk-sized segments (streaming); it does not load entire large files into memory.
 
-## C API (ABI v12)
+## C API (ABI v21)
 
-- `eb_backup_load_filter_file()` applies to subsequent **backup and restore** on the same engine handle.
-- `EB_BACKUP_ABI_VERSION` is **12**.
+- `eb_backup_set_filter_json()` / `eb_backup_set_restore_remap()` — handle 级 filter 与路径重整。
+- `eb_backup_preview_restore_at()` — 预览选择性恢复子集规模。
+- `eb_backup_preview_in_place_json()` — 就地恢复 preview（逐路径 diff，含 orphan）。
+- `eb_backup_apply_in_place_json()` — 就地恢复 apply（`conflict_policy`: skip/fail/overwrite；`orphan_policy`: skip/delete）。
+- `eb_backup_export_delta_json()` / `eb_backup_import_delta_json()` / `eb_backup_apply_delta_json()` — EBB v2 增量包。
+- `eb_backup_list_job_reports_json()` — Job 历史复用报告 sidecar。
+- `eb_backup_run_maintenance_wizard()` — Prune → GC → Compact 编排。
+- `eb_backup_gc_orphans_ex()` — 返回 orphan/tombstone 计数。
+- **v14**: `eb_backup_build_path_index()`；`eb_backup_query_path_history_json()`；`eb_backup_list_manifest_files_page_json()`。
+- **v15**: `eb_backup_diff_snapshots_json()`；`eb_backup_export_restore_report_json()`。
+- **v16**: manifest v5 Win 元数据（`security_descriptor_b64`、`inode_id`、`reparse_tag`、`reparse_target`、ADS `stream_name`）；restore remap `acl_policy`（含 `best_effort`）与 `reparse_policy`（`skip`/`recreate`）；硬链 inode dedup + `CreateHardLinkW` 恢复。
+- **v17**: `eb_backup_get_backup_report_json()`；`BackupOptions::pre_backup_cmd` / `post_backup_cmd`；`eb_backup_set_backup_hooks()`。
+- **v18**: `eb_backup_list_jobs_json()` / `eb_backup_upsert_job_json()` / `eb_backup_delete_job()` / `eb_backup_run_job()`；`catalog/snapshot_meta.jsonl`；WORM repo prune 需 audit 授权。
+- **v19**: `eb_backup_preview_in_place_json()`；`catalog/jobs/<job_id>.jsonl`；`eb_backup_list_job_reports_json()`。
+- **v20**: `eb_backup_apply_in_place_json()`；Hybrid CDC 默认路由（`EBBACKUP_CDC_HYBRID=0` opt-out；bench ratio 1.00）。
+- **v21**: delta bundle JSON C API；in-place `orphan_policy`；remap JSON `symlink_remap_from/to`。
+- **v28**: `eb_backup_suggest_exclude_filters_json()`；job `exclude_paths[]`；CLI `eb suggest-excludes`。
+- **v29**: job `window_start/end` + `durability_adaptive`；备份报告 `durability_downgraded` / `window_truncated`。
+- `EB_BACKUP_ABI_VERSION` is **29**.
 - `eb_backup_init_repo_ex()` creates **v0.6** repos by default (EbPack, coalesced meta, persistent index, manifest v4, snapshots, compress auto). Pass `EB_BACKUP_INIT_LEGACY` for v0.3 storage without EbPack.
 - EbPack repos **auto-enable pipeline** on backup unless `EB_BACKUP_FLAG_NO_PIPELINE` is set.
 - New in v0.4: `eb_backup_list_snapshots()`, `eb_backup_restore_at()`, `eb_backup_verify_at()`, `eb_backup_prune_snapshots()`.
@@ -202,11 +299,12 @@ Scheduled backups use a **single repo** at `<repo_base>/current` (v0.4 init: per
   "encrypt": false,
   "filter_file": "/path/to/filters.conf",
   "include_glob": "*.txt",
-  "exclude_glob": "*.tmp"
+  "exclude_glob": "*.tmp",
+  "plugins": "sqlite_checkpoint,registry_hive"
 }
 ```
 
-KV format (`source=...`, `repo_base=...`, `compress=auto`, `durability=balanced`, etc.) is also supported.
+KV format (`source=...`, `repo_base=...`, `compress=auto`, `durability=balanced`, `plugins=sqlite_checkpoint,registry_hive`, etc.) is also supported.
 
 ### Durability
 

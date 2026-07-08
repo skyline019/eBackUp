@@ -4,6 +4,7 @@ import { useUiStore } from "@/stores/uiStore";
 import { useTaskStore } from "@/stores/taskStore";
 import type { LogKind } from "@/stores/uiStore";
 import OpacityRegulator from "@/components/OpacityRegulator.vue";
+import BackupReportPanel from "@/components/BackupReportPanel.vue";
 import { ElMessage } from "element-plus";
 
 const ui = useUiStore();
@@ -12,6 +13,8 @@ const task = useTaskStore();
 const tabs = [
   { id: "messages" as const, label: "消息" },
   { id: "results" as const, label: "结果" },
+  { id: "acceptance" as const, label: "验收报告" },
+  { id: "backupReport" as const, label: "备份报告" },
   { id: "audit" as const, label: "审计链" },
   { id: "task" as const, label: "任务" },
 ];
@@ -30,6 +33,10 @@ const resultText = computed(() => {
   switch (ui.outputTab) {
     case "results":
       return ui.lastResultJson;
+    case "acceptance":
+      return ui.lastAcceptanceJson;
+    case "backupReport":
+      return ui.lastBackupReportJson;
     case "audit":
       return ui.lastAuditJson;
     case "task":
@@ -143,6 +150,13 @@ async function copyResult() {
       <pre v-else-if="ui.outputTab === 'results'" class="json-pane">{{
         ui.lastResultJson || "（无任务结果）"
       }}</pre>
+      <pre v-else-if="ui.outputTab === 'acceptance'" class="json-pane">{{
+        ui.lastAcceptanceJson || "（无验收报告）"
+      }}</pre>
+      <BackupReportPanel
+        v-else-if="ui.outputTab === 'backupReport'"
+        :json-text="ui.lastBackupReportJson"
+      />
       <pre v-else-if="ui.outputTab === 'audit'" class="json-pane">{{
         ui.lastAuditJson || "（无审计数据）"
       }}</pre>

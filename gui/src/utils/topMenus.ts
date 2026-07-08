@@ -12,6 +12,7 @@ export type MenuAction =
   | "goto-repo"
   | "goto-backup"
   | "goto-snapshots"
+  | "goto-browse"
   | "goto-restore"
   | "goto-verify"
   | "goto-maintenance";
@@ -47,6 +48,7 @@ export const topMenus: TopMenu[] = [
     items: [
       { label: "运行备份", action: "run-backup" },
       { label: "快照列表", action: "goto-snapshots" },
+      { label: "查看备份内容", action: "goto-browse" },
       { label: "还原…", action: "goto-restore" },
     ],
   },

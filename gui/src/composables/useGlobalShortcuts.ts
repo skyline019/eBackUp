@@ -6,9 +6,10 @@ const ACTIVITY_KEYS: Record<string, ActivityId> = {
   "1": "repo",
   "2": "backup",
   "3": "snapshots",
-  "4": "restore",
-  "5": "verify",
-  "6": "maintenance",
+  "4": "browse",
+  "5": "restore",
+  "6": "verify",
+  "7": "maintenance",
 };
 
 export function useGlobalShortcuts() {
@@ -68,7 +69,7 @@ export function useGlobalShortcuts() {
 }
 
 export const SHORTCUT_HELP = [
-  { keys: "Ctrl+1 … Ctrl+6", desc: "切换活动（仓库 / 备份 / 快照 / 恢复 / 验证 / 维护）" },
+  { keys: "Ctrl+1 … Ctrl+8", desc: "切换活动（仓库 / 备份 / 快照 / 内容 / 对比 / 恢复 / 验证 / 维护）" },
   { keys: "Ctrl+B", desc: "显示或隐藏侧栏" },
   { keys: "Ctrl+J / Ctrl+`", desc: "折叠或展开底部输出面板" },
   { keys: "Ctrl+,", desc: "打开外观设置" },

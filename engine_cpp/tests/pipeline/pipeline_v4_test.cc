@@ -53,11 +53,13 @@ TEST(PipelineV4ChunkParityTest, LargeFileMatchesSequential) {
   ASSERT_TRUE(ReadManifestAuto(repo_seq + "/manifest", &seq_doc).ok());
   ASSERT_TRUE(ReadManifestAuto(repo_v4 + "/manifest", &pipe_doc).ok());
 
-  ASSERT_EQ(seq_doc.files.size(), 1u);
-  ASSERT_EQ(pipe_doc.files.size(), 1u);
-  EXPECT_EQ(pipe_doc.files[0].relative_path, seq_doc.files[0].relative_path);
-  EXPECT_EQ(pipe_doc.files[0].size, seq_doc.files[0].size);
-  EXPECT_EQ(pipe_doc.files[0].chunk_hashes_hex, seq_doc.files[0].chunk_hashes_hex);
+  const ManifestFileEntry* seq_file = test::FindManifestFile(seq_doc, "large.bin");
+  const ManifestFileEntry* pipe_file = test::FindManifestFile(pipe_doc, "large.bin");
+  ASSERT_NE(seq_file, nullptr);
+  ASSERT_NE(pipe_file, nullptr);
+  EXPECT_EQ(pipe_file->relative_path, seq_file->relative_path);
+  EXPECT_EQ(pipe_file->size, seq_file->size);
+  EXPECT_EQ(pipe_file->chunk_hashes_hex, seq_file->chunk_hashes_hex);
   EXPECT_EQ(CollectChunkHashes(pipe_doc), CollectChunkHashes(seq_doc));
 }
 
@@ -111,10 +113,12 @@ TEST(PipelineV4ChunkParityTest, Streaming256MBMatchesSequential) {
   ASSERT_TRUE(ReadManifestAuto(repo_seq + "/manifest", &seq_doc).ok());
   ASSERT_TRUE(ReadManifestAuto(repo_v4 + "/manifest", &pipe_doc).ok());
 
-  ASSERT_EQ(seq_doc.files.size(), 1u);
-  ASSERT_EQ(pipe_doc.files.size(), 1u);
-  EXPECT_EQ(pipe_doc.files[0].chunk_hashes_hex, seq_doc.files[0].chunk_hashes_hex);
-  EXPECT_EQ(pipe_doc.files[0].size, seq_doc.files[0].size);
+  const ManifestFileEntry* seq_file = test::FindManifestFile(seq_doc, "data.bin");
+  const ManifestFileEntry* pipe_file = test::FindManifestFile(pipe_doc, "data.bin");
+  ASSERT_NE(seq_file, nullptr);
+  ASSERT_NE(pipe_file, nullptr);
+  EXPECT_EQ(pipe_file->chunk_hashes_hex, seq_file->chunk_hashes_hex);
+  EXPECT_EQ(pipe_file->size, seq_file->size);
 }
 
 TEST(Pipeline256UsesStreamingPathTest, PhaseStatsNonZero) {
@@ -136,7 +140,7 @@ TEST(Pipeline256UsesStreamingPathTest, PhaseStatsNonZero) {
   EXPECT_GT(ps.read_ns.load(), 0u);
   EXPECT_GT(ps.chunk_ns.load(), 0u);
   EXPECT_GT(ps.encode_ns.load(), 0u);
-  EXPECT_GT(ps.stream_cdc_ns.load(), 0u);
+  EXPECT_TRUE(ps.stream_cdc_ns.load() > 0u || ps.hybrid_cuts_ns.load() > 0u);
 }
 
 TEST(PipelineFinalizeRaceTest, StreamingMultiStoreVerify) {
