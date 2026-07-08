@@ -40,6 +40,7 @@
 #include "ebbackup/engine/restore_engine.h"
 #include "ebbackup/io/mmap_reader.h"
 #include "ebbackup/pipeline/backup_pipeline.h"
+#include "ebbackup/pipeline/file_scheduler.h"
 #include "ebbackup/pipeline/pipeline_phase_stats.h"
 #include "ebbackup/scan/backup_filter.h"
 #include "ebbackup/store/snapshot_store.h"
@@ -854,9 +855,6 @@ Status BackupEngine::RunPipelineBackup(BackupMode mode,
   pipe_opts.queue_depth = 32;
   pipe_opts.worker_count = options.worker_count;
   pipe_opts.store_shard_count = options.store_shard_count;
-  if (pipe_opts.worker_count > 1) {
-    pipe_opts.use_mmap = false;
-  }
   pipe_opts.phase_stats = &pipeline_phase_stats_;
   pipe_opts.scan_issues = &scan_issues_;
   BackupPipelineResult pipe_result{};
@@ -963,7 +961,8 @@ Status BackupEngine::AppendAuditEntry() {
 }
 
 Status BackupEngine::VerifyManifestDocument(const ManifestDocument& doc,
-                                            uint64_t snapshot_txn_id) {
+                                            uint64_t snapshot_txn_id,
+                                            bool verify_deep_content) {
   if (snapshot_txn_id == 0) {
     if (sb_.critical.txn_id != 0 && doc.txn_id != sb_.critical.txn_id) {
       return Status::Corrupt("manifest txn_id mismatch with superblock");
@@ -990,6 +989,14 @@ Status BackupEngine::VerifyManifestDocument(const ManifestDocument& doc,
       std::vector<uint8_t> payload;
       const Status st = chunk_store_->Get(hash, &payload);
       if (!st.ok()) return st;
+      if (verify_deep_content) {
+        uint8_t actual[32];
+        ContentHash(digest_algo_, payload.data(), payload.size(), actual);
+        if (std::memcmp(actual, hash, 32) != 0) {
+          return Status::Corrupt("chunk content hash mismatch for " +
+                                 file.relative_path);
+        }
+      }
       total += payload.size();
     }
     if (total != file.size) {
@@ -1438,8 +1445,13 @@ Status BackupEngine::Verify(const BackupOptions& options) {
   }
   if (!rd.ok()) return rd;
 
+  bool verify_deep = options.verify_deep_content;
+  if (const char* env = std::getenv("EBBACKUP_VERIFY_DEEP")) {
+    if (env[0] == '1') verify_deep = true;
+  }
+
   const Status deep =
-      VerifyManifestDocument(doc, options.snapshot_txn_id);
+      VerifyManifestDocument(doc, options.snapshot_txn_id, verify_deep);
   if (!deep.ok()) return deep;
 
   const std::string chain_path = RepoJoin(repo_path_, "audit/rar.chain");

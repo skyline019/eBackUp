@@ -225,6 +225,7 @@ if(EBBACKUP_BUILD_TESTS)
     tests/engine/eb_backup_capi_test.cc
     tests/engine/path_normalize_test.cc
     tests/engine/restore_test.cc
+    tests/engine/restore_streaming_test.cc
     tests/engine/restore_meta_test.cc
     tests/engine/restore_encrypt_test.cc
     tests/engine/selective_restore_test.cc
@@ -282,6 +283,7 @@ if(EBBACKUP_BUILD_TESTS)
     tests/pipeline/pipeline_parity_test.cc
     tests/pipeline/pipeline_v3_test.cc
     tests/pipeline/pipeline_v4_test.cc
+    tests/pipeline/pipeline_deadlock_test.cc
     tests/pipeline/streaming_chunk_pipeline_test.cc
     tests/bench/bench_reuse_gate_test.cc
     tests/failure/powerfail_test.cc

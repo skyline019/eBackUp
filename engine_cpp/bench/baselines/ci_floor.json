@@ -9,6 +9,7 @@
   "hybrid_stream_ratio_min": 0.95,
   "backup_pipeline_2GBps_min": 112,
   "backup_pipeline_multi_MBps_min": 550,
+  "backup_pipeline_mixed_MBps_min": 80,
   "ampl_ratio_post_compact_max": 1.05,
   "content_auto_vs_lz4_max": 1.10
 }

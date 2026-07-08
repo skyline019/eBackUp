@@ -355,6 +355,7 @@ int main(int argc, char** argv) {
     }
     ebbackup::BackupOptions opts{};
     opts.require_anchor = HasFlag(argc, argv, "--require-anchor");
+    opts.verify_deep_content = HasFlag(argc, argv, "--deep");
     opts.encryption_password = ReadPassword(argc, argv);
     opts.snapshot_txn_id = ParseAtTxn(argc, argv);
     ebbackup::BackupEngine engine(argv[2]);

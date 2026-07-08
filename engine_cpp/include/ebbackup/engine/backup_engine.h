@@ -71,6 +71,7 @@ struct BackupOptions {
   bool respect_job_windows{true};
   size_t worker_count{0};
   size_t store_shard_count{16};
+  bool verify_deep_content{false};
 };
 
 struct BackupStats {
@@ -178,7 +179,8 @@ class BackupEngine {
   Status CommitManifestFile();
   Status AppendAuditEntry();
   Status VerifyManifestDocument(const ManifestDocument& doc,
-                                uint64_t snapshot_txn_id = 0);
+                                uint64_t snapshot_txn_id = 0,
+                                bool verify_deep_content = false);
   Status LoadPriorManifest(ManifestDocument* out) const;
   Status SetupEncryption(const BackupOptions& options);
   Status EnsureRepoContentKey(const std::string& password);

@@ -3,6 +3,7 @@
 
 #include <array>
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -605,6 +606,10 @@ Status ChunkStore::PutPrecompressed(const uint8_t hash[32],
                                     bool* newly_written,
                                     bool skip_exists_check) {
   if (!hash) return Status::InvalidArgument("hash is null");
+  const char* fail_env = std::getenv("EBTEST_PIPELINE_STORE_FAIL");
+  if (fail_env && fail_env[0] == '1') {
+    return Status::IoError("test injected pipeline store failure");
+  }
   if (!skip_exists_check && !pipeline_dedup_trust_) {
     if (Exists(hash)) {
       if (newly_written) *newly_written = false;

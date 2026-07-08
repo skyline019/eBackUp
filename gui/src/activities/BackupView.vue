@@ -82,6 +82,7 @@ const queueBusy = ref(false);
 
 const FLAG_LZ4 = 0x0001;
 const FLAG_PIPELINE = 0x0002;
+const FLAG_NO_PIPELINE = 0x0400;
 const FLAG_ENCRYPT = 0x0008;
 const FLAG_COMPRESS_AUTO = 0x0020;
 const FLAG_COMPRESS_ZSTD = 0x0040;
@@ -159,6 +160,7 @@ function buildFlags() {
   let f = FLAG_COMPRESS_AUTO;
   if (useLz4.value) f |= FLAG_LZ4;
   if (usePipeline.value) f |= FLAG_PIPELINE;
+  else f |= FLAG_NO_PIPELINE;
   if (useEncrypt.value) f |= FLAG_ENCRYPT;
   if (useZstd.value) f |= FLAG_COMPRESS_ZSTD;
   if (balancedDurability.value) f |= FLAG_BALANCED_DURABILITY;

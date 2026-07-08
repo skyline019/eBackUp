@@ -210,6 +210,9 @@ struct PipelineShared {
   std::atomic<size_t> chunkers_remaining{0};
   BoundedQueue<ChunkTask>* chunk_q{nullptr};
   BoundedQueue<EncodedChunkTask>* encoded_q{nullptr};
+  mutable std::mutex stage_queues_mu;
+  std::vector<BoundedQueue<FileInput>*> file_stage_queues;
+  std::vector<BoundedQueue<FileData>*> read_stage_queues;
   mutable std::mutex stats_mu;
   std::vector<report::BackupPathIssue>* scan_issues{nullptr};
   mutable std::mutex scan_issues_mu;
@@ -254,15 +257,43 @@ struct PipelineShared {
     stats->chunks_reused_from_cfi += count;
   }
 
+  void RegisterStageQueues(BoundedQueue<FileInput>* file_q,
+                           BoundedQueue<FileData>* read_q) {
+    std::lock_guard<std::mutex> lock(stage_queues_mu);
+    if (file_q) file_stage_queues.push_back(file_q);
+    if (read_q) read_stage_queues.push_back(read_q);
+  }
+
+  void CloseAllStageQueues() {
+    std::lock_guard<std::mutex> lock(stage_queues_mu);
+    for (BoundedQueue<FileInput>* q : file_stage_queues) {
+      if (q) q->Close();
+    }
+    for (BoundedQueue<FileData>* q : read_stage_queues) {
+      if (q) q->Close();
+    }
+    if (chunk_q) chunk_q->Close();
+    if (encoded_q) encoded_q->Close();
+  }
+
+  void ClearStageQueueRegistry() {
+    std::lock_guard<std::mutex> lock(stage_queues_mu);
+    file_stage_queues.clear();
+    read_stage_queues.clear();
+  }
+
   void SetError(const Status& st) {
     if (st.ok()) return;
-    std::lock_guard<std::mutex> lock(error_mu);
-    if (error.load() == StatusCode::kOk) {
-      error.store(st.code());
-      error_message = st.message();
-      if (chunk_q) chunk_q->Close();
-      if (encoded_q) encoded_q->Close();
+    bool should_close = false;
+    {
+      std::lock_guard<std::mutex> lock(error_mu);
+      if (error.load() == StatusCode::kOk) {
+        error.store(st.code());
+        error_message = st.message();
+        should_close = true;
+      }
     }
+    if (should_close) CloseAllStageQueues();
   }
 
   Status CurrentError() const {
@@ -1144,7 +1175,7 @@ void ReaderStage(BoundedQueue<FileInput>* in, BoundedQueue<FileData>* out,
       data.view.owned.assign(std::istreambuf_iterator<char>(file),
                              std::istreambuf_iterator<char>());
     }
-    out->Push(std::move(data));
+    if (!out->Push(std::move(data))) break;
     const auto t1 = std::chrono::steady_clock::now();
     shared->AddPhaseNs(
         shared->phase_stats ? &shared->phase_stats->read_ns : nullptr,
@@ -1152,7 +1183,8 @@ void ReaderStage(BoundedQueue<FileInput>* in, BoundedQueue<FileData>* out,
             std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
     const size_t done = ++shared->files_read;
     if (shared->total_files > 0) {
-      const uint64_t pct = 50 + static_cast<uint64_t>(done * 100 / shared->total_files);
+      const uint64_t pct =
+          50 + static_cast<uint64_t>(done * 50 / shared->total_files);
       shared->EmitProgress(pct);
     }
   }
@@ -1178,6 +1210,7 @@ void ChunkerStage(BoundedQueue<FileData>* in, BoundedQueue<ChunkTask>* chunk_q,
       shared->EmitProgress(pct);
     }
   }
+  in->Close();
   if (shared->chunkers_remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
     chunk_q->Close();
   }
@@ -1363,21 +1396,99 @@ Status RunBackupPipeline(const std::vector<std::string>& file_paths,
     return Status::Ok();
   }
 
+  std::vector<ScheduledFileInput> small_files;
+  std::vector<ScheduledFileInput> large_files;
+  small_files.reserve(schedule_in.size());
+  large_files.reserve(schedule_in.size());
+  for (const auto& sf : schedule_in) {
+    if (sf.file_size > kStreamFeedBytes) {
+      large_files.push_back(sf);
+    } else {
+      small_files.push_back(sf);
+    }
+  }
+
+  if (!large_files.empty()) {
+    BackupPipelineOptions large_opts = options;
+    large_opts.use_mmap = true;
+    for (const auto& sf : large_files) {
+      Status st;
+      if (mode == BackupMode::kFull) {
+        BackupPipelineOptions stream_opts = options;
+        stream_opts.use_mmap = true;
+        shared.options = stream_opts;
+        st = RunSingleFileStreamingChunkPipeline(
+            sf.path, sf.relative_path, sf.index, &shared);
+      } else {
+        const BackupPipelineOptions saved_opts = shared.options;
+        shared.options = large_opts;
+        st = RunSingleFileInlinePipeline(sf.path, sf.relative_path, sf.index,
+                                         &shared);
+        shared.options = saved_opts;
+      }
+      if (!st.ok()) {
+        chunk_store->SetPipelineDedupTrust(false);
+        return st;
+      }
+      const Status err = shared.CurrentError();
+      if (!err.ok()) {
+        chunk_store->SetPipelineDedupTrust(false);
+        return err;
+      }
+    }
+  }
+
+  if (small_files.empty()) {
+    chunk_store->SetPipelineDedupTrust(false);
+    const Status err = shared.CurrentError();
+    if (!err.ok()) return err;
+    result->manifest_files.erase(
+        std::remove_if(result->manifest_files.begin(),
+                       result->manifest_files.end(),
+                       [](const ManifestFileEntry& e) {
+                         return e.relative_path.empty();
+                       }),
+        result->manifest_files.end());
+    return Status::Ok();
+  }
+
+  schedule_in = std::move(small_files);
+  total_bytes = 0;
+  for (const auto& sf : schedule_in) {
+    total_bytes += sf.file_size;
+  }
+  const size_t small_file_count = schedule_in.size();
+
   size_t pipeline_workers = ResolvePipelineWorkerCount(
-      options.worker_count, file_paths.size(), total_bytes);
-  if (options.worker_count == 0 && file_paths.size() <= 1 &&
+      options.worker_count, small_file_count, total_bytes);
+  if (options.worker_count == 0 && small_file_count <= 1 &&
       total_bytes < 64u * 1024u * 1024u) {
     pipeline_workers = 1;
   }
-  const size_t file_workers = file_paths.size() <= 1 ? 1 : pipeline_workers;
+  const size_t file_workers = small_file_count <= 1 ? 1 : pipeline_workers;
   const size_t compressor_workers = pipeline_workers;
   const size_t queue_depth = options.queue_depth;
   const size_t inter_stage_depth =
       std::max(queue_depth * 64, static_cast<size_t>(1024));
+
+  BackupPipelineOptions small_opts = options;
+  if (file_workers > 1 || options.worker_count > 1) {
+    small_opts.use_mmap = false;
+  }
+  shared.options = small_opts;
+
   shared.compressors_remaining.store(compressor_workers, std::memory_order_release);
   shared.chunkers_remaining.store(file_workers, std::memory_order_release);
 
   const auto worker_queues = ScheduleFilesByColor(schedule_in, file_workers);
+
+  const size_t store_shard_count =
+      options.store_shard_count > 0 ? options.store_shard_count : 16;
+  size_t store_workers = std::max<size_t>(2, store_shard_count / 2);
+  if (options.worker_count == 0 && small_file_count <= 1 &&
+      total_bytes < 64u * 1024u * 1024u) {
+    store_workers = 1;
+  }
 
   BoundedQueue<ChunkTask> chunk_q(inter_stage_depth);
   BoundedQueue<EncodedChunkTask> encoded_q(inter_stage_depth);
@@ -1386,7 +1497,14 @@ Status RunBackupPipeline(const std::vector<std::string>& file_paths,
   std::vector<std::thread> workers;
   std::vector<std::shared_ptr<BoundedQueue<FileInput>>> file_queues;
   std::vector<std::shared_ptr<BoundedQueue<FileData>>> read_queues;
-  workers.reserve(file_workers * 2 + compressor_workers + 8);
+  workers.reserve(file_workers * 2 + compressor_workers + store_workers + 8);
+
+  for (size_t c = 0; c < compressor_workers; ++c) {
+    workers.emplace_back(CompressorWorker, &chunk_q, &encoded_q, &shared);
+  }
+  for (size_t s = 0; s < store_workers; ++s) {
+    workers.emplace_back(StoreWorker, &encoded_q, &shared);
+  }
 
   for (size_t w = 0; w < file_workers; ++w) {
     auto file_q = std::make_shared<BoundedQueue<FileInput>>(queue_depth);
@@ -1394,37 +1512,28 @@ Status RunBackupPipeline(const std::vector<std::string>& file_paths,
     file_queues.push_back(file_q);
     read_queues.push_back(read_q);
 
+    shared.RegisterStageQueues(file_q.get(), read_q.get());
+
+    // Start reader/chunker before enqueueing: file_q is bounded (queue_depth).
+    // Pushing more than queue_depth items without a consumer deadlocks here.
+    workers.emplace_back(ReaderStage, file_q.get(), read_q.get(), &shared);
+    workers.emplace_back(ChunkerStage, read_q.get(), &chunk_q, &shared);
+
     for (const auto& sf : worker_queues[w]) {
       FileInput input{};
       input.index = sf.index;
       input.path = sf.path;
       input.relative_path = sf.relative_path;
-      file_q->Push(std::move(input));
+      if (!file_q->Push(std::move(input))) break;
     }
     file_q->Close();
-
-    workers.emplace_back(ReaderStage, file_q.get(), read_q.get(), &shared);
-    workers.emplace_back(ChunkerStage, read_q.get(), &chunk_q, &shared);
-  }
-
-  for (size_t c = 0; c < compressor_workers; ++c) {
-    workers.emplace_back(CompressorWorker, &chunk_q, &encoded_q, &shared);
-  }
-
-  const size_t store_shard_count =
-      options.store_shard_count > 0 ? options.store_shard_count : 16;
-  size_t store_workers = std::max<size_t>(2, store_shard_count / 2);
-  if (options.worker_count == 0 && file_paths.size() <= 1 &&
-      total_bytes < 64u * 1024u * 1024u) {
-    store_workers = 1;
-  }
-  for (size_t s = 0; s < store_workers; ++s) {
-    workers.emplace_back(StoreWorker, &encoded_q, &shared);
   }
 
   for (auto& t : workers) {
     if (t.joinable()) t.join();
   }
+
+  shared.ClearStageQueueRegistry();
 
   chunk_store->SetPipelineDedupTrust(false);
 

@@ -33,6 +33,7 @@ struct BenchFloors {
   double backup_pipeline_256MBps_min{0.0};
   double backup_pipeline_2GBps_min{0.0};
   double backup_pipeline_multi_MBps_min{0.0};
+  double backup_pipeline_mixed_MBps_min{0.0};
   double hybrid_stream_ratio_min{0.95};
   double ampl_ratio_post_compact_max{1.05};
   double content_auto_vs_lz4_max{1.10};
@@ -91,6 +92,7 @@ bool ParseFloorsFile(const std::string& path, BenchFloors* floors) {
   parse_key("backup_pipeline_256MBps_min", &floors->backup_pipeline_256MBps_min);
   parse_key("backup_pipeline_2GBps_min", &floors->backup_pipeline_2GBps_min);
   parse_key("backup_pipeline_multi_MBps_min", &floors->backup_pipeline_multi_MBps_min);
+  parse_key("backup_pipeline_mixed_MBps_min", &floors->backup_pipeline_mixed_MBps_min);
   parse_key("ampl_ratio_post_compact_max", &floors->ampl_ratio_post_compact_max);
   parse_key("content_auto_vs_lz4_max", &floors->content_auto_vs_lz4_max);
 
@@ -681,6 +683,59 @@ bool RunPipelineMultiBench(BenchFloors* floors) {
   return true;
 }
 
+bool RunPipelineMixedBench(BenchFloors* floors) {
+  if (floors->backup_pipeline_mixed_MBps_min <= 0.0) return true;
+
+  constexpr size_t kSmallCount = 800;
+  constexpr size_t kSmallSize = 4 * 1024;
+  constexpr size_t kLargeSize = 512u * 1024u * 1024u;
+  const auto base =
+      ebbackup::test::TestOutputRoot() / "eb_bench_check_pipeline_l8";
+  const std::string source = (base / "source").string();
+  const std::string repo = (base / "repo").string();
+  std::error_code ec;
+  std::filesystem::remove_all(base, ec);
+  std::filesystem::create_directories(base);
+  std::filesystem::create_directories(source);
+  for (size_t i = 0; i < kSmallCount; ++i) {
+    WriteSyntheticFile(source + "/small" + std::to_string(i) + ".bin", kSmallSize,
+                       static_cast<uint8_t>(48 + (i % 16)));
+  }
+  WriteSyntheticFile(source + "/large.bin", kLargeSize, 47);
+
+  ebbackup::test::InitDefaultRepo(repo);
+
+  ebbackup::BackupOptions pipe_opts{};
+  pipe_opts.use_pipeline = true;
+
+  ebbackup::BackupEngine engine(repo);
+  if (!engine.Open().ok()) return false;
+  const auto t0 = std::chrono::steady_clock::now();
+  if (!engine.RunBackup(source, ebbackup::BackupMode::kFull, pipe_opts).ok()) {
+    return false;
+  }
+  const auto t1 = std::chrono::steady_clock::now();
+  const double pipe_sec = std::chrono::duration<double>(t1 - t0).count();
+  const uint64_t nbytes =
+      static_cast<uint64_t>(kSmallCount * kSmallSize + kLargeSize);
+  const double pipe_MBps = ebbackup::bench::ThroughputMBps(nbytes, pipe_sec);
+
+  std::printf("bench_check L8: pipeline_mixed_MBps=%.2f\n", pipe_MBps);
+  PrintPipelineProfilePct(engine.pipeline_phase_stats());
+
+  if (pipe_MBps < floors->backup_pipeline_mixed_MBps_min) {
+    std::fprintf(stderr, "backup_pipeline_mixed_MBps %.2f below floor %.2f\n",
+                 pipe_MBps, floors->backup_pipeline_mixed_MBps_min);
+    return false;
+  }
+
+  if (!engine.Verify().ok()) {
+    std::fprintf(stderr, "bench_check L8: verify failed\n");
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -689,12 +744,13 @@ int main() {
       "bench_check floors: fastcdc>=%.1f MB/s hcrbo>=%.1f MB/s reuse>=%.1f%% "
       "ratio>=%.2f ratio256>=%.2f hybridRatio>=%.2f pipe32>=%.1f MB/s "
       "pipe256>=%.1f MB/s pipe2GB>=%.1f MB/s pipeMulti>=%.1f MB/s "
-      "ampl_after<=%.2f auto/lz4<=%.2f\n",
+      "pipeMixed>=%.1f MB/s ampl_after<=%.2f auto/lz4<=%.2f\n",
       floors.fastcdc_MBps_min, floors.hcrbo_incr_MBps_min,
       floors.reuse_pct_min, floors.pipeline_ratio_min,
       floors.pipeline_ratio_256MB_min, floors.hybrid_stream_ratio_min,
       floors.backup_pipeline_MBps_min, floors.backup_pipeline_256MBps_min,
       floors.backup_pipeline_2GBps_min, floors.backup_pipeline_multi_MBps_min,
+      floors.backup_pipeline_mixed_MBps_min,
       floors.ampl_ratio_post_compact_max,
       floors.content_auto_vs_lz4_max);
 
@@ -723,6 +779,9 @@ int main() {
     return 1;
   }
   if (!RunPipelineMultiBench(&floors)) {
+    return 1;
+  }
+  if (!RunPipelineMixedBench(&floors)) {
     return 1;
   }
   if (!RunStorageBench(&floors)) {

@@ -4,6 +4,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <set>
 #include <unordered_map>
 
@@ -54,6 +55,32 @@ Status WritePathBytesWin32(const std::string& path, const uint8_t* data, size_t 
   if (!ok || written != len) {
     return Status::IoError("restore write failed: " + path);
   }
+  return Status::Ok();
+}
+
+Status AppendPathBytesWin32(HANDLE handle, const uint8_t* data, size_t len) {
+  if (handle == INVALID_HANDLE_VALUE) {
+    return Status::InvalidArgument("invalid restore write handle");
+  }
+  if (len == 0) return Status::Ok();
+  DWORD written = 0;
+  const BOOL ok =
+      WriteFile(handle, data, static_cast<DWORD>(len), &written, nullptr);
+  if (!ok || written != len) {
+    return Status::IoError("restore append write failed");
+  }
+  return Status::Ok();
+}
+
+Status OpenPathForRestoreWriteWin32(const std::string& path, HANDLE* out_handle) {
+  if (!out_handle) return Status::InvalidArgument("out_handle is null");
+  const std::wstring wide = Utf8ToWide(path);
+  HANDLE h = CreateFileW(wide.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    return Status::IoError("CreateFile for restore write failed: " + path);
+  }
+  *out_handle = h;
   return Status::Ok();
 }
 #endif
@@ -253,40 +280,76 @@ Status RestoreEngine::RestoreEntry(
   }
 #endif
 
-  std::vector<uint8_t> payload_total;
-  payload_total.reserve(static_cast<size_t>(file.size));
+  std::vector<uint8_t> payload;
+  size_t bytes_written = 0;
+
+#ifdef _WIN32
+  const bool win_stream_path =
+      !file.stream_name.empty() || write_path.find(':') != std::string::npos;
+  HANDLE win_handle = INVALID_HANDLE_VALUE;
+  if (win_stream_path) {
+    const Status open_st = OpenPathForRestoreWriteWin32(write_path, &win_handle);
+    if (!open_st.ok()) return open_st;
+  }
+#endif
+
+  std::unique_ptr<std::ofstream> out_file;
+#ifndef _WIN32
+  {
+    out_file = std::make_unique<std::ofstream>(
+        PathFromUtf8(write_path), std::ios::binary | std::ios::trunc);
+    if (!*out_file) {
+      return Status::IoError("cannot write restore file: " + write_path);
+    }
+  }
+#else
+  if (!win_stream_path) {
+    out_file = std::make_unique<std::ofstream>(
+        PathFromUtf8(write_path), std::ios::binary | std::ios::trunc);
+    if (!*out_file) {
+      return Status::IoError("cannot write restore file: " + write_path);
+    }
+  }
+#endif
+
   for (const auto& hex : file.chunk_hashes_hex) {
     uint8_t hash[32];
     if (!HexToBytes(hex, hash, 32)) {
       return Status::Corrupt("invalid chunk hash in manifest");
     }
-    std::vector<uint8_t> payload;
+    payload.clear();
     const Status st = chunk_store_->Get(hash, &payload);
     if (!st.ok()) return st;
-    payload_total.insert(payload_total.end(), payload.begin(), payload.end());
-  }
-  if (payload_total.size() != file.size) {
-    return Status::Corrupt("restored size mismatch for " + dest_rel);
+#ifdef _WIN32
+    if (win_stream_path) {
+      const Status wr = AppendPathBytesWin32(win_handle, payload.data(), payload.size());
+      if (!wr.ok()) {
+        CloseHandle(win_handle);
+        return wr;
+      }
+    } else
+#endif
+    {
+      out_file->write(reinterpret_cast<const char*>(payload.data()),
+                      static_cast<std::streamsize>(payload.size()));
+      if (!*out_file) {
+        return Status::IoError("restore write failed: " + write_path);
+      }
+    }
+    bytes_written += payload.size();
   }
 
 #ifdef _WIN32
-  if (!file.stream_name.empty() || write_path.find(':') != std::string::npos) {
-    const Status wr = WritePathBytesWin32(write_path, payload_total.data(),
-                                          payload_total.size());
-    if (!wr.ok()) return wr;
+  if (win_stream_path) {
+    CloseHandle(win_handle);
   } else
 #endif
   {
-    std::ofstream out(PathFromUtf8(write_path), std::ios::binary | std::ios::trunc);
-    if (!out) {
-      return Status::IoError("cannot write restore file: " + write_path);
-    }
-    out.write(reinterpret_cast<const char*>(payload_total.data()),
-              static_cast<std::streamsize>(payload_total.size()));
-    if (!out) {
-      return Status::IoError("restore write failed: " + write_path);
-    }
-    out.close();
+    out_file->close();
+  }
+
+  if (bytes_written != file.size) {
+    return Status::Corrupt("restored size mismatch for " + dest_rel);
   }
 
   const Status fs = FsyncPath(write_path);
