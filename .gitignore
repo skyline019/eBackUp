@@ -1,5 +1,7 @@
 # Build outputs
 build/
+build2/
+sqlite-master/
 out/
 *.user
 *.suo
