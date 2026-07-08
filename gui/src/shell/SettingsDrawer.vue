@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useUiStore } from "@/stores/uiStore";
+import { testWebhook } from "@/api/ebbackup";
 import { useProfileStore } from "@/stores/profileStore";
 import { deleteProfile, renameProfile } from "@/api/ebbackup";
 import { isTauriRuntime } from "@/utils/tauriRuntime";
@@ -83,6 +84,17 @@ async function onSave() {
   const where = ui.settingsFilePath || "localStorage";
   ui.pushLog(`外观设置已保存 (${where})`, "success");
   visible.value = false;
+}
+
+async function onTestWebhook() {
+  const url = ui.settings.defaultWebhookUrl?.trim();
+  if (!url) return;
+  try {
+    await testWebhook(url);
+    ElMessage.success("Webhook 测试成功");
+  } catch (e) {
+    ElMessage.error(String(e));
+  }
 }
 
 async function onRenameProfile(p: { id: string; name: string }) {
@@ -347,6 +359,22 @@ async function onDeleteProfile(p: { id: string; name: string }) {
               :max="365"
               @change="onPreview"
             />
+          </el-form-item>
+          <el-form-item label="默认 Webhook URL">
+            <el-input
+              v-model="ui.settings.defaultWebhookUrl"
+              placeholder="新建作业时预填"
+              @input="onPreview"
+            />
+          </el-form-item>
+          <el-form-item label="Webhook 测试">
+            <el-button
+              size="small"
+              :disabled="!ui.settings.defaultWebhookUrl?.trim()"
+              @click="onTestWebhook"
+            >
+              发送测试 POST
+            </el-button>
           </el-form-item>
         </el-form>
       </el-tab-pane>

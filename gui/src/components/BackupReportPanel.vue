@@ -29,6 +29,13 @@ function reasonLabel(reason: string): string {
   }
   if (reason.startsWith("plugin_quiesce_failed:")) return "插件 quiesce 失败";
   if (reason.startsWith("plugin_unknown:")) return "未知插件";
+  if (reason.startsWith("vss_unavailable:")) return "VSS 不可用";
+  if (reason.startsWith("vss_shadow_storage_low:")) return "VSS 影子空间不足";
+  if (reason === "vss_writer_degraded") return "VSS Writer 降级为 crash";
+  if (reason === "efs_encrypted_skipped") return "EFS 文件已跳过";
+  if (reason.startsWith("efs_key_export_failed")) return "EFS 密钥导出失败";
+  if (reason.startsWith("efs_key_import_failed")) return "EFS 密钥导入失败";
+  if (reason === "efs_restored") return "EFS 已恢复";
   return REASON_LABELS[reason] ?? reason;
 }
 
@@ -98,6 +105,30 @@ function formatUnix(ts?: number) {
       </div>
       <div v-if="report.window_end_unix">
         <span class="label">窗口截止</span> {{ formatUnix(report.window_end_unix) }}
+      </div>
+      <div v-if="report.vss_used">
+        <span class="label">VSS</span>
+        {{ report.vss_mode || report.vss_consistency || "crash" }}
+        <span v-if="report.vss_cross_volume"> · 多卷</span>
+        <span v-if="report.vss_shadow_storage_ok === false"> · 影子预检未通过</span>
+        <span v-if="report.vss_snapshot_set_id" class="vss-id">
+          · {{ report.vss_snapshot_set_id }}
+        </span>
+      </div>
+      <div v-if="report.vss_writers?.length">
+        <span class="label">Writers</span>
+        {{ report.vss_writers.filter((w) => w.state !== "stable").length }} 非 stable /
+        {{ report.vss_writers.length }}
+      </div>
+      <div v-if="(report.sparse_file_count ?? 0) > 0">
+        <span class="label">稀疏</span> {{ report.sparse_file_count }}
+      </div>
+      <div v-if="(report.efs_skipped_count ?? 0) > 0">
+        <span class="label">EFS 跳过</span> {{ report.efs_skipped_count }}
+      </div>
+      <div v-if="report.vss_shadow_storage_bytes?.length">
+        <span class="label">影子存储</span>
+        {{ report.vss_shadow_storage_bytes.map((b) => Math.round(b / 1024 / 1024) + "MB").join(", ") }}
       </div>
       <div><span class="label">复用率</span> {{ Math.round(report.reuse_pct ?? 0) }}%</div>
     </div>

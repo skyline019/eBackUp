@@ -56,6 +56,8 @@ Phase & Wave & ABI & 主题 \\
 9 & P, Q & v27 & 垂直插件 \\
 10 & R & v28 & 智能排除 \\
 11 & T & v29 & 备份窗口 \\
+12--13 & U & v30 & CompressTier + 字典 + repo-stats \\
+16--19 & — & v33--v37 & 稀疏/EFS/VSS 运维/envelope/Webhook（\cref{ch:phase16-19}） \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -522,6 +524,11 @@ C API \texttt{eb\_backup\_suggest\_exclude\_filters\_json}；CLI \texttt{eb sugg
 \filepath{src/engine/backup\_engine.cc} & RunJob / window 截断 \\
 \filepath{src/engine/restore\_engine.cc} & Win meta apply + hardlink \\
 \filepath{src/pipeline/backup\_pipeline.cc} & Hybrid CDC 路由 \\
+\filepath{src/winmeta/sparse\_file.cc} & NTFS 稀疏检测/restore（Phase 16） \\
+\filepath{src/winmeta/efs\_key.cc} & EFS Read/WriteEncryptedFileRaw（Phase 19） \\
+\filepath{src/winmeta/vss\_shadow\_storage.cc} & WMI 影子存储查询（Phase 18） \\
+\filepath{src/crypto/envelope.cc} & crypto.envelope.json（Phase 17） \\
+\filepath{src/engine/manifest.cc} & kMetaSparse / kMetaEfs 读写 \\
 \filepath{cli/eb\_service\_win.cc} & Windows SCM 集成 \\
 \bottomrule
 \end{longtable}

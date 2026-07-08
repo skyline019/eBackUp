@@ -1,6 +1,6 @@
-# ebbackup 技术发展史归档（v0.1 → v0.9.4）
+# ebbackup 技术发展史归档（v0.1 → v0.9.6）
 
-本文档汇总 **recoveryProjects / ebbackup** 备份引擎从 M5 内核里程碑到 v0.9.4 的功能演进、架构变迁、ABI 迭代、测试与性能门禁发展史。逐条 commit 级明细以 [`CHANGELOG.md`](../CHANGELOG.md) 与 [`CHANGELOG_ARCHIVE.md`](CHANGELOG_ARCHIVE.md) 为权威来源；本文为结构化归档索引。
+本文档汇总 **recoveryProjects / ebbackup** 备份引擎从 M5 内核里程碑到 v0.9.6 的功能演进、架构变迁、ABI 迭代、测试与性能门禁发展史。逐条 commit 级明细以 [`CHANGELOG.md`](../CHANGELOG.md) 与 [`CHANGELOG_ARCHIVE.md`](CHANGELOG_ARCHIVE.md) 为权威来源；本文为结构化归档索引。
 
 ---
 
@@ -47,9 +47,13 @@ v0.9.3           digest_base 批处理 + DigestPool span 分片
 v0.9.4 (Sprint4) CDC Phase B seg1 bulk + Phase A FastCdcSlice opt-in
     ↓
 v0.9.5           Desktop Workbench GUI（Tauri + Vue + ebbackup_workbench.dll）
+    ↓
+v0.9.6           CompressTier + Zstd LDM + 仓库字典 + repo-stats 压缩率（ABI v30）；CI sync/GUI；decode fuzz
+    ↓
+v0.10.0–v0.10.3  Phase 16–19：稀疏/EFS/VSS 运维/恢复密钥/envelope/Webhook/ebrecover-portable（ABI v33–v37）
 ```
 
-**当前版本**：CHANGELOG **v0.9.5** · C API `EB_BACKUP_ABI_VERSION = 12` · ctest **233** gtest（含空仓库 repo-stats）+ C API + bench L1–L7 + Workbench Rust 集成测试 · CMake `project VERSION 0.6.0`（与 CHANGELOG 版本号不同步，以 CHANGELOG 为准）
+**当前版本**：CHANGELOG **v0.10.3** · C API `EB_BACKUP_ABI_VERSION = 37` · gtest **393**（`ebbackup_tests`）+ `ebsync_tests`（6）+ C API 子集 + bench L1–L7 + Workbench Rust IT（**13**）· CMake `project VERSION 0.6.0`（与 CHANGELOG 版本号不同步，以 CHANGELOG 为准）
 
 ---
 
@@ -309,6 +313,18 @@ v0.9.5           Desktop Workbench GUI（Tauri + Vue + ebbackup_workbench.dll）
 | **Release** | NSIS 0.1.0 x64；`npm run build:desktop` |
 | **文档** | [`docs/product/WORKBENCH_GUI.md`](product/WORKBENCH_GUI.md) |
 
+### v0.9.6 — 分层压缩与 CI/文档矩阵
+
+**主题**：CompressTier + 仓库字典 + 压缩率可观测；外侧 sync/GUI 纳入 CI。
+
+| 领域 | 交付 |
+|------|------|
+| **压缩** | fast/balanced/max；Zstd LDM；`meta/zstd_dict.bin`；CLI `--compress-tier` |
+| **ABI v30** | `EbRepoStats` 压缩字段；`eb repo-stats` / Workbench `repo_info_json` |
+| **韧性** | Pipeline 死锁修复；restore streaming；`decode_corruption_test` |
+| **CI** | `sync_cpp` + `gui` path；`ebsync_tests`；Windows Workbench IT |
+| **文档** | [`docs/technical/COMPRESSION.md`](technical/COMPRESSION.md)；全归档同步至 v0.9.6 |
+
 ---
 
 ## 五、仓库布局演进
@@ -323,6 +339,7 @@ v0.9.5           Desktop Workbench GUI（Tauri + Vue + ebbackup_workbench.dll）
 | `superblock.bin` | M5 | 双槽 FSM + `backup_features`（v0.6 扩 uint32_t） |
 | `audit/rar.chain` | M5 | 哈希链审计 |
 | `crypto.salt` | M6 | 加密仓库盐 |
+| `meta/zstd_dict.bin` | v0.9.6 | 仓库 Zstd 训练字典（可选） |
 
 ---
 
@@ -336,8 +353,10 @@ v0.9.5           Desktop Workbench GUI（Tauri + Vue + ebbackup_workbench.dll）
 | v10 | v0.3 | compress-auto/zstd/balanced；`eb_backup_compact`；`eb_backup_repo_stats` |
 | v11 | v0.4 | snapshot list/prune/restore_at/verify_at |
 | v12 | v0.6 | init 默认 EbPack；`EB_BACKUP_FLAG_NO_PIPELINE` |
+| v13–v29 | v0.7–v0.12 | 选择性恢复 remap、snapshot、in-place、delta、job queue、Win meta、plugins、backup window 等（详见 [ABI_AND_FEATURES.md](technical/ABI_AND_FEATURES.md)） |
+| v30 | v0.9.6 | `EbRepoStats` 压缩率与字典统计；CompressTier + 仓库 Zstd 字典 |
 
-v0.7–v0.9.4 **ABI 保持 v12**，无 breaking API 变更。
+v0.7 起 ABI 版本号随能力 Wave 递增；**v30 为结构体字段扩展**，未改变 Content ID 或 on-disk chunk 格式语义。
 
 ---
 
@@ -386,6 +405,8 @@ v0.7–v0.9.4 **ABI 保持 v12**，无 breaking API 变更。
 | v0.8 | 220+ | PipelineV4 parity + L7 |
 | **v0.9.4** | **232** | streaming_chunk_pipeline + CDC fast path parity |
 | **v0.9.5** | **233** gtest + Workbench Rust IT | 空仓库 repo-stats；`gui/` 桌面 Workbench |
+| **v0.9.6** | **383** gtest + sync（6）+ fuzz + Workbench IT | CompressTier/字典；ABI v30 压缩统计；CI sync+GUI |
+| **v0.10.3** | **393** gtest + sync（6）+ Workbench IT（**13**） | Phase 16–19 收尾；ABI v37 EFS manifest / 恢复密钥 / Webhook |
 
 详见 [`technical/TEST_AND_CI.md`](technical/TEST_AND_CI.md)。
 
@@ -442,9 +463,11 @@ multi-file / incremental / workers>0 → Pipeline v4
 | 版本变更明细 | [`CHANGELOG.md`](../CHANGELOG.md) |
 | 引擎 / CLI 手册 | [`engine_cpp/README.md`](../engine_cpp/README.md) |
 | 性能基线 | [`reference/PERF_BASELINE.md`](reference/PERF_BASELINE.md) |
+| 压缩档位与字典 | [`technical/COMPRESSION.md`](technical/COMPRESSION.md) |
 | 桌面 Workbench GUI | [`product/WORKBENCH_GUI.md`](product/WORKBENCH_GUI.md) |
+| 外侧同步 | [`../sync_cpp/README.md`](../sync_cpp/README.md) |
 | CI floor | [`engine_cpp/bench/baselines/ci_floor.json`](../engine_cpp/bench/baselines/ci_floor.json) |
 
 ---
 
-*归档日期：2026-07-07 · 对应产品版本 v0.9.4*
+*归档日期：2026-07-08 · 对应产品版本 v0.9.6*

@@ -59,6 +59,24 @@ pub struct BackupJobDto {
   pub deadline_grace_seconds: i32,
   #[serde(default, skip_serializing_if = "std::ops::Not::not")]
   pub durability_adaptive: bool,
+  #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+  pub use_vss: bool,
+  #[serde(default, skip_serializing_if = "String::is_empty")]
+  pub vss_mode: String,
+  #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+  pub vss_fallback_live: bool,
+  #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+  pub vss_include_junction_volumes: bool,
+  #[serde(default, skip_serializing_if = "String::is_empty")]
+  pub quiesce_profile: String,
+  #[serde(default, skip_serializing_if = "String::is_empty")]
+  pub vss_app_failure_policy: String,
+  #[serde(default, skip_serializing_if = "String::is_empty")]
+  pub post_backup_webhook_url: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn is_default_grace(v: &i32) -> bool {
@@ -182,6 +200,35 @@ fn parse_backup_job(j: &serde_json::Value) -> BackupJobDto {
             .get("durability_adaptive")
             .and_then(|x| x.as_bool())
             .unwrap_or(false),
+        use_vss: j.get("use_vss").and_then(|x| x.as_bool()).unwrap_or(false),
+        vss_mode: j
+            .get("vss_mode")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        vss_fallback_live: j
+            .get("vss_fallback_live")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false),
+        vss_include_junction_volumes: j
+            .get("vss_include_junction_volumes")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(true),
+        quiesce_profile: j
+            .get("quiesce_profile")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        vss_app_failure_policy: j
+            .get("vss_app_failure_policy")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        post_backup_webhook_url: j
+            .get("post_backup_webhook_url")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
     }
 }
 
@@ -295,6 +342,106 @@ pub async fn init_repo(path: String, flags: Option<u32>) -> Result<serde_json::V
     })
     .await
     .map_err(|e| format!("init join: {e}"))?
+}
+
+#[tauri::command]
+pub async fn init_repo_encrypt(path: String, password: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let api = ebbackup_ffi::api()?;
+        let p = cstr(&path)?;
+        let pw = cstr(&password)?;
+        ebbackup_ffi::call_json(|buf, cap| unsafe {
+            (api.init_encrypt_json)(p.as_ptr(), pw.as_ptr(), buf as *mut _, cap)
+        })
+    })
+    .await
+    .map_err(|e| format!("init_encrypt join: {e}"))?
+}
+
+#[tauri::command]
+pub async fn unwrap_recovery_key(recovery_key: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        with_eng(|api, eng| {
+            let rk = cstr(&recovery_key)?;
+            ebbackup_ffi::call_json(|buf, cap| unsafe {
+                (api.unwrap_recovery_key_json)(eng, rk.as_ptr(), buf as *mut _, cap)
+            })?;
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|e| format!("unwrap_recovery_key join: {e}"))?
+}
+
+#[tauri::command]
+pub async fn rotate_password(old_password: String, new_password: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        with_eng(|api, eng| {
+            let old_pw = cstr(&old_password)?;
+            let new_pw = cstr(&new_password)?;
+            ebbackup_ffi::call_json(|buf, cap| unsafe {
+                (api.rotate_password_json)(eng, old_pw.as_ptr(), new_pw.as_ptr(), buf as *mut _, cap)
+            })?;
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|e| format!("rotate_password join: {e}"))?
+}
+
+#[tauri::command]
+pub async fn upgrade_legacy_envelope(password: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        with_eng(|api, eng| {
+            let pw = cstr(&password)?;
+            ebbackup_ffi::call_json(|buf, cap| unsafe {
+                (api.upgrade_legacy_envelope_json)(eng, pw.as_ptr(), buf as *mut _, cap)
+            })
+        })
+    })
+    .await
+    .map_err(|e| format!("upgrade_legacy_envelope join: {e}"))?
+}
+
+#[tauri::command]
+pub async fn test_webhook(url: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if url.trim().is_empty() {
+            return Err("webhook url required".to_string());
+        }
+        let sample = r#"{"ok":true,"test":true,"source":"ebbackup"}"#;
+        #[cfg(windows)]
+        {
+            use std::process::{Command, Stdio};
+            let mut child = Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    &format!(
+                        "Invoke-RestMethod -Uri '{}' -Method Post -ContentType 'application/json' -Body @'{}'@",
+                        url.replace('\'', "''"),
+                        sample
+                    ),
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("webhook test spawn: {e}"))?;
+            let status = child.wait().map_err(|e| format!("webhook test wait: {e}"))?;
+            if !status.success() {
+                return Err(format!("webhook test failed (exit={status})"));
+            }
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = sample;
+            Err("webhook test is only supported on Windows".to_string())
+        }
+    })
+    .await
+    .map_err(|e| format!("test_webhook join: {e}"))?
 }
 
 #[tauri::command]
@@ -455,6 +602,9 @@ pub async fn run_backup(
     source_path: String,
     incremental: Option<bool>,
     flags: Option<u32>,
+    vss_mode: Option<String>,
+    vss_include_junction_volumes: Option<bool>,
+    vss_fallback_live: Option<bool>,
 ) -> Result<BackupStatsDto, String> {
     tauri::async_runtime::spawn_blocking(move || {
         task_progress::begin_progress(app.clone(), "backup");
@@ -464,6 +614,23 @@ pub async fn run_backup(
             let fl = flags.unwrap_or(0);
             let v = with_eng(|api, eng| {
                 unsafe { task_progress::attach_progress(api.set_progress, eng) };
+                if let Some(mode) = vss_mode.as_deref() {
+                    if !mode.is_empty() {
+                        let mode_c = cstr(mode)?;
+                        let st = unsafe { (api.set_vss_mode)(eng, mode_c.as_ptr()) };
+                        if st != 0 {
+                            return Err(format!("set_vss_mode failed (status={st})"));
+                        }
+                    }
+                }
+                if let Some(include) = vss_include_junction_volumes {
+                    unsafe {
+                        (api.set_vss_include_junction_volumes)(eng, if include { 1 } else { 0 })
+                    };
+                }
+                if vss_fallback_live.unwrap_or(false) {
+                    unsafe { (api.set_vss_fallback_live)(eng, 1) };
+                }
                 let out = ebbackup_ffi::call_json(|buf, cap| unsafe {
                     (api.run_backup_json)(eng, src.as_ptr(), inc, fl, buf as *mut _, cap)
                 });

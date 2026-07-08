@@ -37,6 +37,8 @@ pub struct UiSettings {
     pub panel_brightness: f32,
     pub log_highlight_intensity: f32,
     pub stale_backup_alert_days: f32,
+    #[serde(default)]
+    pub default_webhook_url: String,
 }
 
 impl Default for UiSettings {
@@ -70,6 +72,7 @@ impl Default for UiSettings {
             panel_brightness: 1.0,
             log_highlight_intensity: 1.0,
             stale_backup_alert_days: 7.0,
+            default_webhook_url: String::new(),
         }
     }
 }

@@ -3,8 +3,11 @@ import { computed, onMounted, ref } from "vue";
 import { useRepoStore } from "@/stores/repoStore";
 import { useJobStore } from "@/stores/jobStore";
 import { useUiStore } from "@/stores/uiStore";
-import { pickDirectory } from "@/api/ebbackup";
+import { pickDirectory, pathExists, initRepoEncrypt, setPassword, unwrapRecoveryKey, rotatePassword, upgradeLegacyEnvelope } from "@/api/ebbackup";
 import { enrichError, formatGenericError } from "@/utils/errorMessages";
+import RecoveryKeyDialog from "@/components/RecoveryKeyDialog.vue";
+import UnlockRepoDialog from "@/components/UnlockRepoDialog.vue";
+import { ElMessage, ElMessageBox } from "element-plus";
 import {
   rpoSummaryData,
   rpoLoading,
@@ -25,6 +28,15 @@ const parentDir = ref("E:\\data");
 const repoName = ref("mybackup");
 const openPath = ref("");
 const initLegacy = ref(false);
+const initEncrypt = ref(false);
+const initPassword = ref("");
+const recoveryKeyDialogOpen = ref(false);
+const pendingRecoveryKey = ref("");
+const unlockDialogOpen = ref(false);
+const pendingOpenPath = ref("");
+const rotateOldPassword = ref("");
+const rotateNewPassword = ref("");
+const rotateDialogOpen = ref(false);
 
 const FLAG_INIT_LEGACY = 0x0200;
 
@@ -44,10 +56,56 @@ async function browseOpen() {
   if (p) openPath.value = p;
 }
 
+async function repoHasEncryption(path: string) {
+  const norm = path.replace(/[/\\]+$/, "");
+  const envelope = `${norm}\\crypto.envelope.json`.replace(/\//g, "\\");
+  const salt = `${norm}\\crypto.salt`.replace(/\//g, "\\");
+  try {
+    if (await pathExists(envelope)) return true;
+    if (await pathExists(salt)) return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+async function promptUnlockIfNeeded(path: string) {
+  if (!(await repoHasEncryption(path))) return;
+  pendingOpenPath.value = path;
+  unlockDialogOpen.value = true;
+}
+
+async function onUnlock(payload: { mode: "password" | "recovery"; value: string }) {
+  try {
+    if (payload.mode === "password") {
+      await setPassword(payload.value);
+    } else {
+      await unwrapRecoveryKey(payload.value);
+    }
+    unlockDialogOpen.value = false;
+    ui.pushLog("仓库已解锁", "success");
+  } catch (e) {
+    ui.pushLog(formatGenericError(await enrichError(e), "解锁失败"), "error");
+  }
+}
+
 async function createRepo() {
   try {
     const flags = initLegacy.value ? FLAG_INIT_LEGACY : 0;
+    const fullPath = `${parentDir.value.replace(/[/\\]+$/, "")}\\${repoName.value}`.replace(/\//g, "\\");
     await repo.createRepo(parentDir.value, repoName.value, flags);
+    if (initEncrypt.value) {
+      if (!initPassword.value.trim()) {
+        ui.pushLog("启用加密时需填写密码", "error");
+        return;
+      }
+      const enc = await initRepoEncrypt(fullPath, initPassword.value.trim());
+      if (enc.recovery_key) {
+        pendingRecoveryKey.value = enc.recovery_key;
+        recoveryKeyDialogOpen.value = true;
+      }
+      await setPassword(initPassword.value.trim());
+    }
   } catch (e) {
     ui.pushLog(formatGenericError(await enrichError(e), "创建失败"), "error");
   }
@@ -59,7 +117,9 @@ async function openExisting() {
     return;
   }
   try {
-    await repo.open(openPath.value.trim());
+    const path = openPath.value.trim();
+    await repo.open(path);
+    await promptUnlockIfNeeded(path);
   } catch (e) {
     ui.pushLog(formatGenericError(e), "error");
   }
@@ -68,8 +128,47 @@ async function openExisting() {
 async function openRecent(path: string) {
   try {
     await repo.open(path);
+    await promptUnlockIfNeeded(path);
   } catch (e) {
     ui.pushLog(formatGenericError(e), "error");
+  }
+}
+
+async function confirmUpgradeLegacy() {
+  try {
+    const { value } = await ElMessageBox.prompt("输入当前备份密码以升级到 envelope", "升级加密格式", {
+      inputType: "password",
+      confirmButtonText: "升级",
+    });
+    if (!value?.trim()) return;
+    const res = await upgradeLegacyEnvelope(value.trim());
+    await setPassword(value.trim());
+    if (res.recovery_key) {
+      pendingRecoveryKey.value = res.recovery_key;
+      recoveryKeyDialogOpen.value = true;
+    }
+    ElMessage.success("已升级到 recovery envelope");
+  } catch (e) {
+    if (e !== "cancel") {
+      ui.pushLog(formatGenericError(await enrichError(e), "升级失败"), "error");
+    }
+  }
+}
+
+async function confirmRotatePassword() {
+  rotateOldPassword.value = "";
+  rotateNewPassword.value = "";
+  rotateDialogOpen.value = true;
+}
+
+async function submitRotatePassword() {
+  try {
+    await rotatePassword(rotateOldPassword.value, rotateNewPassword.value);
+    await setPassword(rotateNewPassword.value);
+    rotateDialogOpen.value = false;
+    ElMessage.success("密码已轮换");
+  } catch (e) {
+    ui.pushLog(formatGenericError(await enrichError(e), "轮换失败"), "error");
   }
 }
 
@@ -124,6 +223,12 @@ const syncStaleTitle = computed(() =>
         <el-form-item label="兼容">
           <el-checkbox v-model="initLegacy">v0.3 旧版布局</el-checkbox>
           <FieldTip content="仅在与旧仓库格式对接时开启；新课程项目保持关闭。" />
+        </el-form-item>
+        <el-form-item label="加密">
+          <el-checkbox v-model="initEncrypt">创建时启用 AES-GCM 加密</el-checkbox>
+        </el-form-item>
+        <el-form-item v-if="initEncrypt" label="密码">
+          <el-input v-model="initPassword" type="password" show-password placeholder="仓库加密密码" />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="repo.busy" @click="createRepo">
@@ -226,7 +331,25 @@ const syncStaleTitle = computed(() =>
         <dt>备份作业</dt><dd>{{ jobs.jobs.length }} 个</dd>
       </dl>
       <el-button type="primary" link @click="ui.setActivity('backup')">前往备份 / 作业管理 →</el-button>
+      <div class="security-actions">
+        <el-button size="small" @click="confirmRotatePassword">轮换密码</el-button>
+        <el-button size="small" @click="confirmUpgradeLegacy">升级 envelope</el-button>
+      </div>
     </section>
+
+    <RecoveryKeyDialog
+      v-model="recoveryKeyDialogOpen"
+      :recovery-key="pendingRecoveryKey"
+    />
+    <UnlockRepoDialog v-model="unlockDialogOpen" @unlock="onUnlock" />
+    <el-dialog v-model="rotateDialogOpen" title="轮换密码" width="420px">
+      <el-input v-model="rotateOldPassword" type="password" show-password placeholder="当前密码" class="mb8" />
+      <el-input v-model="rotateNewPassword" type="password" show-password placeholder="新密码" />
+      <template #footer>
+        <el-button @click="rotateDialogOpen = false">取消</el-button>
+        <el-button type="primary" @click="submitRotatePassword">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -315,5 +438,13 @@ const syncStaleTitle = computed(() =>
   margin: 0;
   color: var(--text-main);
   word-break: break-all;
+}
+.security-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.mb8 {
+  margin-bottom: 8px;
 }
 </style>

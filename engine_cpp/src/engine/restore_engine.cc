@@ -21,6 +21,7 @@
 #include "ebbackup/common/path_encoding.h"
 #include "ebbackup/common/path_util.h"
 #include "ebbackup/crypto/aes_gcm.h"
+#include "ebbackup/crypto/envelope.h"
 #include "ebbackup/engine/manifest.h"
 #include "ebbackup/engine/restore_plan.h"
 #include "ebbackup/engine/restore_path_remap.h"
@@ -28,12 +29,14 @@
 #include "ebbackup/scan/backup_filter.h"
 #include "ebbackup/store/snapshot_store.h"
 #include "ebbackup/winmeta/win_meta.h"
+#include "ebbackup/winmeta/efs_key.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <winioctl.h>
 #endif
 
 namespace ebbackup {
@@ -83,6 +86,44 @@ Status OpenPathForRestoreWriteWin32(const std::string& path, HANDLE* out_handle)
   *out_handle = h;
   return Status::Ok();
 }
+
+Status WritePathBytesAtWin32(HANDLE handle, uint64_t offset, const uint8_t* data,
+                             size_t len) {
+  if (handle == INVALID_HANDLE_VALUE) {
+    return Status::InvalidArgument("invalid restore write handle");
+  }
+  if (len == 0) return Status::Ok();
+  LARGE_INTEGER pos{};
+  pos.QuadPart = static_cast<LONGLONG>(offset);
+  if (!SetFilePointerEx(handle, pos, nullptr, FILE_BEGIN)) {
+    return Status::IoError("restore seek failed");
+  }
+  DWORD written = 0;
+  const BOOL ok = WriteFile(handle, data, static_cast<DWORD>(len), &written, nullptr);
+  if (!ok || written != len) return Status::IoError("restore sparse write failed");
+  return Status::Ok();
+}
+
+Status PrepareSparseRestoreFileWin32(HANDLE handle, uint64_t logical_size) {
+  if (handle == INVALID_HANDLE_VALUE) return Status::InvalidArgument("invalid handle");
+  DWORD bytes = 0;
+  if (!DeviceIoControl(handle, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0, &bytes,
+                       nullptr)) {
+    return Status::IoError("FSCTL_SET_SPARSE failed");
+  }
+  if (logical_size == 0) return Status::Ok();
+  LARGE_INTEGER pos{};
+  pos.QuadPart = static_cast<LONGLONG>(logical_size - 1);
+  if (!SetFilePointerEx(handle, pos, nullptr, FILE_BEGIN)) {
+    return Status::IoError("sparse SetEnd seek failed");
+  }
+  uint8_t zero = 0;
+  DWORD written = 0;
+  if (!WriteFile(handle, &zero, 1, &written, nullptr) || written != 1) {
+    return Status::IoError("sparse SetEnd write failed");
+  }
+  return Status::Ok();
+}
 #endif
 
 std::string RepoJoin(const std::string& repo, const std::string& name) {
@@ -121,7 +162,27 @@ RestoreEngine::RestoreEngine(std::string repo_path, ChunkStore* chunk_store)
 
 Status RestoreEngine::SetupEncryption(const RestoreOptions& options) {
   const std::string salt_path = RepoJoin(repo_path_, "crypto.salt");
-  if (!std::filesystem::exists(salt_path)) return Status::Ok();
+  const bool has_envelope = crypto::EnvelopeExists(repo_path_);
+  if (!has_envelope && !std::filesystem::exists(salt_path)) return Status::Ok();
+  if (has_envelope) {
+    if (!options.recovery_key.empty()) {
+      uint8_t key[32];
+      const Status st = crypto::UnwrapMasterKeyWithRecoveryKey(
+          repo_path_, options.recovery_key, key, chunk_store_->digest_algo());
+      if (!st.ok()) return st;
+      chunk_store_->SetContentKey(key);
+      return Status::Ok();
+    }
+    if (options.encryption_password.empty()) {
+      return Status::InvalidArgument("encrypted repo requires password");
+    }
+    uint8_t key[32];
+    const Status st = crypto::UnwrapMasterKeyWithPassword(
+        repo_path_, options.encryption_password, key, chunk_store_->digest_algo());
+    if (!st.ok()) return st;
+    chunk_store_->SetContentKey(key);
+    return Status::Ok();
+  }
   if (options.encryption_password.empty()) {
     return Status::InvalidArgument("encrypted repo requires password");
   }
@@ -261,6 +322,33 @@ Status RestoreEngine::RestoreEntry(
 #endif
 
 #ifdef _WIN32
+  if (file.file_type == FileType::kRegular && file.efs_encrypted) {
+    if (std::filesystem::exists(out_path, ec)) {
+      std::filesystem::remove(out_path, ec);
+    }
+    if (!file.efs_key_blob_b64.empty()) {
+      const Status imp = winmeta::ImportEfsKeyBlob(write_path, file.efs_key_blob_b64);
+      if (!imp.ok()) {
+        RecordRestoreIssue(write_path, "efs_key_import_failed", restore_issues);
+        return imp;
+      }
+      RecordRestoreIssue(write_path, "efs_restored", restore_issues);
+    } else {
+      std::ofstream placeholder(PathFromUtf8(write_path), std::ios::binary | std::ios::trunc);
+      if (!placeholder) {
+        return Status::IoError("cannot create EFS placeholder: " + write_path);
+      }
+      placeholder.close();
+      RecordRestoreIssue(write_path, "efs_encrypted_skipped_restore", restore_issues);
+    }
+    std::string soft_issue;
+    const Status meta_st =
+        ApplyWinMetaAfterRestore(write_path, file, options.acl_policy, &soft_issue);
+    if (!meta_st.ok()) return meta_st;
+    RecordRestoreIssue(write_path, soft_issue, restore_issues);
+    return Status::Ok();
+  }
+
   if (file.file_type == FileType::kRegular && file.inode_id != 0 && inode_canonical) {
     const RestoreInodeKey key{file.inode_id, file.stream_name};
     const auto found = inode_canonical->find(key);
@@ -286,10 +374,19 @@ Status RestoreEngine::RestoreEntry(
 #ifdef _WIN32
   const bool win_stream_path =
       !file.stream_name.empty() || write_path.find(':') != std::string::npos;
+  const bool sparse_restore =
+      file.sparse && !file.sparse_chunk_offsets.empty() && file.file_type == FileType::kRegular;
   HANDLE win_handle = INVALID_HANDLE_VALUE;
-  if (win_stream_path) {
+  if (win_stream_path || sparse_restore) {
     const Status open_st = OpenPathForRestoreWriteWin32(write_path, &win_handle);
     if (!open_st.ok()) return open_st;
+    if (sparse_restore) {
+      const Status prep = PrepareSparseRestoreFileWin32(win_handle, file.size);
+      if (!prep.ok()) {
+        CloseHandle(win_handle);
+        return prep;
+      }
+    }
   }
 #endif
 
@@ -303,7 +400,7 @@ Status RestoreEngine::RestoreEntry(
     }
   }
 #else
-  if (!win_stream_path) {
+  if (!win_stream_path && !sparse_restore) {
     out_file = std::make_unique<std::ofstream>(
         PathFromUtf8(write_path), std::ios::binary | std::ios::trunc);
     if (!*out_file) {
@@ -312,7 +409,8 @@ Status RestoreEngine::RestoreEntry(
   }
 #endif
 
-  for (const auto& hex : file.chunk_hashes_hex) {
+  for (size_t ci = 0; ci < file.chunk_hashes_hex.size(); ++ci) {
+    const auto& hex = file.chunk_hashes_hex[ci];
     uint8_t hash[32];
     if (!HexToBytes(hex, hash, 32)) {
       return Status::Corrupt("invalid chunk hash in manifest");
@@ -321,7 +419,17 @@ Status RestoreEngine::RestoreEntry(
     const Status st = chunk_store_->Get(hash, &payload);
     if (!st.ok()) return st;
 #ifdef _WIN32
-    if (win_stream_path) {
+    if (sparse_restore) {
+      const uint64_t off = ci < file.sparse_chunk_offsets.size()
+                               ? file.sparse_chunk_offsets[ci]
+                               : 0;
+      const Status wr =
+          WritePathBytesAtWin32(win_handle, off, payload.data(), payload.size());
+      if (!wr.ok()) {
+        CloseHandle(win_handle);
+        return wr;
+      }
+    } else if (win_stream_path) {
       const Status wr = AppendPathBytesWin32(win_handle, payload.data(), payload.size());
       if (!wr.ok()) {
         CloseHandle(win_handle);
@@ -340,7 +448,7 @@ Status RestoreEngine::RestoreEntry(
   }
 
 #ifdef _WIN32
-  if (win_stream_path) {
+  if (win_stream_path || sparse_restore) {
     CloseHandle(win_handle);
   } else
 #endif
@@ -348,9 +456,28 @@ Status RestoreEngine::RestoreEntry(
     out_file->close();
   }
 
-  if (bytes_written != file.size) {
+  if (!sparse_restore && bytes_written != file.size) {
     return Status::Corrupt("restored size mismatch for " + dest_rel);
   }
+#ifdef _WIN32
+  if (sparse_restore) {
+    uint64_t run_total = 0;
+    for (const auto& run : file.sparse_runs) run_total += run.second;
+    if (bytes_written != run_total) {
+      return Status::Corrupt("restored sparse data size mismatch for " + dest_rel);
+    }
+    const std::wstring wide = Utf8ToWide(write_path);
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (!GetFileAttributesExW(wide.c_str(), GetFileExInfoStandard, &fad)) {
+      return Status::IoError("cannot stat restored sparse file");
+    }
+    const uint64_t logical =
+        (static_cast<uint64_t>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+    if (logical != file.size) {
+      return Status::Corrupt("restored sparse logical size mismatch for " + dest_rel);
+    }
+  }
+#endif
 
   const Status fs = FsyncPath(write_path);
   if (!fs.ok()) return fs;

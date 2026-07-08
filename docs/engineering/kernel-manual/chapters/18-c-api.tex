@@ -1,9 +1,9 @@
-\chapter{C API 与 ABI v29}
+\chapter{C API 与 ABI v37}
 \label{ch:c-api}
 
 \section{概述}
 
-稳定 C API 定义于 \filepath{include/ebbackup/eb\_backup.h}，实现于 \filepath{src/engine/eb\_backup\_capi.cc}。当前 \texttt{EB\_BACKUP\_ABI\_VERSION = 29}。\versiontag{0.6.0}--\versiontag{0.9.4} 维持 v7--v12 兼容面；\versiontag{0.8+} 起能力 Wave 递增至 v29（见 \cref{ch:capability-waves}）。
+稳定 C API 定义于 \filepath{include/ebbackup/eb\_backup.h}，实现于 \filepath{src/engine/eb\_backup\_capi.cc}。当前 \texttt{EB\_BACKUP\_ABI\_VERSION = 37}。\versiontag{0.6.0}--\versiontag{0.9.4} 维持 v7--v12 兼容面；\versiontag{0.9.4} 之后能力 Wave 递增至 v29；\versiontag{0.10.x} Phase 16--19 递增至 v37（见 \cref{ch:capability-waves,ch:phase16-19}）。
 
 集成方应在运行时调用 \texttt{eb\_backup\_abi\_version()} 并与编译期 \texttt{EB\_BACKUP\_ABI\_VERSION} 比对。
 
@@ -47,6 +47,22 @@ v29 & T & backup window；durability adaptive；截断报告 \\
 \bottomrule
 \end{longtable}
 
+\section{ABI 版本演进表（v30--v37，Phase 12--19）}
+
+\begin{longtable}{@{}clp{7.5cm}@{}}
+\toprule
+ABI & 版本 & 关键新增 \\
+\midrule
+v30 & v0.9.6 & \texttt{EbRepoStats} 压缩率；CompressTier + 仓库字典 \\
+v31--v32 & v0.10.0 & VSS crash/app/auto；\texttt{set\_vss\_mode}；junction 闭包 \\
+v33 & v0.10.0 & NTFS sparse manifest；\texttt{SPARSE\_OFF} \\
+v34 & v0.10.0 & envelope；\texttt{unwrap\_with\_recovery\_key}；\texttt{rotate\_password} \\
+v35 & v0.10.1 & shadow storage 报告；\texttt{quiesce\_profile} job 字段 \\
+v36 & v0.10.2 & EFS Tier A/B；\texttt{post\_backup\_webhook\_url} \\
+v37 & v0.10.3 & manifest \texttt{kMetaEfs}；\texttt{EFS\_EXPORT\_KEYS}；\texttt{recovery\_key\_issued} \\
+\bottomrule
+\end{longtable}
+
 \section{EB\_BACKUP\_FLAG 全表}
 
 Init / Run flags（\filepath{eb\_backup.h}）：
@@ -66,6 +82,10 @@ Init / Run flags（\filepath{eb\_backup.h}）：
 \texttt{EB\_BACKUP\_FLAG\_MANIFEST\_BINARY} & 0x0100 & Init：manifest v4（现代默认已含） \\
 \texttt{EB\_BACKUP\_INIT\_LEGACY} & 0x0200 & Init：最简 legacy repo（无 index/snapshot/ebpack） \\
 \texttt{EB\_BACKUP\_FLAG\_NO\_PIPELINE} & 0x0400 & 禁用自动 pipeline \\
+\texttt{EB\_BACKUP\_FLAG\_VSS} & 0x0800 & 启用 VSS crash-consistent 快照读 \\
+\texttt{EB\_BACKUP\_FLAG\_VSS\_APP} & 0x1000 & VSS Application Writer 模式（与 \texttt{VSS} 联用） \\
+\texttt{EB\_BACKUP\_FLAG\_SPARSE\_OFF} & 0x4000 & 禁用 NTFS 稀疏优化（ABI v33） \\
+\texttt{EB\_BACKUP\_FLAG\_EFS\_EXPORT\_KEYS} & 0x8000 & EFS Tier B 导出密钥 blob（ABI v37） \\
 \bottomrule
 \end{longtable}
 

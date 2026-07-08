@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.9.6 — 2026-07-08
+
+### Added — Tiered compression & repo-stats observability
+
+- **CompressTier** 三档：`fast`（默认）/ `balanced` / `max`；CLI `--compress-tier`、`--compress-level`、`--zstd-dict` / `--no-zstd-dict`
+- **Zstd LDM** 与 **仓库级字典**（`{repo}/meta/zstd_dict.bin`）；`balanced`/`max` 默认启用字典训练与加载
+- **ABI v30**：`EbRepoStats` 扩展压缩率与字典统计字段
+- **`eb repo-stats`** / Workbench `repo_info_json` 输出压缩率与字典信息
+- **文档**：[`docs/technical/COMPRESSION.md`](technical/COMPRESSION.md)
+
+### Added — Pipeline / restore / resilience
+
+- Pipeline 死锁规避；GB 级 backup/restore streaming；decode corruption fuzz 测试
+
+### Changed — CI & sync/GUI
+
+- GitHub Actions：`sync_cpp` + `gui` 构建/测试矩阵（见 [`technical/TEST_AND_CI.md`](technical/TEST_AND_CI.md)）
+
+### Fixed
+
+- ZstdDict 测试 flaky；Workbench DLL 跨平台加载
+
+### Docs
+
+- 归档全量同步（ABI v30、383 gtest）
+
 ## v0.9.5 — 2026-07-07
 
 ### Added — Desktop Workbench GUI (`gui/`)

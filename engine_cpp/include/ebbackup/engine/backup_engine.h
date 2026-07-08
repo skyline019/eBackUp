@@ -33,6 +33,7 @@
 #include "ebbackup/store/repo_stats.h"
 #include "ebbackup/store/retention_policy.h"
 #include "ebbackup/store/snapshot_store.h"
+#include "ebbackup/winmeta/vss_session.h"
 
 namespace ebbackup {
 
@@ -48,6 +49,8 @@ struct RepoInitOptions {
   bool ebpack{false};
   bool coalesced_meta{false};
 };
+
+enum class SparseMode { kAuto, kOff };
 
 struct BackupOptions {
   bool use_pipeline{false};
@@ -76,6 +79,16 @@ struct BackupOptions {
   size_t worker_count{0};
   size_t store_shard_count{16};
   bool verify_deep_content{false};
+  bool use_vss{false};
+  bool vss_fallback_live{false};
+  winmeta::VssConsistencyMode vss_mode{winmeta::VssConsistencyMode::kCrash};
+  bool vss_include_junction_volumes{true};
+  SparseMode sparse_mode{SparseMode::kAuto};
+  bool efs_export_keys{false};
+  std::string post_backup_webhook_url;
+  std::string quiesce_profile;
+  enum class VssAppFailurePolicy { kFailJob, kDegraded, kFallbackLive };
+  VssAppFailurePolicy vss_app_failure_policy{VssAppFailurePolicy::kDegraded};
 };
 
 struct BackupStats {
@@ -156,6 +169,12 @@ class BackupEngine {
   std::string ListOpsAuditJson() const;
   bool has_restore_acceptance() const { return has_restore_acceptance_; }
 
+  Status UnwrapWithRecoveryKey(const std::string& recovery_key);
+  Status UnlockRepo(const std::string& password);
+  Status RotatePassword(const std::string& old_password,
+                        const std::string& new_password);
+  const std::string& last_recovery_key() const { return last_recovery_key_; }
+
   const BackupSuperBlock& superblock() const { return sb_; }
   const BackupStats& stats() const { return stats_; }
   const PipelinePhaseStats& pipeline_phase_stats() const {
@@ -175,7 +194,8 @@ class BackupEngine {
   Status DispatchTransition(BackupEvent event);
   Status ScanFiles(const std::string& source_path, const BackupOptions& options,
                    const std::vector<std::string>& extra_roots,
-                   const std::vector<plugin::ScanHint>& scan_hints);
+                   const std::vector<plugin::ScanHint>& scan_hints,
+                   const winmeta::VssSession* vss = nullptr);
   Status ChunkPendingFiles(BackupMode mode, const BackupOptions& options);
   Status StorePendingChunks(const BackupOptions& options);
   Status RunPipelineBackup(BackupMode mode, const BackupOptions& options);
@@ -242,6 +262,9 @@ class BackupEngine {
   std::string audit_key_;
   ZstdDictionary zstd_dict_{};
   ZstdDictTrainer zstd_dict_trainer_{};
+  bool backup_vss_used_{false};
+  winmeta::VssSessionInfo backup_vss_info_{};
+  std::string last_recovery_key_;
 };
 
 void RegisterBackupSyncRules(BackupSyncExecutor* exec, BackupEngine* engine);

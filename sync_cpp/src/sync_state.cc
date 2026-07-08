@@ -224,6 +224,7 @@ std::string SyncStateToJson(const SyncState& state) {
   o += "  \"last_success_unix\": " + std::to_string(state.last_success_unix) + ",\n";
   o += "  \"backoff_until_unix\": " + std::to_string(state.backoff_until_unix) + ",\n";
   o += "  \"pending_chunk_count\": " + std::to_string(state.pending_chunk_count) + ",\n";
+  o += "  \"failed_chunks\": " + std::to_string(state.pending_chunk_count) + ",\n";
   o += "  \"last_error\": ";
   JsonEscape(state.last_error, &o);
   o += "\n}\n";

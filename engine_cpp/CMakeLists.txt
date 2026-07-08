@@ -46,6 +46,7 @@ set(EBBACKUP_CORE_SOURCES
   src/crypto/aes_block.cc
   src/crypto/gcm_portable.cc
   src/crypto/aes_gcm.cc
+  src/crypto/envelope.cc
   src/io/fs_watch.cc
   src/archive/eb_bundle.cc
   src/daemon/backup_daemon.cc
@@ -83,6 +84,11 @@ set(EBBACKUP_CORE_SOURCES
   src/catalog/job_report.cc
   src/catalog/snapshot_reachability.cc
   src/winmeta/win_meta.cc
+  src/winmeta/sparse_file.cc
+  src/winmeta/vss_shadow_storage.cc
+  src/winmeta/efs_key.cc
+  src/winmeta/vss_path_map.cc
+  src/winmeta/vss_volume_closure.cc
   src/report/backup_report.cc
   src/report/rpo_summary.cc
   src/job/job_config.cc
@@ -105,7 +111,10 @@ target_include_directories(ebbackup_core
 )
 
 if (WIN32)
-  target_link_libraries(ebbackup_core PRIVATE advapi32)
+  target_link_libraries(ebbackup_core PUBLIC advapi32 vssapi Ole32 OleAut32)
+  target_sources(ebbackup_core PRIVATE src/winmeta/vss_session.cc)
+else()
+  target_sources(ebbackup_core PRIVATE src/winmeta/vss_session_stub.cc)
 endif()
 if(EBBACKUP_HAVE_SQLITE3)
   target_link_libraries(ebbackup_core PRIVATE ebbackup_sqlite3)
@@ -199,6 +208,7 @@ if(EBBACKUP_BUILD_TESTS)
     tests/codec/compress_policy_test.cc
     tests/codec/zstd_dict_test.cc
     tests/codec/content_class_test.cc
+    tests/fuzz/decode_corruption_test.cc
     tests/store/chunk_store_test.cc
     tests/store/eb_pack_test.cc
     tests/store/eb_pack_shard_test.cc
@@ -245,7 +255,15 @@ if(EBBACKUP_BUILD_TESTS)
     tests/report/rpo_summary_test.cc
     tests/engine/manifest_v5_test.cc
     tests/winmeta/win_meta_test.cc
+    tests/winmeta/vss_path_map_test.cc
+    tests/winmeta/vss_session_stub_test.cc
+    tests/winmeta/vss_lifecycle_test.cc
+    tests/winmeta/vss_volume_closure_test.cc
+    tests/winmeta/vss_locked_file_backup_test.cc
     tests/winmeta/hardlink_backup_restore_test.cc
+    tests/winmeta/sparse_backup_restore_test.cc
+    tests/winmeta/efs_backup_restore_test.cc
+    tests/winmeta/vss_shadow_storage_test.cc
     tests/winmeta/acl_restore_test.cc
     tests/queue/job_queue_test.cc
     tests/queue/job_queue_integration_test.cc
@@ -271,6 +289,7 @@ if(EBBACKUP_BUILD_TESTS)
     tests/daemon/watch_smoke_test.cc
     tests/daemon/daemon_stop_test.cc
     tests/crypto/aes_gcm_portable_test.cc
+    tests/crypto/envelope_test.cc
     tests/crypto/aes_gcm_nist_test.cc
     tests/crypto/pbkdf2_test.cc
     tests/crypto/digest_legacy_test.cc

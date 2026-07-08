@@ -1,7 +1,7 @@
 # recoveryProjects / ebbackup
 
 Content-defined backup engine with incremental HCRBO chunking, selective restore,
-time-travel snapshots, LZ4/zstd compression, AES-256-GCM encryption, audit chain, and a stable C API.
+time-travel snapshots, tiered LZ4/zstd compression (CompressTier + repo dictionary), AES-256-GCM encryption, audit chain, and a stable C API.
 
 The primary implementation lives in [`engine_cpp/`](engine_cpp/).
 
@@ -10,17 +10,18 @@ The primary implementation lives in [`engine_cpp/`](engine_cpp/).
 | Path | Purpose |
 |------|---------|
 | [`engine_cpp/`](engine_cpp/) | Backup kernel, CLI (`eb`), tests, and product manual |
+| [`sync_cpp/`](sync_cpp/) | Outer cloud sync (`eb-sync`) — ferry, local mirror, S3/PDS |
 | [`gui/`](gui/) | Desktop Workbench (Tauri 2 + Vue 3) — optional GUI entry |
 | [`docs/`](docs/) | Technical archive: version history, architecture, perf baseline (v0.1–v0.9+) |
 | [`gtest_capi/`](gtest_capi/) | Bundled GoogleTest for CI and local builds |
-| [`.github/workflows/ebbackup.yml`](.github/workflows/ebbackup.yml) | Windows + Linux CI (build + ctest) |
+| [`.github/workflows/ebbackup.yml`](.github/workflows/ebbackup.yml) | Windows + Linux CI (engine + sync + GUI + bench) |
 
 ## Build and test
 
 From the repository root:
 
 ```bash
-cmake -S . -B build -DEBBACKUP_BUILD_TESTS=ON
+cmake -S . -B build -DEBBACKUP_BUILD_TESTS=ON -DEBBACKUP_BUILD_SYNC=ON
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
@@ -35,7 +36,9 @@ e:\recoveryProjects\build\engine_cpp\Release\ebbackup_tests.exe
 
 ## Documentation
 
-- **Technical archive (v0.1–v0.9.4)**: [`docs/README.md`](docs/README.md)
+- **Technical archive (v0.1–v0.9+)**: [`docs/README.md`](docs/README.md)
+- Compression tiers & dictionary: [`docs/technical/COMPRESSION.md`](docs/technical/COMPRESSION.md)
+- Outer sync (`eb-sync`): [`sync_cpp/README.md`](sync_cpp/README.md)
 - Engine, CLI, filters, encryption: [`engine_cpp/README.md`](engine_cpp/README.md)
 - Desktop Workbench（完整归档）: [`docs/product/WORKBENCH_GUI.md`](docs/product/WORKBENCH_GUI.md) · 快速入口: [`gui/README.md`](gui/README.md)
 - Performance baseline (L1–L7) and CI bench gate: [`docs/reference/PERF_BASELINE.md`](docs/reference/PERF_BASELINE.md)

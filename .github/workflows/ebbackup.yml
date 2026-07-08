@@ -4,12 +4,16 @@ on:
   push:
     paths:
       - 'engine_cpp/**'
+      - 'sync_cpp/**'
+      - 'gui/**'
       - 'CMakeLists.txt'
       - 'gtest_capi/**'
       - '.github/workflows/ebbackup.yml'
   pull_request:
     paths:
       - 'engine_cpp/**'
+      - 'sync_cpp/**'
+      - 'gui/**'
       - 'CMakeLists.txt'
       - 'gtest_capi/**'
       - '.github/workflows/ebbackup.yml'
@@ -22,11 +26,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake -S . -B build -DEBBACKUP_BUILD_TESTS=ON
+        run: cmake -S . -B build -DEBBACKUP_BUILD_TESTS=ON -DEBBACKUP_BUILD_SYNC=ON
       - name: Build
-        run: cmake --build build --config Release
+        run: cmake --build build --config Release --target ebbackup_tests ebbackup_workbench eb-sync ebsync_tests ebrecover
+      - name: Package ebrecover portable
+        run: powershell -ExecutionPolicy Bypass -File engine_cpp/scripts/package_ebrecover_portable.ps1 -Configuration Release -BuildDir build
+      - name: Upload ebrecover portable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ebrecover-portable
+          path: build/ebrecover-portable.zip
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - name: GUI frontend build
+        working-directory: gui
+        run: npm ci && npm run build
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Workbench Rust integration
+        working-directory: gui
+        env:
+          EBBACKUP_DLL_DIR: ${{ github.workspace }}/build/engine_cpp/Release
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test workbench_integration -- --nocapture
 
   test-linux:
     runs-on: ubuntu-latest
@@ -35,11 +60,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake -S . -B build -DEBBACKUP_BUILD_TESTS=ON
+        run: cmake -S . -B build -DEBBACKUP_BUILD_TESTS=ON -DEBBACKUP_BUILD_SYNC=ON
       - name: Build
-        run: cmake --build build --config Release -j$(nproc)
+        run: cmake --build build --config Release -j$(nproc) --target ebbackup_tests ebbackup_workbench eb-sync ebsync_tests
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - name: GUI frontend build
+        working-directory: gui
+        run: npm ci && npm run build
 
   test-linux-asan:
     runs-on: ubuntu-latest
@@ -49,7 +82,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Configure ASan
         run: |
-          cmake -S . -B build-asan -DEBBACKUP_BUILD_TESTS=ON \
+          cmake -S . -B build-asan -DEBBACKUP_BUILD_TESTS=ON -DEBBACKUP_BUILD_SYNC=ON \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
             -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"

@@ -90,12 +90,12 @@ npm run build:desktop
 
 | 快捷键 | Activity | 功能 |
 |--------|----------|------|
-| Ctrl+1 | 仓库 | 新建 / 打开 / 关闭 repo；最近仓库 |
-| Ctrl+2 | 备份 | 全量/增量、LZ4、Pipeline、加密、过滤器 |
+| Ctrl+1 | 仓库 | 新建 / 打开 / 关闭 repo；加密 envelope、恢复密钥、解锁/轮换密码 |
+| Ctrl+2 | 备份 | 全量/增量、VSS、稀疏/EFS、作业 quiesce/webhook、恢复密钥向导 |
 | Ctrl+3 | 快照 | 列表、GFS prune |
 | Ctrl+4 | 恢复 | 还原到目标目录、time-travel（txn_id） |
 | Ctrl+5 | 验证 | verify、recover 中断事务 |
-| Ctrl+6 | 维护 | repo-stats、compact、gc-orphans |
+| Ctrl+6 | 维护 | repo-stats、compact、gc-orphans、同步状态预检 |
 
 全局：**F1** 快捷键帮助 · **Ctrl+J** 折叠/展开输出面板 · **Ctrl+,** 设置抽屉。
 
@@ -125,8 +125,12 @@ npm run build:desktop
 
 | C 导出 | Tauri command | 说明 |
 |--------|---------------|------|
+| `ebbackup_workbench_init_encrypt_json` | `init_repo_encrypt` | 建库后启用 envelope 加密（返回 `recovery_key`） |
+| `ebbackup_workbench_unwrap_recovery_key_json` | `unwrap_recovery_key` | 用恢复密钥解锁 |
+| `ebbackup_workbench_rotate_password_json` | `rotate_password` | 轮换备份密码 |
+| `ebbackup_workbench_upgrade_legacy_envelope_json` | `upgrade_legacy_envelope` | legacy salt → envelope |
 | `ebbackup_workbench_init_repo_json` | `init_repo` | 初始化仓库 |
-| `ebbackup_workbench_repo_info_json` | `repo_info` | 打开后统计（`eb_backup_repo_stats`） |
+| `ebbackup_workbench_repo_info_json` | `repo_info` | 打开后统计（`eb_backup_repo_stats`，含 v30 压缩率字段） |
 | `ebbackup_workbench_list_snapshots_json` | `list_snapshots` | 快照列表（含 `job_id` / `immutable_until_unix` meta） |
 | `ebbackup_workbench_run_backup_json` | `run_backup` | 快速备份（ad-hoc 源目录） |
 | `eb_backup_list_jobs_json` | `list_jobs` | 读取 `jobs.json` |
@@ -166,7 +170,7 @@ npm run test:rust
 ```
 
 测试文件：`gui/src-tauri/tests/workbench_integration.rs`  
-覆盖：runtime_info、init → backup → snapshots → verify → repo_info、double-init 稳定性。
+覆盖：runtime_info、init → backup → snapshots → verify → repo_info、作业 CRUD、加密 envelope、Phase 18 作业字段 roundtrip、double-init 稳定性。
 
 ### 7.2 引擎回归（空仓库统计）
 
@@ -205,8 +209,8 @@ npm run sync:fonts
 | 项 | 值 |
 |----|-----|
 | Workbench 包版本 | 0.1.0（`gui/package.json` / `tauri.conf.json`） |
-| 依赖 C API ABI | v12（`eb_backup_abi_version()`） |
-| 归档日期 | 2026-07-07 |
+| 依赖 C API ABI | **v37**（`eb_backup_abi_version()`；EFS manifest、恢复密钥、Webhook 报告） |
+| 归档日期 | 2026-07-08 |
 
 ---
 

@@ -121,5 +121,6 @@ Stream sub：cdc ~82%，digest ~16%，carry ~1.7%
 ## 相关文档
 
 - [ARCHITECTURE.md](ARCHITECTURE.md)
+- [COMPRESSION.md](COMPRESSION.md) — 压缩档位（encode 阶段）
 - [ENVIRONMENT_VARIABLES.md](ENVIRONMENT_VARIABLES.md)
 - [VERSION_HISTORY.md](../VERSION_HISTORY.md) — v0.9.2–v0.9.4 条目

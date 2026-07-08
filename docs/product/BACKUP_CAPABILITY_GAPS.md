@@ -11,6 +11,7 @@
 - CDC/HCRBO 增量、EbPack、Compact/GC、Snapshot GFS
 - 选择性恢复 + 路径重整（ABI v13）
 - AES-GCM、Merkle 子集校验、RAR 审计链
+- **CompressTier** + Zstd LDM + 仓库字典；`repo-stats` 压缩率（ABI v30）
 - filter / watch / schedule、`.ebb` bundle
 - GUI：Browse、Diff、Restore、Maintenance wizard、备份报告页签
 - `reports/<txn>.json` 尽力一致侧车 + pre/post hook
@@ -21,9 +22,9 @@
 
 | ID | 缺口 | 现状 | 创新命题 | 用户故事 |
 |----|------|------|----------|----------|
-| GAP-CONSIST-01 | 卷级/镜像备份 | 目录扫描 | 目录级一致性点 + 可选 VSS | 备份数据库目录时希望时间点一致 |
-| GAP-CONSIST-02 | 打开/锁定文件 | 读失败即 job 失败 | **尽力一致 + 未备份清单** | 知道哪些文件因锁定未进备份 |
-| GAP-CONSIST-03 | 应用一致性 | 无 hook | Schedule Hook（freeze/thaw） | 备份前自动 quiesce 应用 |
+| GAP-CONSIST-01 | 卷级/镜像备份 | **done**（文件级）：VSS 多卷闭包 + crash/app/auto；见 [`VSS.md`](../technical/VSS.md) | 目录级一致性点 + VSS Writer | 备份数据库目录时希望时间点一致 |
+| GAP-CONSIST-02 | 打开/锁定文件 | **done**：`scan_issues` + pipeline skip + 报告 `locked`/`unreadable` | **尽力一致 + 未备份清单** | 知道哪些文件因锁定未进备份 |
+| GAP-CONSIST-03 | 应用一致性 | **done**：VSS Writer（app/auto）+ Schedule Hook + plugin quiesce + GUI `quiesce_profile` | Schedule Hook（freeze/thaw） | 备份前自动 quiesce 应用 |
 | GAP-CONSIST-04 | 增量链可达性 | **done**：`AnalyzeSnapshotReachability` + `eb verify-chain` + GUI 徽章（ABI v24） |
 
 ---
@@ -36,8 +37,8 @@
 | GAP-WIN-02 | ADS | **done**：扫描/恢复 ADS entry + Win32 读写路径 | 每 stream 一条 manifest entry |
 | GAP-WIN-03 | Reparse/Junction | **done**：扫描采集 `reparse_target` + skip/recreate 恢复策略 | 联接点不展开 + 恢复策略 |
 | GAP-WIN-04 | Hard link | **done**：`inode_id` dedup chunk + `CreateHardLink` 恢复 | inode_id + 结构 dedup |
-| GAP-WIN-05 | Sparse NTFS | 全文件读 | 有效区间 map |
-| GAP-WIN-06 | EFS 源文件 | 仅仓库 AES | 边界说明或 DPAPI 密钥包 |
+| GAP-WIN-05 | Sparse NTFS | **done**：run 区间 map + restore `FSCTL_SET_SPARSE` | run 区间 map + restore |
+| GAP-WIN-06 | EFS 源文件 | **done**：Tier A skip + Tier B 密钥导出/恢复 | Tier A skip + Tier B `--efs-export-keys` |
 
 ---
 
@@ -80,7 +81,7 @@
 
 | ID | 缺口 | 创新命题 |
 |----|------|----------|
-| GAP-KEYS-01 | 单密码 | 主密钥 + 恢复密钥 envelope |
+| GAP-KEYS-01 | 单密码 | **done** — 主密钥 + 恢复密钥 envelope |
 | GAP-KEYS-02 | GUI 无审计 | **done**：GUI 破坏性 ops append-only → `audit/rar.chain`（ABI v25） |
 | GAP-KEYS-03 | 无 RPO 报告 | **done**：`RpoSummaryJson` + RepoHome 卡片 + `eb rpo-summary`（ABI v24） |
 
@@ -90,11 +91,11 @@
 
 | ID | 缺口 | 创新命题 |
 |----|------|----------|
-| GAP-OPS-01 | 无本地告警 | **done（MVP）**：`useBackupAlerts` + `stale_backup_alert_days` + ElNotification（Wave N） |
+| GAP-OPS-01 | 无本地告警 | **done（MVP+）**：stale 本地告警 + Webhook POST + GUI 测试 |
 | GAP-OPS-02 | GC/Prune 认知 | **done**：Maintenance 孤儿解释图 + `eb orphan-explain`（ABI v25） |
 | GAP-PLATFORM-01 | 非常驻服务 | **done**：Windows SCM `eb service` + systemd unit/timer（Wave O+） |
 | GAP-PLATFORM-02 | 单 repo session | **done**：Workbench 多 Profile（主题/最近/告警分 profile）（Wave O+） |
-| GAP-PLATFORM-03 | 无最小 Runtime | USB 恢复 exe |
+| GAP-PLATFORM-03 | 无最小 Runtime | **done**：`ebrecover` CLI + `ebrecover-portable.zip` CI |
 | GAP-PLATFORM-04 | bundle 全量 | **已落地**：EBB v2 delta export（`--delta --base-at`） |
 
 ---
@@ -103,7 +104,7 @@
 
 | ID | 缺口 | 创新命题 |
 |----|------|----------|
-| GAP-ENGINE-01 | 扫描遇错全失败 | per-path 错误收集 |
+| GAP-ENGINE-01 | 扫描遇错全失败 | **done**：per-path issue 收集 + skip chunking |
 | GAP-ENGINE-02 | 无 job 队列 | **done**：`catalog/job_queue.jsonl` + `eb queue` + C API v22 + GUI 入队/drain（Wave N） |
 | GAP-ENGINE-03 | Symlink 循环 | **已落地**：`kMaxScanDepth` + `symlink_loop` 检测 + 集成测试 |
 
@@ -130,19 +131,22 @@
 | GAP-RESTORE-03 | 2 | done | acceptance report |
 | GAP-WIN-01~04 | 3 | done | Wave E：hardlink dedup、reparse_target、ACL best_effort、ADS E2E（`ads_backup_restore_test`） |
 | GAP-CONSIST-02 | 4 | done | backup report + issues + pipeline skip |
-| GAP-CONSIST-03 | 4 | done | pre/post_backup_cmd + GUI hooks |
+| GAP-CONSIST-03 | 4 | done | VSS app/auto + quiesce_profile + pre/post hooks |
 | GAP-ENGINE-01 | 4 | done | ScanResult + issue skip chunking |
 | GAP-CATALOG-05 | 4 | done | per-txn report + `catalog/jobs/<job_id>.jsonl` sidecar |
 | GAP-JOB-01~04 | 5 | done | Wave F 内核 + Wave G GUI：`jobs.json`、RunJob、snapshot meta、WORM prune 门控 |
 | GAP-RESTORE-01 | 6 | done | three-way in-place merge（Wave M）；ABI v23 |
 | GAP-RESTORE-02 | 6 | done | symlink target remap（Wave K） |
 | GAP-RESTORE-04 | 6 | done | RestoreView bulk conflict workstation（Wave M） |
-| GAP-PLATFORM-03 | 6 | done | ebrecover CLI |
+| GAP-PLATFORM-03 | 6 | done | ebrecover CLI + portable zip |
+| GAP-WIN-05 | 16 | done | NTFS sparse manifest + restore |
+| GAP-WIN-06 | 19 | done | EFS Tier A/B + manifest kMetaEfs |
+| GAP-KEYS-01 | 17 | done | envelope + GUI 恢复密钥向导 |
+| GAP-OPS-01 | 19 | done (MVP+) | webhook + stale alerts + GUI |
 | GAP-PLATFORM-04 | 6 | done | EBB v2 delta + C API/GUI 导出入口（Wave K） |
 | GAP-CATALOG-04 | 7 | done | manifest browse sidecar + prefix page |
 | GAP-ENGINE-02 | 7 | done | persistent job queue |
 | GAP-ENGINE-03 | 7 | done | scan depth + symlink loop |
-| GAP-OPS-01 | 8 | done (MVP) | stale backup local alerts |
 | GAP-OPS-02 | 8 | done | orphan explain graph + MaintenanceView |
 | GAP-KEYS-02 | 8 | done | GUI ops → RAR audit chain |
 | GAP-PLATFORM-01 | 8 | done | Windows Service + systemd + `eb service` CLI |

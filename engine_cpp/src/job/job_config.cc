@@ -70,6 +70,14 @@ Status ParseJsonObject(const std::string& json, BackupJob* out) {
   (void)ReadJsonStringField(json, "window_end", &job.window.window_end);
   (void)ReadJsonIntField(json, "deadline_grace_seconds", &job.window.deadline_grace_seconds);
   (void)ReadJsonBoolField(json, "durability_adaptive", &job.window.durability_adaptive);
+  (void)ReadJsonBoolField(json, "use_vss", &job.use_vss);
+  (void)ReadJsonStringField(json, "vss_mode", &job.vss_mode);
+  (void)ReadJsonBoolField(json, "vss_fallback_live", &job.vss_fallback_live);
+  (void)ReadJsonBoolField(json, "vss_include_junction_volumes",
+                          &job.vss_include_junction_volumes);
+  (void)ReadJsonStringField(json, "quiesce_profile", &job.quiesce_profile);
+  (void)ReadJsonStringField(json, "vss_app_failure_policy", &job.vss_app_failure_policy);
+  (void)ReadJsonStringField(json, "post_backup_webhook_url", &job.post_backup_webhook_url);
   if (job.window.deadline_grace_seconds <= 0) job.window.deadline_grace_seconds = 300;
   *out = std::move(job);
   return Status::Ok();
@@ -141,6 +149,31 @@ std::string JobsToJson(const std::vector<BackupJob>& jobs) {
     }
     if (j.window.durability_adaptive) {
       out << ",\"durability_adaptive\":true";
+    }
+    if (j.use_vss) {
+      out << ",\"use_vss\":true";
+    }
+    if (!j.vss_mode.empty()) {
+      JsonEscape(j.vss_mode, &esc);
+      out << ",\"vss_mode\":\"" << esc << "\"";
+    }
+    if (j.vss_fallback_live) {
+      out << ",\"vss_fallback_live\":true";
+    }
+    if (!j.vss_include_junction_volumes) {
+      out << ",\"vss_include_junction_volumes\":false";
+    }
+    if (!j.quiesce_profile.empty()) {
+      JsonEscape(j.quiesce_profile, &esc);
+      out << ",\"quiesce_profile\":\"" << esc << "\"";
+    }
+    if (!j.vss_app_failure_policy.empty()) {
+      JsonEscape(j.vss_app_failure_policy, &esc);
+      out << ",\"vss_app_failure_policy\":\"" << esc << "\"";
+    }
+    if (!j.post_backup_webhook_url.empty()) {
+      JsonEscape(j.post_backup_webhook_url, &esc);
+      out << ",\"post_backup_webhook_url\":\"" << esc << "\"";
     }
     out << "}";
   }

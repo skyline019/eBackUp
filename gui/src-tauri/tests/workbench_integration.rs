@@ -14,6 +14,12 @@ type EbBackupEngine = c_void;
 type OpenExFn = unsafe extern "C" fn(*const c_char, *mut c_int) -> *mut EbBackupEngine;
 type CloseFn = unsafe extern "C" fn(*mut EbBackupEngine);
 type JsonInitFn = unsafe extern "C" fn(*const c_char, c_uint, *mut c_char, usize) -> c_int;
+type JsonInitEncryptFn = unsafe extern "C" fn(
+    *const c_char,
+    *const c_char,
+    *mut c_char,
+    usize,
+) -> c_int;
 type JsonEngFn = unsafe extern "C" fn(*mut EbBackupEngine, *mut c_char, usize) -> c_int;
 type JsonBackupFn = unsafe extern "C" fn(
     *mut EbBackupEngine,
@@ -119,6 +125,7 @@ struct WorkbenchDll {
     open_ex: OpenExFn,
     close: CloseFn,
     init_repo_json: JsonInitFn,
+    init_encrypt_json: JsonInitEncryptFn,
     repo_info_json: JsonEngFn,
     list_snapshots_json: JsonEngFn,
     list_manifest_files_json: JsonManifestFn,
@@ -154,8 +161,10 @@ struct WorkbenchDll {
 impl WorkbenchDll {
     fn load() -> Result<Self, String> {
         let path = find_dll().ok_or_else(|| {
-            "ebbackup_workbench.dll not found — build target ebbackup_workbench and run sync:runtime"
-                .to_string()
+            format!(
+                "{} not found — build target ebbackup_workbench and set EBBACKUP_DLL_DIR or run sync:runtime",
+                workbench_lib_filename()
+            )
         })?;
         unsafe {
             let lib = Library::new(&path).map_err(|e| format!("load {}: {e}", path.display()))?;
@@ -164,6 +173,9 @@ impl WorkbenchDll {
                 close: *lib.get(b"eb_backup_close\0").map_err(|e| e.to_string())?,
                 init_repo_json: *lib
                     .get(b"ebbackup_workbench_init_repo_json\0")
+                    .map_err(|e| e.to_string())?,
+                init_encrypt_json: *lib
+                    .get(b"ebbackup_workbench_init_encrypt_json\0")
                     .map_err(|e| e.to_string())?,
                 repo_info_json: *lib
                     .get(b"ebbackup_workbench_repo_info_json\0")
@@ -261,18 +273,33 @@ impl WorkbenchDll {
     }
 }
 
+fn workbench_lib_filename() -> &'static str {
+    if cfg!(windows) {
+        "ebbackup_workbench.dll"
+    } else if cfg!(target_os = "macos") {
+        "libebbackup_workbench.dylib"
+    } else {
+        "libebbackup_workbench.so"
+    }
+}
+
 fn find_dll() -> Option<PathBuf> {
+    let lib_name = workbench_lib_filename();
     let mut candidates = Vec::new();
     if let Ok(dir) = std::env::var("EBBACKUP_DLL_DIR") {
-        candidates.push(PathBuf::from(dir).join("ebbackup_workbench.dll"));
+        candidates.push(PathBuf::from(dir).join(lib_name));
     }
     if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
         let m = PathBuf::from(manifest);
-        candidates.push(m.join("bin/ebbackup_workbench.dll"));
-        candidates.push(m.join("../../build/engine_cpp/Release/ebbackup_workbench.dll"));
-        candidates.push(m.join("../../build/engine_cpp/Debug/ebbackup_workbench.dll"));
+        candidates.push(m.join("bin").join(lib_name));
+        candidates.push(
+            m.join("../../build/engine_cpp/Release")
+                .join(lib_name),
+        );
+        candidates.push(m.join("../../build/engine_cpp/Debug").join(lib_name));
+        candidates.push(m.join("../../build/engine_cpp").join(lib_name));
     }
-    candidates.push(PathBuf::from("ebbackup_workbench.dll"));
+    candidates.push(PathBuf::from(lib_name));
     candidates.into_iter().find(|p| p.is_file())
 }
 
@@ -868,4 +895,64 @@ fn suggest_exclude_filters_roundtrip() {
     assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(true));
     let items = v.get("items").and_then(|x| x.as_array()).cloned().unwrap_or_default();
     assert!(!items.is_empty());
+}
+
+#[test]
+fn init_encrypt_json_returns_recovery_key() {
+    let dll = WorkbenchDll::load().expect("dll");
+    let fx = TempFixture::new();
+    unsafe {
+        let repo = fx.repo_str();
+        call_json_plain(|buf, cap| (dll.init_repo_json)(repo.as_ptr(), 0, buf, cap));
+
+        let pw = cstr("test-password-123");
+        let mut buf = vec![0u8; 64 * 1024];
+        let rc = (dll.init_encrypt_json)(
+            repo.as_ptr(),
+            pw.as_ptr(),
+            buf.as_mut_ptr() as *mut c_char,
+            buf.len(),
+        );
+        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        let text = String::from_utf8_lossy(&buf[..end]);
+        assert_eq!(rc, 0, "init_encrypt rc={rc} body={text}");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(true));
+        let key = v.get("recovery_key").and_then(|x| x.as_str()).unwrap_or("");
+        assert!(!key.is_empty(), "recovery_key expected body={text}");
+    }
+}
+
+#[test]
+fn job_phase18_fields_roundtrip() {
+    let dll = WorkbenchDll::load().expect("dll");
+    let fx = TempFixture::new();
+    unsafe {
+        let repo = fx.repo_str();
+        call_json_plain(|buf, cap| (dll.init_repo_json)(repo.as_ptr(), 0, buf, cap));
+
+        let src = fx.source_str();
+        let job_json = format!(
+            r#"{{"id":"docs","name":"Docs","source_path":"{}","retention_tag":0,"immutability_days":0,"worm":false,"exclude_globs":[],"quiesce_profile":"sql","vss_app_failure_policy":"warn","post_backup_webhook_url":"http://localhost/hook"}}"#,
+            src.to_string_lossy().replace('\\', "\\\\")
+        );
+        let job = cstr(&job_json);
+        assert_eq!((dll.upsert_job_json)(repo.as_ptr(), job.as_ptr()), 0);
+
+        let listed = call_jobs_json(&dll, &repo);
+        assert_eq!(listed.get("ok").and_then(|x| x.as_bool()), Some(true));
+        let jobs = listed.get("jobs").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].get("quiesce_profile").and_then(|x| x.as_str()), Some("sql"));
+        assert_eq!(
+            jobs[0].get("vss_app_failure_policy").and_then(|x| x.as_str()),
+            Some("warn")
+        );
+        assert_eq!(
+            jobs[0].get("post_backup_webhook_url").and_then(|x| x.as_str()),
+            Some("http://localhost/hook")
+        );
+
+        assert_eq!((dll.delete_job)(repo.as_ptr(), cstr("docs").as_ptr()), 0);
+    }
 }

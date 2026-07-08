@@ -4,6 +4,11 @@ description = "ebbackup Workbench application invoke commands"
 commands.allow = [
   "runtime_info",
   "init_repo",
+  "init_repo_encrypt",
+  "unwrap_recovery_key",
+  "rotate_password",
+  "upgrade_legacy_envelope",
+  "test_webhook",
   "open_repo",
   "switch_profile",
   "close_repo",

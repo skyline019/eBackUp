@@ -1,0 +1,268 @@
+\chapter{Phase 16--19：Windows 深化与灾备交付（ABI v33--v37）}
+\label{ch:phase16-19}
+
+本章归档 \versiontag{0.10.0}--\versiontag{0.10.3} 四个能力 Phase：NTFS 稀疏文件、恢复密钥 envelope、VSS 运维深化、EFS 与告警/Webhook。与 \cref{ch:manifest-format} manifest 扩展、\cref{ch:c-api} C API、\cref{ch:capability-waves} Wave A--T 形成完整产品闭环。
+
+\begin{table}[htbp]
+\centering
+\caption{Phase 16--19 与 ABI 对照}
+\small
+\begin{tabular}{@{}clll@{}}
+\toprule
+Phase & 版本 & ABI & 主题 \\
+\midrule
+16 & v0.10.0 & v33 & NTFS sparse：检索指针 + manifest \texttt{kMetaSparse} \\
+17 & v0.10.0 & v34 & \texttt{crypto.envelope.json}；恢复密钥；\texttt{ebrecover} \\
+18 & v0.10.1 & v35 & VSS 影子存储 WMI；\texttt{quiesce\_profile} \\
+19 & v0.10.2--.3 & v36--v37 & EFS Tier A/B；Webhook；\texttt{kMetaEfs} 持久化 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%====================================================================
+\section{Phase 16：NTFS 稀疏文件（ABI v33）}
+\label{sec:phase16-sparse}
+
+\subsection{问题与边界}
+
+NTFS 稀疏文件在逻辑大小与物理占用之间可能存在巨大差距。若按连续字节流 chunk，会\textbf{膨胀}物理备份体积并破坏 Content ID 语义（零区域不应产生无意义 chunk）。
+
+\textbf{不做}：块级卷镜像、VSS 块拷贝；稀疏语义仅在\textbf{文件级} manifest + restore 路径实现。
+
+\subsection{检测与检索指针解析}
+
+\texttt{IsSparseFilePath}（\filepath{sparse\_file.cc}）检查 \texttt{FILE\_ATTRIBUTE\_SPARSE\_FILE}。\texttt{QuerySparseRuns} 通过 \texttt{FSCTL\_GET\_RETRIEVAL\_POINTERS} 枚举 \texttt{(offset, length)} 数据 run；零填充 hole 不进入 run 列表。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=0.65cm,
+  box/.style={rectangle, draw=AdrBlue!70, fill=blue!4, rounded corners=2pt,
+    minimum width=3.2cm, minimum height=0.55cm, font=\scriptsize, align=center},
+  arr/.style={-{Stealth}, thick}
+]
+  \node[box] (scan) {ScanFiles};
+  \node[box, below=of scan] (q) {QuerySparseRuns\\{\tiny FSCTL\_GET\_RETRIEVAL\_POINTERS}};
+  \node[box, below=of q] (chunk) {仅对 data run 区间 chunk};
+  \node[box, below=of chunk] (meta) {manifest \texttt{kMetaSparse}\\{\tiny runs + chunk\_offsets}};
+  \draw[arr] (scan) -- (q) -- (chunk) -- (meta);
+\end{tikzpicture}
+\caption{稀疏文件备份路径（Windows）}
+\label{fig:sparse-backup-flow}
+\end{figure}
+
+\subsection{Manifest \texttt{kMetaSparse}（0x400）}
+
+v5 二进制 body 在 Win meta 之后追加（\filepath{manifest.cc}）：
+
+\begin{longtable}{@{}llp{8cm}@{}}
+\caption{\texttt{kMetaSparse} 字段序列} \\
+\toprule
+字段 & 类型 & 含义 \\
+\midrule
+\texttt{run\_count} & \texttt{u32} & 数据 run 数量 \\
+\texttt{runs[]} & \texttt{u64 off} + \texttt{u64 len} & 文件内数据区间 \\
+\texttt{chunk\_off\_count} & \texttt{u32} & 与 chunk 链对齐的偏移表 \\
+\texttt{chunk\_offsets[]} & \texttt{u64} & 每个 chunk 在逻辑文件中的起始偏移 \\
+\bottomrule
+\end{longtable}
+
+\texttt{BuildV5MetaFlags} 在 \texttt{has\_sparse\_meta()} 为真时置位 \texttt{kMetaSparse}。文本 manifest fallback 同步写入 \texttt{sparse\_runs} 行。
+
+\subsection{恢复语义}
+
+\texttt{RestoreSparseFile}（\filepath{sparse\_file.cc}）：
+\begin{enumerate}[nosep]
+  \item \texttt{CreateFileW} + \texttt{FSCTL\_SET\_SPARSE} 创建稀疏目标；
+  \item 按 \texttt{sparse\_chunk\_offsets} 定位 \texttt{SetFilePointerEx}；
+  \item 逐 chunk 写入数据 run 对应区间；hole 区域保持未分配零。
+\end{enumerate}
+
+CLI/C API：\texttt{--sparse auto|off}；\texttt{EB\_BACKUP\_FLAG\_SPARSE\_OFF}（0x4000）强制 sequential 读取（兼容旧行为）。报告字段 \texttt{sparse\_files\_count}、issue \texttt{sparse\_skipped}。
+
+%====================================================================
+\section{Phase 17：恢复密钥与 envelope（ABI v34）}
+\label{sec:phase17-envelope}
+
+\subsection{\texttt{crypto.envelope.json} 结构}
+
+Legacy 加密仅 PBKDF2 + salt 文件；Phase 17 引入 \filepath{crypto.envelope.json}（\filepath{crypto/envelope.cc}）：
+
+\begin{structbox}[Envelope 语义]
+\begin{itemize}[nosep]
+  \item \textbf{master\_key}：32B AES 内容密钥，永不明文落盘；
+  \item \textbf{password\_wrap}：PBKDF2 + AES-GCM 包裹 master；
+  \item \textbf{recovery\_wrap}：独立 26 字符 recovery key 包裹 master（双路径解锁）；
+  \item 向后兼容：无 envelope 时仍可读 legacy \filepath{crypto.salt}。
+\end{itemize}
+\end{structbox}
+
+\texttt{CreateEnvelope(repo, password, \&recovery\_key, master)} 在 \texttt{eb init --encrypt} 或 Workbench \texttt{init\_repo\_encrypt} 时调用；recovery key 仅此次返回明文，须用户离线保存。
+
+\subsection{C API 与报告}
+
+\begin{longtable}{@{}lp{9cm}@{}}
+\caption{ABI v34 密钥 API} \\
+\toprule
+函数 & 行为 \\
+\midrule
+\texttt{eb\_backup\_unwrap\_with\_recovery\_key} & 用 26 字符 recovery key 解包 master，等价 \texttt{set\_password} \\
+\texttt{eb\_backup\_rotate\_password} & 已解锁仓库更换 password wrap，保留 recovery wrap \\
+\texttt{UpgradeLegacyEnvelope} & legacy salt $\rightarrow$ envelope，可选生成新 recovery key \\
+\bottomrule
+\end{longtable}
+
+备份 txn 若新建或升级 envelope，\texttt{backup\_report.recovery\_key\_issued} 写入本次 recovery key（\filepath{backup\_engine.cc} $\rightarrow$ \filepath{backup\_report.cc}）；GUI \texttt{RecoveryKeyDialog} 强制确认保存。
+
+\subsection{\texttt{ebrecover} 便携交付}
+
+Phase 17 起 \filepath{ebrecover.exe} 支持密码/recovery key 解锁、\texttt{list}、restore 进度条；CI 打包 \filepath{ebrecover-portable.zip}（\filepath{package\_ebrecover\_portable.ps1}），与 Workbench 解耦的灾备 CLI。
+
+%====================================================================
+\section{Phase 18：VSS 运维深化（ABI v35）}
+\label{sec:phase18-vss}
+
+\subsection{影子存储查询双路径}
+
+\texttt{vss\_shadow\_storage.cc} 实现 \texttt{QueryShadowStorageBytes}：
+
+\begin{enumerate}[nosep]
+  \item \textbf{WMI 优先}：\texttt{Win32\_ShadowStorage} 按卷关联查询 \texttt{UsedSpace}/\texttt{MaxSpace}；
+  \item \textbf{Fallback}：解析 \texttt{vssadmin list shadowstorage} 文本输出。
+\end{enumerate}
+
+预检 \texttt{CheckShadowStoragePreflight}（默认 512MB 余量）在 VSS 会话开始前执行；不足时 issue \texttt{vss\_shadow\_storage\_low} 并按 \texttt{vss\_app\_failure\_policy} 决定 abort 或 degrade。
+
+\subsection{Job 字段：quiesce 与 Writer 策略}
+
+\begin{longtable}{@{}lp{9cm}@{}}
+\caption{Phase 18 \texttt{jobs.json} 扩展} \\
+\toprule
+字段 & 映射 \\
+\midrule
+\texttt{quiesce\_profile} & 非空时启用 \texttt{EB\_BACKUP\_FLAG\_VSS\_APP}；取值 \texttt{sql}/\texttt{auto} 等映射 VSS Writer 模式 \\
+\texttt{vss\_app\_failure\_policy} & Writer \texttt{GatherWriterStatus} 失败时 \texttt{abort|warn|ignore} \\
+\texttt{vss\_shadow\_storage\_bytes[]} & 报告 JSON：各卷影子占用字节 \\
+\bottomrule
+\end{longtable}
+
+\begin{designbox}[CONSIST-03 语义边界]
+\texttt{quiesce\_profile} 映射 VSS Application Writer 模式 + Schedule Hook；\textbf{不}包含 SQL Server/Exchange 专用 Writer 插件。专用数据库 quiesce 仍走 \texttt{IBackupPlugin}（如 \texttt{sqlite\_checkpoint}）。
+\end{designbox}
+
+CLI：\texttt{eb vss status} 输出影子关联诊断；daemon/schedule 读取 job 字段并传入 \texttt{BackupEngine::RunJob}。
+
+%====================================================================
+\section{Phase 19：EFS 与告警/Webhook（ABI v36--v37）}
+\label{sec:phase19-efs}
+
+\subsection{EFS Tier A：检测与 skip}
+
+扫描阶段 \texttt{IsEfsEncryptedPath}（\texttt{FILE\_ATTRIBUTE\_ENCRYPTED}）标记 EFS 文件：
+\begin{itemize}[nosep]
+  \item 不读取明文内容；manifest 记录 \texttt{efs\_encrypted=true}；
+  \item 报告 \texttt{efs\_skipped\_count}；issue \texttt{efs\_encrypted\_skipped}；
+  \item 无导出密钥时恢复为 placeholder（保留路径/meta，内容为空或 skip）。
+\end{itemize}
+
+\subsection{EFS Tier B：密钥 blob 导出/导入}
+
+\texttt{efs\_key.cc} 使用 Windows \texttt{ReadEncryptedFileRaw} / \texttt{WriteEncryptedFileRaw}：
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=0.7cm,
+  box/.style={rectangle, draw=StructGreen!70, fill=green!4, rounded corners=2pt,
+    minimum width=3.4cm, minimum height=0.55cm, font=\scriptsize, align=center},
+  arr/.style={-{Stealth}, thick}
+]
+  \node[box] (bak) {Backup: ReadEncryptedFileRaw\\{\tiny EfsExportCallback}};
+  \node[box, below=of bak] (b64) {base64 blob $\rightarrow$ manifest};
+  \node[box, below=of b64] (rst) {Restore: ImportEfsKeyBlob\\{\tiny WriteEncryptedFileRaw}};
+  \node[box, below=of rst] (ok) {issue \texttt{efs\_restored}};
+  \draw[arr] (bak) -- (b64) -- (rst) -- (ok);
+\end{tikzpicture}
+\caption{EFS Tier B 密钥流（需本机 EFS 环境；CI 常 \texttt{GTEST\_SKIP}）}
+\label{fig:efs-tier-b}
+\end{figure}
+
+启用：\texttt{--efs-export-keys} 或 \texttt{EB\_BACKUP\_FLAG\_EFS\_EXPORT\_KEYS}（0x8000）。\versiontag{0.10.3} 起 manifest 持久化 \texttt{kMetaEfs}（0x800）：
+
+\begin{longtable}{@{}llp{8cm}@{}}
+\caption{\texttt{kMetaEfs} 二进制布局（ABI v37）} \\
+\toprule
+字段 & 类型 & 含义 \\
+\midrule
+\texttt{efs\_encrypted} & \texttt{u8} & 1=EFS 加密文件 \\
+\texttt{blob\_len} & \texttt{u32} & 后续 base64 长度 \\
+\texttt{efs\_key\_blob\_b64} & bytes & Tier B 导出密钥 blob \\
+\bottomrule
+\end{longtable}
+
+恢复 \texttt{restore\_engine.cc}：有 blob 则 \texttt{ImportEfsKeyBlob}；否则 Tier A placeholder。
+
+\subsection{Post-backup Webhook}
+
+\texttt{post\_backup\_webhook\_url}（job / daemon / UI 默认）在 commit 后 POST 报告 JSON（PowerShell \texttt{Invoke-WebRequest}）。\textbf{MVP 边界}：无 SMTP、无重试队列、无 HMAC 签名；失败写入 \texttt{webhook\_failed} issue 不 rollback txn。
+
+\subsection{sync\_cpp 可观测性}
+
+\texttt{eb-sync status --json} 扩展 \texttt{failed\_chunks}（与 \texttt{pending\_chunk\_count} 同源）、\texttt{backoff\_until\_unix}、\texttt{last\_error}。Maintenance GUI 在 destructive 操作前读取 \texttt{maintenance\_blocked} 与 pending chunk 计数。
+
+%====================================================================
+\section{Workbench JSON Shim 扩展（v0.10.3）}
+\label{sec:workbench-shim-v37}
+
+\begin{longtable}{@{}lp{8.5cm}@{}}
+\caption{Phase 16--19 Workbench 导出（\filepath{ebbackup\_workbench\_shim.cc}）} \\
+\toprule
+C 导出 & 用途 \\
+\midrule
+\texttt{ebbackup\_workbench\_init\_encrypt\_json} & 建库后 envelope；返回 \texttt{recovery\_key} \\
+\texttt{ebbackup\_workbench\_unwrap\_recovery\_key\_json} & recovery key 解锁 \\
+\texttt{ebbackup\_workbench\_rotate\_password\_json} & 轮换密码 \\
+\texttt{ebbackup\_workbench\_upgrade\_legacy\_envelope\_json} & legacy $\rightarrow$ envelope \\
+\texttt{eb\_backup\_test\_webhook\_json} & 设置页 Webhook 连通性测试 \\
+\bottomrule
+\end{longtable}
+
+Rust 集成测试 \filepath{workbench\_integration.rs}（13 项）覆盖 \texttt{init\_encrypt} recovery key 与 Phase 18 job 三字段 roundtrip。
+
+%====================================================================
+\section{ABI v30--v37 增量摘要}
+
+\begin{longtable}{@{}clp{7.5cm}@{}}
+\caption{ABI v30--v37（Phase 12--19）} \\
+\toprule
+ABI & 版本 & 关键新增 \\
+\midrule
+v30 & v0.9.6 & \texttt{EbRepoStats} 压缩率/字典统计；CompressTier \\
+v31 & v0.10.0 & VSS crash-consistent；\texttt{EB\_BACKUP\_FLAG\_VSS} \\
+v32 & v0.10.0 & \texttt{VSS\_APP}；\texttt{eb\_backup\_set\_vss\_mode}；junction 闭包 \\
+v33 & v0.10.0 & sparse manifest + \texttt{SPARSE\_OFF} flag \\
+v34 & v0.10.0 & envelope；recovery key API；\texttt{ebrecover} \\
+v35 & v0.10.1 & shadow storage 报告；quiesce job 字段 \\
+v36 & v0.10.2 & EFS Tier A/B；webhook URL；sync status 扩展 \\
+v37 & v0.10.3 & \texttt{kMetaEfs} manifest；\texttt{EFS\_EXPORT\_KEYS}；\texttt{recovery\_key\_issued} \\
+\bottomrule
+\end{longtable}
+
+\section{源码索引（Phase 16--19）}
+
+\begin{longtable}{@{}lp{9cm}@{}}
+\toprule
+路径 & 职责 \\
+\midrule
+\filepath{src/winmeta/sparse\_file.cc} & 稀疏检测、run 查询、restore \\
+\filepath{src/winmeta/efs\_key.cc} & EFS 密钥 export/import raw API \\
+\filepath{src/winmeta/vss\_shadow\_storage.cc} & WMI + vssadmin 影子存储 \\
+\filepath{src/crypto/envelope.cc} & \texttt{crypto.envelope.json} CRUD \\
+\filepath{src/engine/manifest.cc} & \texttt{kMetaSparse} / \texttt{kMetaEfs} \\
+\filepath{src/engine/restore\_engine.cc} & EFS import + sparse restore \\
+\filepath{src/engine/eb\_backup\_capi.cc} & v33--v37 flags 映射 \\
+\filepath{src/report/backup\_report.cc} & EFS/VSS/sparse/webhook/recovery 字段 \\
+\filepath{workbench/ebbackup\_workbench\_shim.cc} & GUI JSON 密钥 API \\
+\filepath{scripts/package\_ebrecover\_portable.ps1} & 便携灾备包 \\
+\bottomrule
+\end{longtable}

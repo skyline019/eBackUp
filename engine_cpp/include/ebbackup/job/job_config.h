@@ -21,6 +21,13 @@ struct BackupJob {
   std::vector<std::string> exclude_paths;
   std::vector<std::string> plugins;
   BackupWindowPolicy window;
+  bool use_vss{false};
+  std::string vss_mode;
+  bool vss_fallback_live{false};
+  bool vss_include_junction_volumes{true};
+  std::string quiesce_profile;
+  std::string vss_app_failure_policy;
+  std::string post_backup_webhook_url;
 };
 
 std::string JobsConfigPath(const std::string& repo_path);

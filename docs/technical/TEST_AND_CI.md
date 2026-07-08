@@ -4,11 +4,13 @@
 
 ---
 
-## 测试规模（v0.9.5）
+## 测试规模（v0.9.6）
 
-- **233** GoogleTest 用例（`ebbackup_tests`，含 `RepoStatsTest.EmptyInitializedRepoWithoutManifest`）
+- **393** GoogleTest 用例（`ebbackup_tests`）
+- **6** `ebsync_tests`（`sync_cpp/`，ctest 注册）
 - 独立 C API 测试 target：`eb_run_tests_capi`
 - Bench 硬门禁：`ebbackup_bench_check`（ctest）
+- Workbench：**13** Rust 集成测试（`workbench_integration.rs`，Windows CI）
 
 ---
 
@@ -21,6 +23,7 @@
 | 集成 | `tests/integration/` | 端到端 backup/restore |
 | CLI | `tests/cli/` | 子进程 `eb` 命令 |
 | 失败注入 | `tests/failure/powerfail_test.cc` | `EBTEST_ABORT_AFTER` kill 点 |
+| Fuzz / 解码 | `tests/fuzz/decode_corruption_test.cc` | chunk/EbPack payload 变异，`Get` 不 crash |
 | Chaos | `tests/failure/` + `chaos_util` | 确定性 seed=42 |
 | Bench | `tests/bench/bench_check.cc` | L1–L7 floor gate |
 | Workbench | `gui/src-tauri/tests/workbench_integration.rs` | DLL JSON shim roundtrip（`npm run test:rust`） |
@@ -79,9 +82,13 @@ Bench 默认设置 `EBBACKUP_DIGEST_THREADS=4`。
 
 **文件**：[`.github/workflows/ebbackup.yml`](../../.github/workflows/ebbackup.yml)
 
-- Windows + Linux Release 构建
-- `ctest` 含 `ebbackup_tests` + `ebbackup_bench_check`
+- Windows + Linux Release 构建（含 `sync_cpp` / `ebsync_tests`）
+- `ctest` 含 `ebbackup_tests` + `ebbackup_bench_check` + `ebsync_tests`
 - ASan job（v0.3.1+）
+- **GUI**：`npm run build`（Linux + Windows）
+- **Workbench IT**（Windows）：`ebbackup_workbench` + `cargo test workbench_integration`
+
+触发路径含 `engine_cpp/**`、`sync_cpp/**`、`gui/**`。
 
 ---
 

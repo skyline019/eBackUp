@@ -126,6 +126,42 @@ Status ReadStringArrayField(const std::string& s, const char* key,
   return ParseStringArray(s, &pos, out);
 }
 
+Status ReadU64ArrayField(const std::string& s, const char* key,
+                         std::vector<uint64_t>* out) {
+  if (!out) return Status::InvalidArgument("out is null");
+  out->clear();
+  size_t pos = 0;
+  if (!FindJsonKey(s, key, &pos)) return Status::Ok();
+  pos += std::string("\"").size() + std::strlen(key) + 2;
+  SkipWs(s, &pos);
+  if (pos >= s.size() || s[pos] != '[') return Status::Corrupt("expected [");
+  ++pos;
+  while (pos < s.size()) {
+    SkipWs(s, &pos);
+    if (pos < s.size() && s[pos] == ']') {
+      ++pos;
+      return Status::Ok();
+    }
+    size_t j = pos;
+    while (j < s.size() && (std::isdigit(static_cast<unsigned char>(s[j])) || s[j] == '-')) {
+      ++j;
+    }
+    if (j == pos) return Status::Corrupt("expected number in u64 array");
+    out->push_back(std::strtoull(s.substr(pos, j - pos).c_str(), nullptr, 10));
+    pos = j;
+    SkipWs(s, &pos);
+    if (pos < s.size() && s[pos] == ',') {
+      ++pos;
+      continue;
+    }
+    if (pos < s.size() && s[pos] == ']') {
+      ++pos;
+      return Status::Ok();
+    }
+  }
+  return Status::Corrupt("unterminated u64 array");
+}
+
 RestoreConflictPolicy ParseConflict(const std::string& s) {
   if (s == "skip") return RestoreConflictPolicy::kSkip;
   if (s == "suffix") return RestoreConflictPolicy::kSuffix;
@@ -154,6 +190,11 @@ Status ReadJsonStringField(const std::string& s, const char* key, std::string* o
 Status ReadJsonStringArrayField(const std::string& s, const char* key,
                                 std::vector<std::string>* out) {
   return ReadStringArrayField(s, key, out);
+}
+
+Status ReadJsonU64ArrayField(const std::string& s, const char* key,
+                             std::vector<uint64_t>* out) {
+  return ReadU64ArrayField(s, key, out);
 }
 
 bool ParseU64Field(const std::string& json, const char* key, uint64_t* out) {

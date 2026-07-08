@@ -36,6 +36,23 @@ struct BackupReport {
   bool durability_downgraded{false};
   bool window_truncated{false};
   int64_t window_end_unix{0};
+  bool vss_used{false};
+  std::string vss_consistency;
+  std::string vss_mode;
+  std::string vss_snapshot_set_id;
+  std::vector<std::string> vss_volumes;
+  bool vss_cross_volume{false};
+  bool vss_shadow_storage_ok{true};
+  struct VssWriterReportEntry {
+    std::string id;
+    std::string name;
+    std::string state;
+  };
+  std::vector<VssWriterReportEntry> vss_writers;
+  uint64_t sparse_file_count{0};
+  std::vector<uint64_t> vss_shadow_storage_bytes;
+  uint64_t efs_skipped_count{0};
+  std::string recovery_key_issued;
 };
 
 void PopulateReportIssueCounts(BackupReport* report);

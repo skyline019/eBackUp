@@ -13,6 +13,7 @@
 #include "ebbackup/common/hook_runner.h"
 #include "ebbackup/io/fs_watch.h"
 #include "ebbackup/scan/backup_filter.h"
+#include "ebbackup/winmeta/vss_session.h"
 
 namespace ebbackup {
 
@@ -122,6 +123,31 @@ void ApplyScheduleField(const std::string& key, const std::string& value,
     cfg->backup_options.pre_backup_cmd = value;
   } else if (key == "post_backup_cmd") {
     cfg->backup_options.post_backup_cmd = value;
+  } else if (key == "post_backup_webhook_url") {
+    cfg->backup_options.post_backup_webhook_url = value;
+  } else if (key == "quiesce_profile") {
+    cfg->backup_options.quiesce_profile = value;
+  } else if (key == "vss_app_failure_policy") {
+    if (value == "fail_job") {
+      cfg->backup_options.vss_app_failure_policy =
+          BackupOptions::VssAppFailurePolicy::kFailJob;
+    } else if (value == "fallback_live") {
+      cfg->backup_options.vss_app_failure_policy =
+          BackupOptions::VssAppFailurePolicy::kFallbackLive;
+    }
+  } else if (key == "use_vss") {
+    cfg->backup_options.use_vss = ParseBool(value);
+  } else if (key == "vss_fallback_live") {
+    cfg->backup_options.vss_fallback_live = ParseBool(value);
+  } else if (key == "vss_mode") {
+    winmeta::VssConsistencyMode mode{};
+    if (winmeta::ParseVssConsistencyMode(value, &mode)) {
+      cfg->backup_options.vss_mode = mode;
+    }
+  } else if (key == "vss_include_junction_volumes") {
+    cfg->backup_options.vss_include_junction_volumes = ParseBool(value);
+  } else if (key == "vss_no_junction_volumes") {
+    cfg->backup_options.vss_include_junction_volumes = !ParseBool(value);
   } else if (key == "mode") {
     cfg->mode = value;
   } else if (key == "repo_path") {

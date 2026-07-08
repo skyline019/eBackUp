@@ -1,10 +1,10 @@
 # 外侧云生态（非内核）
 
-本文定义 **ebbackup 内核封顶** 与 **外侧云同步** 的边界、双轨策略、S3 对象布局与弱网语义。实现位于 [`sync_cpp/`](../../sync_cpp/)，**不**扩展 `BackupEngine` FSM 或 ABI v30。
+本文定义 **ebbackup 内核封顶** 与 **外侧云同步** 的边界、双轨策略、S3 对象布局与弱网语义。实现位于 [`sync_cpp/`](../../sync_cpp/)，**不**在 `BackupEngine` FSM 内引入 HTTP/S3。**ABI v30** 仅扩展本地 `EbRepoStats` 压缩统计，云 API 仍在 `sync_cpp/`。
 
 ---
 
-## 内核冻结声明（ABI v29）
+## 内核冻结声明（ABI v29+，v30 本地指标）
 
 | 冻结（`engine_cpp/`） | 外侧（`sync_cpp/`） |
 |----------------------|---------------------|
@@ -156,7 +156,7 @@ eb-sync push --repo C:\ebbackup-data\repo --once
 
 ## v1 明确不做
 
-- 内核 ABI v30 云 API
+- 内核 **云同步** API（`sync_cpp/` 负责；**ABI v30 仅为本地 `EbRepoStats` 扩展**）
 - `BackupEngine` 内嵌 S3 backend
 - 多设备双向冲突合并
 - 将云端 ack 写入 superblock commit 语义

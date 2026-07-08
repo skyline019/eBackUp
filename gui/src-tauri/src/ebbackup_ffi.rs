@@ -12,6 +12,9 @@ pub type EbBackupEngine = c_void;
 type OpenExFn = unsafe extern "C" fn(*const c_char, *mut c_int) -> *mut EbBackupEngine;
 type CloseFn = unsafe extern "C" fn(*mut EbBackupEngine);
 type SetPasswordFn = unsafe extern "C" fn(*mut EbBackupEngine, *const c_char);
+type SetVssModeFn = unsafe extern "C" fn(*mut EbBackupEngine, *const c_char) -> c_int;
+type SetVssIncludeJunctionFn = unsafe extern "C" fn(*mut EbBackupEngine, c_int);
+type SetVssFallbackLiveFn = unsafe extern "C" fn(*mut EbBackupEngine, c_int);
 type SetAuditKeyFn = unsafe extern "C" fn(*mut EbBackupEngine, *const c_char);
 type LoadFilterFn = unsafe extern "C" fn(*mut EbBackupEngine, *const c_char) -> c_int;
 type JsonEngFn = unsafe extern "C" fn(*mut EbBackupEngine, *mut c_char, usize) -> c_int;
@@ -139,6 +142,25 @@ type JsonHooksFn = unsafe extern "C" fn(
     *mut c_char,
     usize,
 ) -> c_int;
+type JsonInitEncryptFn = unsafe extern "C" fn(
+    *const c_char,
+    *const c_char,
+    *mut c_char,
+    usize,
+) -> c_int;
+type JsonEngKeyFn = unsafe extern "C" fn(
+    *mut EbBackupEngine,
+    *const c_char,
+    *mut c_char,
+    usize,
+) -> c_int;
+type JsonRotateFn = unsafe extern "C" fn(
+    *mut EbBackupEngine,
+    *const c_char,
+    *const c_char,
+    *mut c_char,
+    usize,
+) -> c_int;
 type SetProgressFn = unsafe extern "C" fn(
     *mut EbBackupEngine,
     Option<unsafe extern "C" fn(u64, *mut c_void)>,
@@ -163,6 +185,9 @@ pub struct EbbackupApi {
     pub open_ex: OpenExFn,
     pub close: CloseFn,
     pub set_password: SetPasswordFn,
+    pub set_vss_mode: SetVssModeFn,
+    pub set_vss_include_junction_volumes: SetVssIncludeJunctionFn,
+    pub set_vss_fallback_live: SetVssFallbackLiveFn,
     pub set_audit_key: SetAuditKeyFn,
     pub load_filter_file: LoadFilterFn,
     pub init_repo_json: JsonInitFn,
@@ -193,6 +218,10 @@ pub struct EbbackupApi {
     pub export_restore_report_json: JsonEngFn,
     pub get_backup_report_json: JsonManifestFn,
     pub set_backup_hooks_json: JsonHooksFn,
+    pub init_encrypt_json: JsonInitEncryptFn,
+    pub unwrap_recovery_key_json: JsonEngKeyFn,
+    pub rotate_password_json: JsonRotateFn,
+    pub upgrade_legacy_envelope_json: JsonEngKeyFn,
     pub set_progress: SetProgressFn,
     pub list_jobs_json: ListJobsJsonFn,
     pub upsert_job_json: UpsertJobFn,
@@ -253,6 +282,12 @@ pub fn api() -> Result<&'static EbbackupApi, String> {
             open_ex: load_sym!(lib, "eb_backup_open_ex"),
             close: load_sym!(lib, "eb_backup_close"),
             set_password: load_sym!(lib, "eb_backup_set_password"),
+            set_vss_mode: load_sym!(lib, "eb_backup_set_vss_mode"),
+            set_vss_include_junction_volumes: load_sym!(
+                lib,
+                "eb_backup_set_vss_include_junction_volumes"
+            ),
+            set_vss_fallback_live: load_sym!(lib, "eb_backup_set_vss_fallback_live"),
             set_audit_key: load_sym!(lib, "eb_backup_set_audit_key"),
             load_filter_file: load_sym!(lib, "eb_backup_load_filter_file"),
             init_repo_json: load_sym!(lib, "ebbackup_workbench_init_repo_json"),
@@ -289,6 +324,13 @@ pub fn api() -> Result<&'static EbbackupApi, String> {
             ),
             get_backup_report_json: load_sym!(lib, "ebbackup_workbench_get_backup_report_json"),
             set_backup_hooks_json: load_sym!(lib, "ebbackup_workbench_set_backup_hooks_json"),
+            init_encrypt_json: load_sym!(lib, "ebbackup_workbench_init_encrypt_json"),
+            unwrap_recovery_key_json: load_sym!(lib, "ebbackup_workbench_unwrap_recovery_key_json"),
+            rotate_password_json: load_sym!(lib, "ebbackup_workbench_rotate_password_json"),
+            upgrade_legacy_envelope_json: load_sym!(
+                lib,
+                "ebbackup_workbench_upgrade_legacy_envelope_json"
+            ),
             set_progress: load_sym!(lib, "eb_backup_set_progress"),
             list_jobs_json: load_sym!(lib, "eb_backup_list_jobs_json"),
             upsert_job_json: load_sym!(lib, "eb_backup_upsert_job_json"),

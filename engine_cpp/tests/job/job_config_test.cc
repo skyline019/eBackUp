@@ -102,6 +102,25 @@ TEST(JobConfigTest, ParseJobsJsonArray) {
   EXPECT_EQ(jobs[0].id, "a");
 }
 
+TEST(JobConfigTest, VssFieldsRoundTrip) {
+  BackupJob job{};
+  job.id = "vss_job";
+  job.name = "VSS Job";
+  job.source_path = "C:/data";
+  job.use_vss = true;
+  job.vss_mode = "auto";
+  job.vss_fallback_live = true;
+  job.vss_include_junction_volumes = false;
+  const std::string json = JobsToJson({job});
+  std::vector<BackupJob> parsed;
+  ASSERT_TRUE(ParseJobsJson(json, &parsed).ok());
+  ASSERT_EQ(parsed.size(), 1u);
+  EXPECT_TRUE(parsed[0].use_vss);
+  EXPECT_EQ(parsed[0].vss_mode, "auto");
+  EXPECT_TRUE(parsed[0].vss_fallback_live);
+  EXPECT_FALSE(parsed[0].vss_include_junction_volumes);
+}
+
 }  // namespace
 }  // namespace job
 }  // namespace ebbackup

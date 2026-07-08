@@ -1,6 +1,6 @@
 # ebbackup (engine_cpp)
 
-Content-defined backup engine with incremental HCRBO chunking, **ContentClass adaptive compression** (LZ4/zstd), AES-256-GCM encryption, audit chain, persistent chunk index, EbPack compaction, and C API.
+Content-defined backup engine with incremental HCRBO chunking, **ContentClass adaptive compression** (LZ4/zstd), **CompressTier** (fast/balanced/max) with optional **Zstd LDM** and **repo dictionary**, AES-256-GCM encryption, audit chain, persistent chunk index, EbPack compaction, and C API.
 
 ## Build
 
@@ -49,6 +49,17 @@ eb backup ./repo ./source --filter-file ./filters.conf --include-glob "*.txt"
 
 # Repo maintenance
 eb repo-stats ./repo
+# Shows ampl_ratio + compress_ratio (ABI v30) when chunks exist
+
+# Tiered compression (v0.9.6+)
+eb backup ./repo ./source --compress-tier balanced
+eb backup ./repo ./source --compress-tier max --compress-level 12
+eb backup ./repo ./source --compress-tier fast --no-zstd-dict
+
+# Windows VSS snapshot read (requires elevation; crash-consistent)
+eb backup ./repo ./source --vss
+eb backup ./repo ./source --vss --vss-fallback-live
+
 eb gc-orphans ./repo --dry-run
 eb compact ./repo --dry-run
 eb compact ./repo
@@ -192,7 +203,7 @@ After restore, the engine can re-hash restored files on disk and compare against
 
 Verification reads restored files in chunk-sized segments (streaming); it does not load entire large files into memory.
 
-## C API (ABI v21)
+## C API (ABI v31)
 
 - `eb_backup_set_filter_json()` / `eb_backup_set_restore_remap()` — handle 级 filter 与路径重整。
 - `eb_backup_preview_restore_at()` — 预览选择性恢复子集规模。
@@ -212,12 +223,14 @@ Verification reads restored files in chunk-sized segments (streaming); it does n
 - **v21**: delta bundle JSON C API；in-place `orphan_policy`；remap JSON `symlink_remap_from/to`。
 - **v28**: `eb_backup_suggest_exclude_filters_json()`；job `exclude_paths[]`；CLI `eb suggest-excludes`。
 - **v29**: job `window_start/end` + `durability_adaptive`；备份报告 `durability_downgraded` / `window_truncated`。
-- `EB_BACKUP_ABI_VERSION` is **29**.
+- **v30**: `EbRepoStats` 压缩率与字典统计；`eb repo-stats` / `eb_backup_repo_stats()` 扩展字段（见 [`docs/technical/COMPRESSION.md`](../docs/technical/COMPRESSION.md)）。
+- **v31**: `EB_BACKUP_FLAG_VSS`；备份报告 `vss_*` 字段；CLI `--vss` / `--vss-fallback-live`（Windows，需 elevation）。
+- `EB_BACKUP_ABI_VERSION` is **31**.
 - `eb_backup_init_repo_ex()` creates **v0.6** repos by default (EbPack, coalesced meta, persistent index, manifest v4, snapshots, compress auto). Pass `EB_BACKUP_INIT_LEGACY` for v0.3 storage without EbPack.
 - EbPack repos **auto-enable pipeline** on backup unless `EB_BACKUP_FLAG_NO_PIPELINE` is set.
 - New in v0.4: `eb_backup_list_snapshots()`, `eb_backup_restore_at()`, `eb_backup_verify_at()`, `eb_backup_prune_snapshots()`.
-- Flags: `EB_BACKUP_FLAG_COMPRESS_AUTO`, `EB_BACKUP_FLAG_COMPRESS_ZSTD`, `EB_BACKUP_FLAG_BALANCED_DURABILITY`, `EB_BACKUP_FLAG_MANIFEST_BINARY`, `EB_BACKUP_FLAG_NO_PIPELINE`.
-- `eb_backup_compact()`, `eb_backup_repo_stats()` for offline compaction and storage metrics.
+- Flags: `EB_BACKUP_FLAG_COMPRESS_AUTO`, `EB_BACKUP_FLAG_COMPRESS_ZSTD`, `EB_BACKUP_FLAG_BALANCED_DURABILITY`, `EB_BACKUP_FLAG_MANIFEST_BINARY`, `EB_BACKUP_FLAG_NO_PIPELINE`, `EB_BACKUP_FLAG_VSS`.
+- `eb_backup_compact()`, `eb_backup_repo_stats()` for offline compaction and storage metrics (v30: includes `compress_ratio`, dictionary info).
 - `eb_backup_restore_ex()` honors `EB_RESTORE_FLAG_SKIP_CONTENT_VERIFY` to skip post-restore content Merkle verification (default verifies when a filter is active). Full-restore opt-in verify is CLI/C++ only (`verify_restored_content`).
 
 ## Digest algorithms
@@ -254,6 +267,7 @@ CI and local `ctest` include **`ebbackup_bench_check`** — a hard performance g
 | Pipeline | `tests/pipeline/pipeline_resilience_test.cc` | parity, incremental reuse, subprocess kill, balanced powerfail |
 | Powerfail | `tests/failure/powerfail_extended_test.cc` | incremental kill, commit/audit abort, dual-slot, compact interrupt |
 | Chaos | `tests/failure/chaos_test.cc` | 8 deterministic trials (`seed=42`): random phase, chunk flip, interleaved backup/verify, manifest truncation |
+| Fuzz / 解码 | `tests/fuzz/decode_corruption_test.cc` | ChunkStore / EbPack 变异解码 |
 | Composite | `tests/engine/composite_workflow_test.cc` | backup → prune → gc → compact → verify → restore-at → bundle export/import |
 | Real fixtures | `tests/engine/real_fixture_test.cc` | checked-in trees under `tests/fixtures/real_world/` |
 | Media fixtures | `tests/engine/media_fixture_test.cc` | real JPEG/WebP/GIF/MP4 roundtrip + recursive composite maintenance |
@@ -281,7 +295,7 @@ Shared helpers live in `tests/helpers/` (`tree_util`, `fixture_util`, `chaos_uti
 - `EBTEST_FIXTURE_DIR` → `tests/fixtures/real_world`
 - `EBTEST_ENGINE_ROOT` → `engine_cpp/` (for `CopyEngineSourceSample`)
 
-All cases run in the single `ebbackup_tests` ctest target (~196 tests, ~58s on Release Windows).
+All cases run in the single `ebbackup_tests` ctest target (**393** tests, ~60s+ on Release Windows). See also `ebsync_tests` (6) when `EBBACKUP_BUILD_SYNC=ON`.
 
 ```bash
 ctest --test-dir ../build -C Release
@@ -302,6 +316,8 @@ Scheduled backups use a **single repo** at `<repo_base>/current` (v0.4 init: per
   "auto_prune": true,
   "auto_gc_after_prune": true,
   "compress": "auto",
+  "compress_tier": "balanced",
+  "zstd_dict": true,
   "cpu_budget": 60,
   "durability": "strict",
   "pipeline": true,
@@ -313,7 +329,7 @@ Scheduled backups use a **single repo** at `<repo_base>/current` (v0.4 init: per
 }
 ```
 
-KV format (`source=...`, `repo_base=...`, `compress=auto`, `durability=balanced`, `plugins=sqlite_checkpoint,registry_hive`, etc.) is also supported.
+KV format (`source=...`, `repo_base=...`, `compress=auto`, `compress_tier=balanced`, `zstd_dict=true`, `durability=balanced`, `plugins=sqlite_checkpoint,registry_hive`, etc.) is also supported.
 
 ### Durability
 

@@ -103,6 +103,16 @@ class ChunkStore {
   uint64_t ComputeReferencedLiveBytes(
       const std::unordered_set<std::string>& referenced) const;
 
+  struct ReferencedCompressStats {
+    uint64_t uncompressed_bytes{0};
+    uint64_t stored_payload_bytes{0};
+    uint64_t compressed_chunks{0};
+    uint64_t raw_chunks{0};
+  };
+  void ComputeReferencedCompressStats(
+      const std::unordered_set<std::string>& referenced,
+      ReferencedCompressStats* out) const;
+
   void SetDigestAlgo(DigestAlgo algo) { digest_algo_ = algo; }
   DigestAlgo digest_algo() const { return digest_algo_; }
 

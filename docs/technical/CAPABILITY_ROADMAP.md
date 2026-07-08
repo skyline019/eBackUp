@@ -141,7 +141,7 @@ flowchart LR
 | Hook C API | `eb_backup_set_backup_hooks` + Workbench + BackupView 高级区 |
 | GUI 报告面板 | `BackupReportPanel.vue` 摘要 + issues 表格 |
 
-**明确不做**：VSS（GAP-CONSIST-01）
+**VSS 核心（Phase 14 / ABI v31）**：`--vss` crash-consistent 卷影快照读；`BackupReport.vss_*`；GUI 高级选项。块镜像与应用一致 Writer 仍不做。
 
 ---
 
@@ -230,9 +230,115 @@ flowchart LR
 
 ---
 
+## Phase 13 — 分层压缩与可观测性（ABI v30） ✅
+
+**主题**：CompressTier + Zstd LDM + 仓库字典 + `repo-stats` 压缩率
+
+| 交付 | 路径 |
+|------|------|
+| 策略 | `compress_policy.h` / `content_class.cc` — fast / balanced / max |
+| 字典 | `zstd_dict.cc` — `{repo}/meta/zstd_dict.bin` |
+| CLI / daemon | `--compress-tier`、`compress_tier` JSON |
+| 统计 | `repo_stats.cc` — `ComputeReferencedCompressStats` |
+| C API v30 | `EbRepoStats` 压缩字段扩展 |
+| 文档 | `docs/technical/COMPRESSION.md` |
+| 测试 | `compress_policy_test`、`zstd_dict_test`、`repo_stats_test`、`decode_corruption_test` |
+
+---
+
+## Phase 16 — NTFS 稀疏文件（ABI v33） ✅
+
+**缺口**：GAP-WIN-05（done）
+
+| 交付 | 路径 |
+|------|------|
+| 检测/读取 | `sparse_file.cc` — `FSCTL_GET_RETRIEVAL_POINTERS` |
+| Manifest | sparse runs + chunk offsets |
+| 恢复 | `FSCTL_SET_SPARSE` + seek 写入 |
+| CLI | `--sparse auto\|off` |
+| 测试 | `sparse_backup_restore_test` |
+
+---
+
+## Phase 17 — 恢复密钥与灾备交付（ABI v34） ✅
+
+**缺口**：GAP-KEYS-01（done）；GAP-PLATFORM-03（ebrecover 强化）
+
+| 交付 | 路径 |
+|------|------|
+| Envelope | `crypto/envelope.cc` — `crypto.envelope.json` |
+| C API | `eb_backup_unwrap_with_recovery_key` / `eb_backup_rotate_password` |
+| CLI | `eb init --encrypt` / `eb unlock` / `eb rotate-password` |
+| ebrecover | 密码/恢复密钥、`list`、restore 进度 |
+| 测试 | `envelope_test` |
+
+---
+
+## Phase 18 — VSS 运维深化（ABI v35） ✅
+
+| 交付 | 路径 |
+|------|------|
+| 影子存储 | `vss_shadow_storage.cc` — WMI `Win32_ShadowStorage` 优先 + vssadmin fallback |
+| CLI | `eb vss status` |
+| Job | `quiesce_profile` / `vss_app_failure_policy` |
+| 报告 | `vss_shadow_storage_bytes[]` |
+
+---
+
+## Phase 19 — EFS + 告警 + 云可观测（ABI v36–v37） ✅
+
+| 交付 | 路径 |
+|------|------|
+| EFS Tier A | 扫描检测 + skip + `efs_skipped_count` |
+| EFS Tier B | `--efs-export-keys` + `efs_key.cc`（Read/WriteEncryptedFileRaw）+ manifest `kMetaEfs` |
+| Webhook | `post_backup_webhook_url` + GUI 设置/测试 |
+| sync_cpp | status JSON 增强 |
+| GUI | quiesce/webhook/恢复密钥/稀疏/EFS 表单 + 报告字段 |
+| 交付 | `ebrecover-portable.zip` CI |
+
+---
+
+## Phase 15 — VSS 深化与卷级一致性（ABI v32） ✅
+
+**缺口**：GAP-CONSIST-01（done 文件级）、GAP-CONSIST-03（done — VSS app/auto + quiesce_profile + hooks；无专用 Writer 插件）
+
+| 交付 | 路径 |
+|------|------|
+| 生命周期 | `VssSession::Begin/FinishBackup/End`；读后 BackupComplete |
+| 多卷闭包 | `vss_volume_closure.cc` — junction BFS + 去重 |
+| App/Auto | `GatherWriterStatus`；`vss_writer_degraded` issue |
+| 影子预检 | `CheckShadowStoragePreflight`（512MB 默认） |
+| CLI / daemon | `--vss-mode crash\|app\|auto`；`vss_mode` / `vss_include_junction_volumes` |
+| C API v32 | `EB_BACKUP_FLAG_VSS_APP`；`eb_backup_set_vss_mode`；报告 v32 字段 |
+| Job / GUI | `jobs.json` VSS；BackupView / ReportPanel |
+| 测试 | `vss_volume_closure_test`、`vss_lifecycle_test` |
+| 文档 | `docs/technical/VSS.md` |
+
+**仍不做**：块级镜像、影子空间管理 UI、专用 Writer 插件。
+
+---
+
+## Phase 14 — VSS 核心（ABI v31） ✅
+
+**缺口**：GAP-CONSIST-01（partial）、GAP-CONSIST-02（缓解）
+
+| 交付 | 路径 |
+|------|------|
+| VSS 会话 | `winmeta/vss_session.cc` — `IVssBackupComponents` crash-consistent |
+| 扫描 | `ScanDirectoryOptions` — `walk_root` / `logical_root` |
+| 引擎 | `BackupEngine::RunBackup` — Quiesce → VSS → scan/read → End |
+| CLI / schedule | `--vss`、`--vss-fallback-live`；`use_vss` |
+| C API | `EB_BACKUP_FLAG_VSS`；报告 JSON `vss_*` |
+| GUI | BackupView 高级 VSS 勾选；BackupReportPanel |
+| 测试 | `vss_path_map_test`、`vss_locked_file_backup_test`（elevated skip） |
+
+**仍不做**：块级镜像、VSS Writer 应用一致、影子空间管理 UI。
+
+---
+
 ## Phase 12 — 外侧云生态（非内核） ✅
 
-**原则**：**不进 ABI v30**；网络与远端状态全部在 [`sync_cpp/`](../../sync_cpp/)。
+**原则**：**云同步不进 BackupEngine FSM**；网络与远端状态在 [`sync_cpp/`](../../sync_cpp/)。**ABI v30 仅扩展本地 `EbRepoStats` 压缩指标**，不含 HTTP/S3 API。
 
 | 交付 | 路径 |
 |------|------|
@@ -278,7 +384,9 @@ flowchart LR
 | 9 | v27 | Wave Q: report plugins[], GUI summary, schedule plugins=, VHDX E2E |
 | 10 | v28 | smart exclude suggestions, job exclude_paths[], eb suggest-excludes, GUI analyze/adopt |
 | 11 | v29 | backup window, deadline durability adaptive, report window_truncated |
-| 12 | — | **无新 ABI**；云生态在 `sync_cpp/` |
+| 13 | v30 | repo-stats compression metrics; CompressTier + zstd dict（策略见 COMPRESSION.md） |
+| 14 | v31 | VSS snapshot read; backup report vss_*; `--vss` CLI/GUI |
+| 12 | — | **无云 ABI**；云生态在 `sync_cpp/` |
 
 每 Phase 合并前更新：`ABI_AND_FEATURES.md`、`engine_cpp/README.md`、`gui/src/utils/helpContent.ts`。
 

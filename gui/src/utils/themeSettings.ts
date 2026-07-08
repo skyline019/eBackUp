@@ -32,6 +32,7 @@ export interface UiSettings {
   logHighlightIntensity: number;
   staleBackupAlertDays: number;
   staleSyncAlertDays: number;
+  defaultWebhookUrl: string;
 }
 
 /** Full-range opacity for workspace cards & output panel (5%–100%). */
@@ -86,6 +87,7 @@ export const defaultUiSettings: UiSettings = {
   logHighlightIntensity: 1,
   staleBackupAlertDays: 7,
   staleSyncAlertDays: 3,
+  defaultWebhookUrl: "",
 };
 
 export type SettingsPreset = {
@@ -278,6 +280,7 @@ export function sanitizeUiSettings(input: Partial<UiSettings>): UiSettings {
       1,
       365
     ),
+    defaultWebhookUrl: String(input.defaultWebhookUrl ?? d.defaultWebhookUrl).trim(),
   };
   return applyWallpaperOpacityFloors(base);
 }

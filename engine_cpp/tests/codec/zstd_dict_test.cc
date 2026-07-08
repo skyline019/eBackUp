@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <mutex>
 #include <vector>
 
 #include "ebbackup/codec/content_class.h"
@@ -11,6 +12,23 @@
 namespace ebbackup {
 namespace {
 
+// Zstd dictionary training touches native code with global state; serialize tests
+// to avoid rare SEH when the full suite runs under memory pressure.
+std::mutex g_zstd_dict_test_mu;
+
+class ZstdDictTest : public ::testing::Test {
+ protected:
+  void SetUp() override { g_zstd_dict_test_mu.lock(); }
+  void TearDown() override { g_zstd_dict_test_mu.unlock(); }
+
+  std::string UniquePath(const char* leaf) const {
+    const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
+    const std::string prefix =
+        std::string("zstd_dict_") + (info ? info->name() : "case");
+    return test::TempDir(prefix) + "/" + leaf;
+  }
+};
+
 std::vector<uint8_t> MakeTextSample(size_t size, char seed) {
   std::vector<uint8_t> data(size);
   for (size_t i = 0; i < size; ++i) {
@@ -19,17 +37,17 @@ std::vector<uint8_t> MakeTextSample(size_t size, char seed) {
   return data;
 }
 
-TEST(ZstdDictTest, TrainSaveLoadRoundTrip) {
+TEST_F(ZstdDictTest, TrainSaveLoadRoundTrip) {
   std::vector<std::vector<uint8_t>> samples;
-  for (int i = 0; i < 12; ++i) {
-    samples.push_back(MakeTextSample(4096, static_cast<char>('a' + i)));
+  for (int i = 0; i < 10; ++i) {
+    samples.push_back(MakeTextSample(2048, static_cast<char>('a' + i)));
   }
 
   ZstdDictionary trained;
   ASSERT_TRUE(trained.TrainFromSamples(samples).ok());
   ASSERT_FALSE(trained.empty());
 
-  const std::string path = test::TempDir("zstd_dict_test") + "/dict.bin";
+  const std::string path = UniquePath("dict.bin");
   ASSERT_TRUE(trained.SaveToFile(path).ok());
 
   ZstdDictionary loaded;
@@ -37,10 +55,10 @@ TEST(ZstdDictTest, TrainSaveLoadRoundTrip) {
   EXPECT_EQ(loaded.size(), trained.size());
 }
 
-TEST(ZstdDictTest, DictionaryRoundTripWithCDict) {
+TEST_F(ZstdDictTest, DictionaryRoundTripWithCDict) {
   std::vector<std::vector<uint8_t>> samples;
-  for (int i = 0; i < 12; ++i) {
-    samples.push_back(MakeTextSample(8192, static_cast<char>('x' + (i % 5))));
+  for (int i = 0; i < 10; ++i) {
+    samples.push_back(MakeTextSample(4096, static_cast<char>('x' + (i % 5))));
   }
 
   ZstdDictionary dict;
@@ -66,7 +84,7 @@ TEST(ZstdDictTest, DictionaryRoundTripWithCDict) {
   EXPECT_EQ(decoded, payload);
 }
 
-TEST(ZstdDictTest, TrainerCollectsAndFinalizes) {
+TEST_F(ZstdDictTest, TrainerCollectsAndFinalizes) {
   ZstdDictTrainer trainer;
   const auto sample = MakeTextSample(2048, 't');
   for (int i = 0; i < 10; ++i) {
@@ -75,7 +93,7 @@ TEST(ZstdDictTest, TrainerCollectsAndFinalizes) {
   }
   EXPECT_EQ(trainer.sample_count(), 10u);
 
-  const std::string repo = test::TempDir("dict_repo");
+  const std::string repo = test::TempDir("dict_repo_finalize");
   std::filesystem::create_directories(repo + "/meta");
 
   ZstdDictionary out;

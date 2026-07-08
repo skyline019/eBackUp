@@ -28,6 +28,7 @@ import { enrichError, formatBackupError } from "@/utils/errorMessages";
 import FieldTip from "@/components/FieldTip.vue";
 import EmptyState from "@/components/EmptyState.vue";
 import BackupPipelineViz from "@/components/BackupPipelineViz.vue";
+import RecoveryKeyDialog from "@/components/RecoveryKeyDialog.vue";
 import { isTauriRuntime } from "@/utils/tauriRuntime";
 import { ElMessageBox } from "element-plus";
 
@@ -43,6 +44,12 @@ const usePipeline = ref(true);
 const useEncrypt = ref(false);
 const useZstd = ref(false);
 const balancedDurability = ref(false);
+const useVss = ref(false);
+const vssMode = ref<"crash" | "app" | "auto">("crash");
+const vssIncludeJunction = ref(true);
+const vssFallbackLive = ref(false);
+const sparseMode = ref<"auto" | "off">("auto");
+const efsExportKeys = ref(false);
 const password = ref("");
 const filterPath = ref("");
 const preBackupCmd = ref("");
@@ -50,6 +57,8 @@ const postBackupCmd = ref("");
 const selectedPlugins = ref<string[]>([]);
 const showAdvanced = ref(false);
 const running = ref(false);
+const recoveryKeyDialogOpen = ref(false);
+const pendingRecoveryKey = ref("");
 const jobDialogOpen = ref(false);
 const editingJob = ref<BackupJobDto | null>(null);
 const jobForm = ref<BackupJobDto>({
@@ -62,6 +71,13 @@ const jobForm = ref<BackupJobDto>({
   exclude_globs: [],
   exclude_paths: [],
   plugins: [],
+  use_vss: false,
+  vss_mode: "crash",
+  vss_fallback_live: false,
+  vss_include_junction_volumes: true,
+  quiesce_profile: "",
+  vss_app_failure_policy: "",
+  post_backup_webhook_url: "",
   window_start: "",
   window_end: "",
   deadline_grace_seconds: 300,
@@ -87,6 +103,10 @@ const FLAG_ENCRYPT = 0x0008;
 const FLAG_COMPRESS_AUTO = 0x0020;
 const FLAG_COMPRESS_ZSTD = 0x0040;
 const FLAG_BALANCED_DURABILITY = 0x0080;
+const FLAG_VSS = 0x0800;
+const FLAG_VSS_APP = 0x1000;
+const FLAG_SPARSE_OFF = 0x4000;
+const FLAG_EFS_EXPORT_KEYS = 0x8000;
 
 const isFirstBackup = computed(
   () => repo.isOpen && repo.snapshots.length === 0 && (repo.info?.manifest_bytes ?? 0) === 0
@@ -164,7 +184,22 @@ function buildFlags() {
   if (useEncrypt.value) f |= FLAG_ENCRYPT;
   if (useZstd.value) f |= FLAG_COMPRESS_ZSTD;
   if (balancedDurability.value) f |= FLAG_BALANCED_DURABILITY;
+  if (useVss.value) {
+    f |= FLAG_VSS;
+    if (vssMode.value === "app") f |= FLAG_VSS_APP;
+  }
+  if (sparseMode.value === "off") f |= FLAG_SPARSE_OFF;
+  if (efsExportKeys.value) f |= FLAG_EFS_EXPORT_KEYS;
   return f;
+}
+
+function buildVssOptions() {
+  if (!useVss.value) return undefined;
+  return {
+    mode: vssMode.value,
+    include_junction_volumes: vssIncludeJunction.value,
+    fallback_live: vssFallbackLive.value,
+  };
 }
 
 async function browseSource() {
@@ -317,6 +352,13 @@ function resetJobForm(job?: BackupJobDto) {
       exclude_globs: [...(job.exclude_globs ?? [])],
       exclude_paths: [...(job.exclude_paths ?? [])],
       plugins: [...(job.plugins ?? [])],
+      use_vss: job.use_vss ?? false,
+      vss_mode: job.vss_mode ?? "crash",
+      vss_fallback_live: job.vss_fallback_live ?? false,
+      vss_include_junction_volumes: job.vss_include_junction_volumes ?? true,
+      quiesce_profile: job.quiesce_profile ?? "",
+      vss_app_failure_policy: job.vss_app_failure_policy ?? "",
+      post_backup_webhook_url: job.post_backup_webhook_url ?? ui.settings.defaultWebhookUrl ?? "",
       window_start: job.window_start ?? "",
       window_end: job.window_end ?? "",
       deadline_grace_seconds: job.deadline_grace_seconds ?? 300,
@@ -334,6 +376,13 @@ function resetJobForm(job?: BackupJobDto) {
       exclude_globs: [...sessionExcludeGlobs.value],
       exclude_paths: [...sessionExcludePaths.value],
       plugins: [...selectedPlugins.value],
+      use_vss: useVss.value,
+      vss_mode: vssMode.value,
+      vss_fallback_live: vssFallbackLive.value,
+      vss_include_junction_volumes: vssIncludeJunction.value,
+      quiesce_profile: "",
+      vss_app_failure_policy: "",
+      post_backup_webhook_url: ui.settings.defaultWebhookUrl ?? "",
       window_start: "",
       window_end: "",
       deadline_grace_seconds: 300,
@@ -386,6 +435,13 @@ async function saveJob() {
       window_end: jobForm.value.window_end?.trim() || undefined,
       deadline_grace_seconds: jobForm.value.deadline_grace_seconds,
       durability_adaptive: jobForm.value.durability_adaptive,
+      use_vss: jobForm.value.use_vss,
+      vss_mode: jobForm.value.vss_mode,
+      vss_fallback_live: jobForm.value.vss_fallback_live,
+      vss_include_junction_volumes: jobForm.value.vss_include_junction_volumes,
+      quiesce_profile: jobForm.value.quiesce_profile?.trim() || undefined,
+      vss_app_failure_policy: jobForm.value.vss_app_failure_policy?.trim() || undefined,
+      post_backup_webhook_url: jobForm.value.post_backup_webhook_url?.trim() || undefined,
     });
     jobDialogOpen.value = false;
     ui.pushLog(`作业已保存: ${id}`, "success");
@@ -456,6 +512,10 @@ async function finishBackupRun(stats: Awaited<ReturnType<typeof runBackup>>, log
         if (report.window_truncated) {
           ui.pushLog("备份窗口：已截断（部分快照）", "error");
         }
+        if (report.recovery_key_issued) {
+          pendingRecoveryKey.value = report.recovery_key_issued;
+          recoveryKeyDialogOpen.value = true;
+        }
       }
     } catch {
       /* report optional */
@@ -514,7 +574,7 @@ async function run() {
         selectedPlugins.value.length ? selectedPlugins.value : undefined
       );
     }
-    const stats = await runBackup(src, incremental.value, buildFlags());
+    const stats = await runBackup(src, incremental.value, buildFlags(), buildVssOptions());
     repo.setLastSource(src);
     await finishBackupRun(stats, "备份完成");
     if (!isTauriRuntime()) task.finish(true);
@@ -692,6 +752,32 @@ async function runJobRow(job: BackupJobDto) {
             <el-form-item label="耐久性">
               <el-checkbox v-model="balancedDurability">平衡耐久模式</el-checkbox>
               <FieldTip content="更多 fsync 点，略降吞吐；适合关键数据。" />
+            </el-form-item>
+            <el-form-item v-if="isWindows && isTauriRuntime()" label="VSS">
+              <el-checkbox v-model="useVss">使用 VSS 卷影副本</el-checkbox>
+              <FieldTip content="需管理员或备份权限；在快照上读取以改善锁定文件与时间点一致性。" />
+            </el-form-item>
+            <el-form-item v-if="isWindows && isTauriRuntime() && useVss" label="VSS 模式">
+              <el-select v-model="vssMode" style="width: 140px">
+                <el-option label="Crash（默认）" value="crash" />
+                <el-option label="App（Writer）" value="app" />
+                <el-option label="Auto（降级）" value="auto" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="isWindows && isTauriRuntime() && useVss" label="Junction 卷">
+              <el-checkbox v-model="vssIncludeJunction">包含跨卷联接目标</el-checkbox>
+            </el-form-item>
+            <el-form-item v-if="isWindows && isTauriRuntime() && useVss" label="VSS 降级">
+              <el-checkbox v-model="vssFallbackLive">VSS 失败时活扫描</el-checkbox>
+            </el-form-item>
+            <el-form-item v-if="isWindows && isTauriRuntime()" label="稀疏文件">
+              <el-select v-model="sparseMode" style="width: 140px">
+                <el-option label="Auto" value="auto" />
+                <el-option label="Off" value="off" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="isWindows && isTauriRuntime()" label="EFS">
+              <el-checkbox v-model="efsExportKeys">导出 EFS 密钥（Tier B）</el-checkbox>
             </el-form-item>
             <el-form-item label="Pre Hook">
               <el-input v-model="preBackupCmd" placeholder="备份前 shell 命令（可选，自行承担风险）" />
@@ -931,6 +1017,41 @@ async function runJobRow(job: BackupJobDto) {
             </el-checkbox>
           </el-checkbox-group>
         </el-form-item>
+        <el-form-item v-if="isWindows && isTauriRuntime()" label="VSS">
+          <el-checkbox v-model="jobForm.use_vss">使用 VSS 卷影副本</el-checkbox>
+        </el-form-item>
+        <el-form-item v-if="isWindows && isTauriRuntime() && jobForm.use_vss" label="VSS 模式">
+          <el-select v-model="jobForm.vss_mode" style="width: 140px">
+            <el-option label="Crash" value="crash" />
+            <el-option label="App" value="app" />
+            <el-option label="Auto" value="auto" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="isWindows && isTauriRuntime() && jobForm.use_vss" label="Junction 卷">
+          <el-checkbox v-model="jobForm.vss_include_junction_volumes">包含跨卷联接</el-checkbox>
+        </el-form-item>
+        <el-form-item v-if="isWindows && isTauriRuntime() && jobForm.use_vss" label="VSS 降级">
+          <el-checkbox v-model="jobForm.vss_fallback_live">失败时活扫描</el-checkbox>
+        </el-form-item>
+        <el-form-item v-if="isWindows && isTauriRuntime() && jobForm.use_vss" label="Quiesce">
+          <el-select v-model="jobForm.quiesce_profile" style="width: 160px" clearable placeholder="none">
+            <el-option label="none" value="" />
+            <el-option label="sql" value="sql" />
+            <el-option label="exchange" value="exchange" />
+            <el-option label="system" value="system" />
+            <el-option label="custom" value="custom" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="isWindows && isTauriRuntime() && jobForm.use_vss" label="Writer 失败">
+          <el-select v-model="jobForm.vss_app_failure_policy" style="width: 160px" clearable placeholder="degraded">
+            <el-option label="degraded" value="" />
+            <el-option label="fail_job" value="fail_job" />
+            <el-option label="fallback_live" value="fallback_live" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="Webhook URL">
+          <el-input v-model="jobForm.post_backup_webhook_url" placeholder="https://… 备份完成后 POST 报告 JSON" />
+        </el-form-item>
         <el-form-item label="备份窗口">
           <div class="window-fields">
             <el-input v-model="jobForm.window_start" placeholder="开始 HH:MM（如 02:00）" />
@@ -952,6 +1073,12 @@ async function runJobRow(job: BackupJobDto) {
         <el-button type="primary" :loading="jobs.busy" @click="saveJob">保存</el-button>
       </template>
     </el-dialog>
+
+    <RecoveryKeyDialog
+      v-model="recoveryKeyDialogOpen"
+      :recovery-key="pendingRecoveryKey"
+      title="备份已生成恢复密钥"
+    />
   </div>
 </template>
 

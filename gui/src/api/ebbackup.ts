@@ -35,6 +35,13 @@ export interface BackupJobDto {
   exclude_globs?: string[];
   exclude_paths?: string[];
   plugins?: string[];
+  use_vss?: boolean;
+  vss_mode?: string;
+  vss_fallback_live?: boolean;
+  vss_include_junction_volumes?: boolean;
+  quiesce_profile?: string;
+  vss_app_failure_policy?: string;
+  post_backup_webhook_url?: string;
   window_start?: string;
   window_end?: string;
   deadline_grace_seconds?: number;
@@ -201,6 +208,7 @@ export interface SyncStatusDto {
   last_export_base_txn: number;
   last_ferry_target_txn?: number;
   pending_chunk_count: number;
+  failed_chunks?: number;
   remote_lag_txn: number;
   generation: number;
   last_success_unix: number;
@@ -288,6 +296,24 @@ export interface BackupReportDto {
   durability_downgraded?: boolean;
   window_truncated?: boolean;
   window_end_unix?: number;
+  vss_used?: boolean;
+  vss_consistency?: string;
+  vss_snapshot_set_id?: string;
+  vss_volumes?: string[];
+  vss_mode?: string;
+  vss_cross_volume?: boolean;
+  vss_shadow_storage_ok?: boolean;
+  vss_shadow_storage_bytes?: number[];
+  sparse_file_count?: number;
+  efs_skipped_count?: number;
+  recovery_key_issued?: string;
+  vss_writers?: Array<{ id: string; name: string; state: string }>;
+}
+
+export interface VssBackupOptionsDto {
+  mode?: "crash" | "app" | "auto";
+  include_junction_volumes?: boolean;
+  fallback_live?: boolean;
 }
 
 export interface RuntimeInfoDto {
@@ -333,6 +359,36 @@ export async function lastError() {
 export async function initRepo(path: string, flags?: number) {
   requireTauri();
   return invokeSafe<{ ok: boolean }>("init_repo", { path, flags });
+}
+
+export async function initRepoEncrypt(path: string, password: string) {
+  requireTauri();
+  return invokeSafe<{ ok: boolean; recovery_key?: string }>("init_repo_encrypt", {
+    path,
+    password,
+  });
+}
+
+export async function unwrapRecoveryKey(recoveryKey: string) {
+  requireTauri();
+  return invokeSafe<void>("unwrap_recovery_key", { recoveryKey });
+}
+
+export async function rotatePassword(oldPassword: string, newPassword: string) {
+  requireTauri();
+  return invokeSafe<void>("rotate_password", { oldPassword, newPassword });
+}
+
+export async function upgradeLegacyEnvelope(password: string) {
+  requireTauri();
+  return invokeSafe<{ ok: boolean; recovery_key?: string }>("upgrade_legacy_envelope", {
+    password,
+  });
+}
+
+export async function testWebhook(url: string) {
+  requireTauri();
+  return invokeSafe<void>("test_webhook", { url });
 }
 
 export async function openRepo(path: string) {
@@ -540,12 +596,20 @@ export async function listOpsAudit() {
   return invokeSafe<OpsAuditListDto>("list_ops_audit");
 }
 
-export async function runBackup(sourcePath: string, incremental?: boolean, flags?: number) {
+export async function runBackup(
+  sourcePath: string,
+  incremental?: boolean,
+  flags?: number,
+  vssOptions?: VssBackupOptionsDto
+) {
   requireTauri();
   return invokeSafe<BackupStatsDto>("run_backup", {
     sourcePath,
     incremental,
     flags,
+    vssMode: vssOptions?.mode,
+    vssIncludeJunctionVolumes: vssOptions?.include_junction_volumes,
+    vssFallbackLive: vssOptions?.fallback_live,
   }, { silent: true });
 }
 

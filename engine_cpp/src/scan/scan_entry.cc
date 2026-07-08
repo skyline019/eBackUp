@@ -8,6 +8,7 @@
 #include "ebbackup/common/path_util.h"
 #include "ebbackup/scan/scan_hint_options.h"
 #include "ebbackup/winmeta/win_meta.h"
+#include "ebbackup/winmeta/sparse_file.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -168,17 +169,27 @@ ManifestFileEntry ScanEntry::ToManifestSkeleton() const {
   entry.reparse_tag = reparse_tag;
   entry.reparse_target = reparse_target;
   entry.stream_name = stream_name;
+  entry.sparse = sparse;
+  for (const auto& r : sparse_runs) {
+    entry.sparse_runs.push_back({r.offset, r.length});
+  }
+  entry.efs_encrypted = efs_encrypted;
   return entry;
 }
 
-Status ScanDirectory(const std::string& source_root, ScanResult* out,
-                     const ScanHintOptions* hint_opts) {
+Status ScanDirectory(const std::string& walk_root, ScanResult* out,
+                     const ScanHintOptions* hint_opts,
+                     const ScanDirectoryOptions* dir_opts) {
   if (!out) return Status::InvalidArgument("out is null");
   out->entries.clear();
   out->issues.clear();
 
+  const std::string logical_root =
+      (dir_opts && !dir_opts->logical_root.empty()) ? dir_opts->logical_root
+                                                    : walk_root;
+
   std::error_code ec;
-  const auto root = PathFromUtf8(source_root);
+  const auto root = PathFromUtf8(walk_root);
   if (!std::filesystem::exists(root, ec)) {
     return Status::NotFound("source path not found");
   }
@@ -194,7 +205,7 @@ Status ScanDirectory(const std::string& source_root, ScanResult* out,
     if (!ShouldSkipScanPath(PathToUtf8(root), hints)) {
       ScanEntry root_item{};
       const Status root_st =
-          PopulateEntryFields(root_entry, source_root, &root_item, &out->issues);
+          PopulateEntryFields(root_entry, logical_root, &root_item, &out->issues);
       if (!root_st.ok()) return root_st;
       out->entries.push_back(std::move(root_item));
     }
@@ -230,7 +241,7 @@ Status ScanDirectory(const std::string& source_root, ScanResult* out,
       if (ShouldSkipScanPath(abs, hints)) continue;
       ScanEntry item{};
       const Status pop_st =
-          PopulateEntryFields(entry, source_root, &item, &out->issues);
+          PopulateEntryFields(entry, logical_root, &item, &out->issues);
       if (!pop_st.ok()) return pop_st;
       out->entries.push_back(std::move(item));
       ScanEntry& added = out->entries.back();
@@ -257,7 +268,9 @@ Status ScanDirectory(const std::string& source_root, ScanResult* out,
   }
 
 #ifdef _WIN32
-  const Status enrich_st = EnrichScanEntriesWinMeta(&out->entries, &out->issues);
+  const Status enrich_st = EnrichScanEntriesWinMeta(
+      &out->entries, &out->issues,
+      dir_opts ? dir_opts->enable_sparse : true);
   if (!enrich_st.ok()) return enrich_st;
 #endif
   return Status::Ok();
@@ -314,7 +327,8 @@ Status AppendAlternateStreams(const ScanEntry& base, std::vector<ScanEntry>* out
 }  // namespace
 
 Status EnrichScanEntriesWinMeta(std::vector<ScanEntry>* entries,
-                                std::vector<report::BackupPathIssue>* issues) {
+                                std::vector<report::BackupPathIssue>* issues,
+                                bool enable_sparse) {
   if (!entries) return Status::InvalidArgument("entries is null");
   const size_t base_count = entries->size();
   for (size_t i = 0; i < base_count; ++i) {
@@ -324,7 +338,17 @@ Status EnrichScanEntriesWinMeta(std::vector<ScanEntry>* entries,
       RecordIssue(e.absolute_path, "unreadable", issues);
       continue;
     }
-    if (e.type == FileType::kRegular && e.stream_name.empty()) {
+    if (enable_sparse && e.type == FileType::kRegular && e.stream_name.empty()) {
+      if (winmeta::IsSparseFilePath(e.absolute_path)) {
+        e.sparse = true;
+        uint64_t logical = 0;
+        (void)winmeta::QuerySparseRuns(e.absolute_path, &logical, &e.sparse_runs);
+        if (logical > 0) e.size = logical;
+      }
+      const DWORD attrs = GetFileAttributesW(Utf8ToWide(e.absolute_path).c_str());
+      if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_ENCRYPTED) != 0) {
+        e.efs_encrypted = true;
+      }
       const Status ads_st = AppendAlternateStreams(e, entries, issues);
       if (!ads_st.ok()) return ads_st;
     }

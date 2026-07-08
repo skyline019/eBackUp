@@ -6,8 +6,10 @@
 
 ```powershell
 cmake -S e:\recoveryProjects -B e:\recoveryProjects\build -DEBBACKUP_BUILD_TESTS=ON -DEBBACKUP_BUILD_SYNC=ON
-cmake --build e:\recoveryProjects\build --config Release --target eb-sync
+cmake --build e:\recoveryProjects\build --config Release --target eb-sync ebsync_tests
 ```
+
+CI（`.github/workflows/ebbackup.yml`）在 Windows/Linux 上构建并运行 `ebsync_tests`（6 用例）。
 
 ## 无云起步（推荐）
 

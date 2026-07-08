@@ -22,9 +22,17 @@ npm run tauri:dev
 |------|------|
 | `npm run tauri:dev` | 开发（桌面） |
 | `npm run build:desktop` | Release NSIS + 便携 exe |
-| `npm run test:rust` | DLL JSON shim 集成测试 |
-| `npm run sync:runtime` | 同步 `ebbackup_workbench.dll` |
+| `npm run test:rust` | DLL JSON shim 集成测试（Windows；需 `EBBACKUP_DLL_DIR` 或 `sync:runtime`） |
+| `npm run sync:runtime` | 同步 `ebbackup_workbench.dll` / `eb-sync.exe` |
 | `npm run sync:fonts` | 从 eB-Tree 同步字体 |
+
+## CI
+
+GitHub Actions（Windows）会构建 `ebbackup_workbench` 并运行 `workbench_integration` 测试。Linux CI 仅 `npm run build`（前端类型检查）。详见 [`docs/technical/TEST_AND_CI.md`](../docs/technical/TEST_AND_CI.md)。
+
+## 压缩档位（v0.9.6+）
+
+引擎 CLI/daemon 支持 `--compress-tier`；**Workbench 备份页尚未暴露该选项**（可通过 CLI 或后续版本接入）。仓库统计页可通过 `repo_info` 查看 `compress_ratio`（ABI v30）。
 
 ## 多 Profile（Wave O+）
 

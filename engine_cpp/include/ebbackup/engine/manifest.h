@@ -85,6 +85,10 @@ struct ManifestFileEntry {
   std::string reparse_target;
   std::string stream_name;
 
+  bool sparse{false};
+  std::vector<std::pair<uint64_t, uint64_t>> sparse_runs;
+  std::vector<uint64_t> sparse_chunk_offsets;
+
   bool has_extended_meta() const {
     return file_type != FileType::kRegular || mode != 0 || mtime_unix != 0 ||
            atime_unix != 0 || uid != 0xFFFFFFFFu || gid != 0xFFFFFFFFu;
@@ -95,7 +99,18 @@ struct ManifestFileEntry {
            reparse_tag != 0 || !reparse_target.empty() || !stream_name.empty();
   }
 
-  bool needs_chunking() const { return file_type == FileType::kRegular; }
+  bool has_sparse_meta() const {
+    return sparse && !sparse_runs.empty();
+  }
+
+  bool efs_encrypted{false};
+  std::string efs_key_blob_b64;
+
+  bool has_efs_meta() const { return efs_encrypted; }
+
+  bool needs_chunking() const {
+    return file_type == FileType::kRegular && !efs_encrypted;
+  }
 };
 
 struct ManifestDocument {

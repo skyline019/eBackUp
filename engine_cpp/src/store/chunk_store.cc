@@ -235,6 +235,39 @@ uint64_t ChunkStore::ComputeReferencedLiveBytes(
   return live;
 }
 
+void ChunkStore::ComputeReferencedCompressStats(
+    const std::unordered_set<std::string>& referenced,
+    ReferencedCompressStats* out) const {
+  if (!out) return;
+  *out = ReferencedCompressStats{};
+  for (size_t shard = 0; shard < kIndexShardCount; ++shard) {
+    std::vector<std::pair<std::string, ChunkLocation>> entries;
+    {
+      std::lock_guard<std::mutex> lock(shard_index_mu_[shard]);
+      entries.reserve(shard_index_[shard].size());
+      for (const auto& kv : shard_index_[shard]) {
+        entries.emplace_back(kv.first, kv.second);
+      }
+    }
+    for (const auto& kv : entries) {
+      {
+        std::lock_guard<std::mutex> tomb_lock(tombstones_mu_);
+        if (tombstones_.count(kv.first) > 0) continue;
+      }
+      if (referenced.find(kv.first) == referenced.end()) continue;
+      const ChunkLocation& loc = kv.second;
+      out->uncompressed_bytes += loc.uncompressed_len;
+      out->stored_payload_bytes += loc.stored_len;
+      const auto codec = static_cast<ChunkCodec>(loc.codec);
+      if (codec == ChunkCodec::kRaw) {
+        ++out->raw_chunks;
+      } else {
+        ++out->compressed_chunks;
+      }
+    }
+  }
+}
+
 Status ChunkStore::LoadIndex() {
   for (auto& shard : shard_index_) {
     shard.clear();

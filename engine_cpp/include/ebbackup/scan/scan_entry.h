@@ -8,6 +8,7 @@
 #include "ebbackup/engine/manifest.h"
 #include "ebbackup/report/backup_report.h"
 #include "ebbackup/scan/scan_hint_options.h"
+#include "ebbackup/winmeta/sparse_file.h"
 
 namespace ebbackup {
 
@@ -31,7 +32,14 @@ struct ScanEntry {
   std::string reparse_target;
   std::string stream_name;
 
-  bool needs_chunking() const { return type == FileType::kRegular; }
+  bool sparse{false};
+  std::vector<winmeta::SparseRun> sparse_runs;
+
+  bool efs_encrypted{false};
+
+  bool needs_chunking() const {
+    return type == FileType::kRegular && !efs_encrypted;
+  }
 
   ManifestFileEntry ToManifestSkeleton() const;
 };
@@ -41,12 +49,19 @@ struct ScanResult {
   std::vector<report::BackupPathIssue> issues;
 };
 
-Status ScanDirectory(const std::string& source_root, ScanResult* out,
-                     const ScanHintOptions* hint_opts = nullptr);
+struct ScanDirectoryOptions {
+  std::string logical_root;
+  bool enable_sparse{true};
+};
+
+Status ScanDirectory(const std::string& walk_root, ScanResult* out,
+                     const ScanHintOptions* hint_opts = nullptr,
+                     const ScanDirectoryOptions* dir_opts = nullptr);
 
 #ifdef _WIN32
 Status EnrichScanEntriesWinMeta(std::vector<ScanEntry>* entries,
-                                std::vector<report::BackupPathIssue>* issues);
+                                std::vector<report::BackupPathIssue>* issues,
+                                bool enable_sparse = true);
 #endif
 
 }  // namespace ebbackup

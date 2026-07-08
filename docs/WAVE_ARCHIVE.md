@@ -2,7 +2,7 @@
 
 本文档为 **recoveryProjects / ebbackup** 全部 Wave 深化的结构化归档，覆盖性能 sprint（Wave 1–5）与能力 sprint（Wave A–T）。逐 commit 明细仍以根目录 [`CHANGELOG.md`](../CHANGELOG.md) 为准；工程路线图见 [`technical/CAPABILITY_ROADMAP.md`](technical/CAPABILITY_ROADMAP.md)；缺口闭合见 [`product/BACKUP_CAPABILITY_GAPS.md`](product/BACKUP_CAPABILITY_GAPS.md)。
 
-**当前快照（2026-07-08，commit `965431b`）**：C API **ABI v29** · gtest **363** · ctest 3 套件全绿 · L5 ~170 MB/s · L7 ~650 MB/s
+**当前快照（2026-07-09）**：C API **ABI v37** · gtest **393** · Workbench IT **13** · ctest 含 `ebsync_tests` + bench · L5 ~170 MB/s · L7 ~650 MB/s · CI sync+GUI
 
 ---
 
@@ -12,9 +12,9 @@
 |------|------|------|----------|
 | **Wave 1** | 根基 v0.1–0.4 | bench 制度化、manifest v4、snapshot、durability | ecosystem ch.5–6 |
 | **Wave 2–5** | 性能 v0.5–0.9.4 | DigestPool、EbPack、Pipeline v4、Streaming、Sprint 4 | ecosystem ch.7–8 |
-| **Wave A–T** | 能力 Phase 0–11 | 可证明备份、Win 元数据、多 Job、DR、平台、垂直、智能排除、备份窗口 | 本文 §能力 Wave |
+| **Wave A–U** | 能力 Phase 0–13 | 可证明备份、Win 元数据、多 Job、DR、平台、垂直、智能排除、备份窗口、**分层压缩** | 本文 §能力 Wave |
 
-两套编号**并行**：Wave 2–5 解决 **P1 吞吐**；Wave A–T 解决 **P4 可交付 + 产品缺口**。
+两套编号**并行**：Wave 2–5 解决 **P1 吞吐**；Wave A–U 解决 **P4 可交付 + 产品缺口**。
 
 ---
 
@@ -177,9 +177,17 @@
 - 窗外 Conflict；queue skip；deadline Strict→Balanced；超时截断
 - GUI 作业对话框 + 报告字段
 
+### Wave U — 分层压缩与可观测性（Phase 13 / ABI v30）
+
+- **CompressTier**：fast / balanced / max；CLI `--compress-tier`、`--compress-level`
+- **Zstd LDM** + **仓库字典**（`meta/zstd_dict.bin`）
+- **`EbRepoStats`**：`compress_ratio`、`live_uncompressed_bytes`、`has_zstd_dict` 等
+- **Decode fuzz**：`decode_corruption_test.cc`
+- **CI**：`sync_cpp` + `gui` 纳入 GitHub Actions
+
 ---
 
-## ABI 演进总表（v14–v29）
+## ABI 演进总表（v14–v30）
 
 | ABI | Wave | 关键新增 |
 |-----|------|----------|
@@ -197,17 +205,19 @@
 | v27 | P/Q | vertical plugins, report plugins[] |
 | v28 | R | smart exclude suggestions |
 | v29 | T | backup window, durability adaptive |
+| v30 | U | repo-stats compression metrics; CompressTier + zstd dict |
 
 ---
 
-## 测试与 bench 门禁（Wave T 后）
+## 测试与 bench 门禁（Wave U 后）
 
 | 套件 | 规模 | 说明 |
 |------|------|------|
-| `ebbackup_tests` | 363 gtest | 含 Wave E ADS、Wave M 三路、Wave R exclude、Wave T window |
+| `ebbackup_tests` | 383 gtest | 含 Wave U 压缩/fuzz、pipeline deadlock、restore streaming |
+| `ebsync_tests` | 6 | sync_cpp ferry/local push |
 | `eb_run_tests_capi` | 15 | C API ABI 兼容 |
 | `ebbackup_bench_check` | L1–L7 | Stage 3.1 blocking floors |
-| `workbench_integration.rs` | 11 | Tauri shim roundtrip |
+| `workbench_integration.rs` | 11 | Tauri shim roundtrip（Windows CI） |
 
 ---
 
@@ -225,6 +235,7 @@
 
 - [`VERSION_HISTORY.md`](VERSION_HISTORY.md)
 - [`technical/ABI_AND_FEATURES.md`](technical/ABI_AND_FEATURES.md)
+- [`technical/COMPRESSION.md`](technical/COMPRESSION.md)
 - [`reference/PERF_BASELINE.md`](reference/PERF_BASELINE.md)
 - [`engineering/kernel-manual/README.md`](engineering/kernel-manual/README.md)
 - [`engineering/ecosystem-evolution/README.md`](engineering/ecosystem-evolution/README.md)

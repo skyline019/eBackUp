@@ -19,6 +19,8 @@ repo/
 │   └── packs/
 │       └── pack-<txn>-s<N>.ebpack   # v0.7+ 16-shard
 ├── audit/rar.chain         # 哈希链审计
+├── meta/
+│   └── zstd_dict.bin       # 仓库 Zstd 字典（可选，v0.9.6+）
 └── crypto.salt             # 加密仓库（可选）
 ```
 
@@ -75,7 +77,9 @@ CLI：`list-snapshots`、`prune-snapshots`、`restore --at`、`gc-orphans`、`co
 
 ## 运维指标
 
-- `eb repo-stats`：`ampl_ratio`（物理/逻辑字节比）
+- `eb repo-stats`：
+  - `ampl_ratio`（物理/逻辑字节比）
+  - **v0.9.6+**：`compress_ratio`、`live_uncompressed_bytes`、`live_stored_payload_bytes`、`has_zstd_dict`（见 [COMPRESSION.md](COMPRESSION.md)）
 - **告警**：`ampl_ratio > 1.3` 关注；`> 1.5` 建议 compact
 - **L4 bench**：orphan inject → compact → `ampl_ratio_after ≤ 1.05`
 
@@ -91,6 +95,7 @@ CLI：`list-snapshots`、`prune-snapshots`、`restore --at`、`gc-orphans`、`co
 
 ## 相关文档
 
+- [COMPRESSION.md](COMPRESSION.md) — CompressTier、字典、压缩率指标
 - [ABI_AND_FEATURES.md](ABI_AND_FEATURES.md) — Feature flags
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [VERSION_HISTORY.md](../VERSION_HISTORY.md) — 仓库布局演进表

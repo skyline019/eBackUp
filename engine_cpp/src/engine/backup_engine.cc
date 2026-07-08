@@ -38,6 +38,7 @@
 #include "ebbackup/common/path_encoding.h"
 #include "ebbackup/common/path_util.h"
 #include "ebbackup/crypto/aes_gcm.h"
+#include "ebbackup/crypto/envelope.h"
 #include "ebbackup/engine/restore_engine.h"
 #include "ebbackup/io/mmap_reader.h"
 #include "ebbackup/pipeline/backup_pipeline.h"
@@ -46,6 +47,8 @@
 #include "ebbackup/scan/backup_filter.h"
 #include "ebbackup/store/snapshot_store.h"
 #include "ebbackup/scan/scan_entry.h"
+#include "ebbackup/winmeta/sparse_file.h"
+#include "ebbackup/winmeta/efs_key.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -103,6 +106,108 @@ std::unordered_set<std::string> BuildIssuePathSet(
   }
   return paths;
 }
+
+#ifdef _WIN32
+Status ReadFileRangeBytes(const std::string& path, uint64_t offset, uint64_t length,
+                          std::vector<uint8_t>* out) {
+  if (!out) return Status::InvalidArgument("out is null");
+  out->assign(static_cast<size_t>(length), 0);
+  if (length == 0) return Status::Ok();
+  HANDLE h = CreateFileW(Utf8ToWide(path).c_str(), GENERIC_READ,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    return Status::IoError("ReadFileRange open failed");
+  }
+  LARGE_INTEGER pos{};
+  pos.QuadPart = static_cast<LONGLONG>(offset);
+  if (!SetFilePointerEx(h, pos, nullptr, FILE_BEGIN)) {
+    CloseHandle(h);
+    return Status::IoError("ReadFileRange seek failed");
+  }
+  DWORD read = 0;
+  if (!ReadFile(h, out->data(), static_cast<DWORD>(out->size()), &read, nullptr) ||
+      read != out->size()) {
+    CloseHandle(h);
+    return Status::IoError("ReadFileRange read failed");
+  }
+  CloseHandle(h);
+  return Status::Ok();
+}
+
+Status ChunkSparseFile(EbHcrboChunker* chunker, BackupMode mode,
+                       const std::string& file_path,
+                       const std::vector<winmeta::SparseRun>& runs,
+                       const CfiIndex& history,
+                       std::vector<ChunkDescriptor>* out_chunks,
+                       CfiIndex* out_cfi, EbHcrboStats* stats) {
+  if (!chunker || !out_chunks || !out_cfi) {
+    return Status::InvalidArgument("invalid ChunkSparseFile args");
+  }
+  out_chunks->clear();
+  out_cfi->anchors.clear();
+  for (const auto& run : runs) {
+    std::vector<uint8_t> run_bytes;
+    const Status rd = ReadFileRangeBytes(file_path, run.offset, run.length, &run_bytes);
+    if (!rd.ok()) return rd;
+    std::vector<ChunkDescriptor> run_chunks;
+    CfiIndex run_cfi;
+    Status ch_st;
+    if (mode == BackupMode::kIncremental) {
+      ch_st = chunker->ChunkIncremental(run_bytes.data(), run_bytes.size(), history,
+                                        &run_chunks, &run_cfi, stats);
+    } else {
+      ch_st = chunker->ChunkFull(run_bytes.data(), run_bytes.size(), &run_chunks,
+                                 &run_cfi, stats);
+    }
+    if (!ch_st.ok()) return ch_st;
+    for (auto& c : run_chunks) c.offset += run.offset;
+    for (auto& a : run_cfi.anchors) a.offset += run.offset;
+    out_chunks->insert(out_chunks->end(), run_chunks.begin(), run_chunks.end());
+    out_cfi->anchors.insert(out_cfi->anchors.end(), run_cfi.anchors.begin(),
+                            run_cfi.anchors.end());
+  }
+  return Status::Ok();
+}
+#endif
+
+class VssReleaseGuard {
+ public:
+  VssReleaseGuard(winmeta::VssSession* session, bool* active,
+                  std::vector<report::BackupPathIssue>* issues,
+                  winmeta::VssSessionInfo* info_out = nullptr)
+      : session_(session),
+        active_(active),
+        issues_(issues),
+        info_out_(info_out) {}
+
+  ~VssReleaseGuard() { release(); }
+
+  void release() {
+    if (released_ || !active_ || !*active_ || !session_) return;
+    if (!session_->backup_finished()) {
+      (void)session_->FinishBackup();
+    }
+    if (info_out_) *info_out_ = session_->info();
+    if (issues_) {
+      for (auto& issue : *issues_) {
+        if (!issue.path.empty()) {
+          issue.path = session_->MapToLogicalForReport(issue.path);
+        }
+      }
+    }
+    (void)session_->End();
+    *active_ = false;
+    released_ = true;
+  }
+
+ private:
+  winmeta::VssSession* session_{nullptr};
+  bool* active_{nullptr};
+  std::vector<report::BackupPathIssue>* issues_{nullptr};
+  winmeta::VssSessionInfo* info_out_{nullptr};
+  bool released_{false};
+};
 
 uint64_t CountBackedUpManifestFiles(const std::vector<ManifestFileEntry>& files) {
   uint64_t count = 0;
@@ -476,12 +581,26 @@ Status BackupEngine::SetupEncryption(const BackupOptions& options) {
   if (options.encryption_password.empty()) {
     return Status::InvalidArgument("encryption password required");
   }
-  uint8_t salt[16];
-  const Status salt_st = crypto::LoadOrCreateRepoSalt(repo_path_, salt);
-  if (!salt_st.ok()) return salt_st;
-  const Status key_st = crypto::DeriveContentKey(options.encryption_password, salt,
-                                                 content_key_, digest_algo_);
-  if (!key_st.ok()) return key_st;
+  if (crypto::EnvelopeExists(repo_path_)) {
+    const Status unwrap = crypto::UnwrapMasterKeyWithPassword(
+        repo_path_, options.encryption_password, content_key_, digest_algo_);
+    if (!unwrap.ok()) return unwrap;
+  } else {
+    const std::string salt_path = RepoJoin(repo_path_, "crypto.salt");
+    if (std::filesystem::exists(PathFromUtf8(salt_path))) {
+      const Status up = crypto::UpgradeLegacyToEnvelope(
+          repo_path_, options.encryption_password, &last_recovery_key_);
+      if (!up.ok()) return up;
+      const Status unwrap = crypto::UnwrapMasterKeyWithPassword(
+          repo_path_, options.encryption_password, content_key_, digest_algo_);
+      if (!unwrap.ok()) return unwrap;
+    } else {
+      const Status created = crypto::CreateEnvelope(
+          repo_path_, options.encryption_password, &last_recovery_key_,
+          content_key_);
+      if (!created.ok()) return created;
+    }
+  }
   has_content_key_ = true;
   chunk_store_->SetContentKey(content_key_);
   sb_.ext.backup_features |= kBackupFeatureEncrypted;
@@ -496,7 +615,9 @@ void BackupEngine::ClearEncryption() {
 
 Status BackupEngine::EnsureRepoContentKey(const std::string& password) {
   const std::string salt_path = RepoJoin(repo_path_, "crypto.salt");
-  if (!std::filesystem::exists(PathFromUtf8(salt_path))) return Status::Ok();
+  const bool has_salt = std::filesystem::exists(PathFromUtf8(salt_path));
+  const bool has_envelope = crypto::EnvelopeExists(repo_path_);
+  if (!has_salt && !has_envelope) return Status::Ok();
   if (password.empty()) {
     return Status::InvalidArgument("encrypted repo requires password");
   }
@@ -504,21 +625,62 @@ Status BackupEngine::EnsureRepoContentKey(const std::string& password) {
     chunk_store_->ClearContentKey();
     has_content_key_ = false;
   }
-  uint8_t salt[16];
-  const Status salt_st = crypto::LoadOrCreateRepoSalt(repo_path_, salt);
-  if (!salt_st.ok()) return salt_st;
-  const Status key_st =
-      crypto::DeriveContentKey(password, salt, content_key_, digest_algo_);
+  Status key_st;
+  if (has_envelope) {
+    key_st = crypto::UnwrapMasterKeyWithPassword(repo_path_, password,
+                                                 content_key_, digest_algo_);
+  } else {
+    uint8_t salt[16];
+    const Status salt_st = crypto::LoadOrCreateRepoSalt(repo_path_, salt);
+    if (!salt_st.ok()) return salt_st;
+    key_st = crypto::DeriveContentKey(password, salt, content_key_, digest_algo_);
+  }
   if (!key_st.ok()) return key_st;
   has_content_key_ = true;
   chunk_store_->SetContentKey(content_key_);
   return Status::Ok();
 }
 
+Status BackupEngine::UnlockRepo(const std::string& password) {
+  return EnsureRepoContentKey(password);
+}
+
+Status BackupEngine::UnwrapWithRecoveryKey(const std::string& recovery_key) {
+  if (recovery_key.empty()) {
+    return Status::InvalidArgument("recovery key required");
+  }
+  if (!crypto::EnvelopeExists(repo_path_)) {
+    return Status::NotFound("repo has no crypto.envelope.json");
+  }
+  if (has_content_key_) {
+    chunk_store_->ClearContentKey();
+    has_content_key_ = false;
+  }
+  const Status st = crypto::UnwrapMasterKeyWithRecoveryKey(
+      repo_path_, recovery_key, content_key_, digest_algo_);
+  if (!st.ok()) return st;
+  has_content_key_ = true;
+  chunk_store_->SetContentKey(content_key_);
+  return Status::Ok();
+}
+
+Status BackupEngine::RotatePassword(const std::string& old_password,
+                                    const std::string& new_password) {
+  if (!crypto::EnvelopeExists(repo_path_)) {
+    return Status::NotFound("repo has no envelope; use --encrypt first");
+  }
+  const Status st =
+      crypto::RotateEnvelopePassword(repo_path_, old_password, new_password,
+                                     digest_algo_);
+  if (!st.ok()) return st;
+  return EnsureRepoContentKey(new_password);
+}
+
 Status BackupEngine::ScanFiles(const std::string& source_path,
                                const BackupOptions& options,
                                const std::vector<std::string>& extra_roots,
-                               const std::vector<plugin::ScanHint>& scan_hints) {
+                               const std::vector<plugin::ScanHint>& scan_hints,
+                               const winmeta::VssSession* vss) {
   pending_scan_entries_.clear();
   pending_files_.clear();
   pending_meta_entries_.clear();
@@ -527,16 +689,27 @@ Status BackupEngine::ScanFiles(const std::string& source_path,
   ScanHintOptions hint_opts{};
   hint_opts.hints = scan_hints;
 
-  auto merge_scan = [&](const std::string& scan_root, const std::string& rebase_root) {
+  auto walk_root_for = [&](const std::string& logical_root) {
+    if (vss && vss->active()) return vss->MapToShadow(logical_root);
+    return logical_root;
+  };
+
+  auto merge_scan = [&](const std::string& logical_scan_root,
+                        const std::string& rebase_root) {
     ScanResult scan_result;
-    const Status scan_st = ScanDirectory(scan_root, &scan_result, &hint_opts);
+    ScanDirectoryOptions dir_opts{};
+    dir_opts.logical_root = logical_scan_root;
+    dir_opts.enable_sparse = options.sparse_mode != SparseMode::kOff;
+    const std::string walk_root = walk_root_for(logical_scan_root);
+    const Status scan_st =
+        ScanDirectory(walk_root, &scan_result, &hint_opts, &dir_opts);
     if (!scan_st.ok()) return scan_st;
     for (auto& issue : scan_result.issues) scan_issues_.push_back(std::move(issue));
     for (auto& entry : scan_result.entries) {
-      if (scan_root != rebase_root) {
+      if (logical_scan_root != rebase_root) {
         std::error_code ec;
-        const auto rel_base = std::filesystem::relative(PathFromUtf8(scan_root),
-                                                        PathFromUtf8(rebase_root), ec);
+        const auto rel_base = std::filesystem::relative(
+            PathFromUtf8(logical_scan_root), PathFromUtf8(rebase_root), ec);
         if (!ec && !entry.relative_path.empty()) {
           const std::string prefix = PathToUtf8(rel_base);
           if (prefix == ".") {
@@ -569,6 +742,9 @@ Status BackupEngine::ScanFiles(const std::string& source_path,
 
   const std::unordered_set<std::string> issue_paths = BuildIssuePathSet(scan_issues_);
   for (const auto& entry : pending_scan_entries_) {
+    if (entry.efs_encrypted) {
+      scan_issues_.push_back({entry.absolute_path, "efs_encrypted_skipped"});
+    }
     if (entry.needs_chunking()) {
       if (issue_paths.count(entry.absolute_path) > 0) {
 #ifdef _WIN32
@@ -591,6 +767,28 @@ Status BackupEngine::ScanFiles(const std::string& source_path,
         pending_meta_entries_.begin(), pending_meta_entries_.end(),
         [&](const ManifestFileEntry& m) { return m.relative_path == sk.relative_path; });
     if (!already) pending_meta_entries_.push_back(sk);
+  }
+#endif
+#ifdef _WIN32
+  if (options.efs_export_keys) {
+    for (auto& meta : pending_meta_entries_) {
+      if (!meta.efs_encrypted) continue;
+      std::string abs_path;
+      for (const auto& se : pending_scan_entries_) {
+        if (se.relative_path == meta.relative_path) {
+          abs_path = se.absolute_path;
+          break;
+        }
+      }
+      if (abs_path.empty()) continue;
+      std::string blob;
+      const Status ex = winmeta::ExportEfsKeyBlob(abs_path, &blob);
+      if (ex.ok()) {
+        meta.efs_key_blob_b64 = std::move(blob);
+      } else {
+        scan_issues_.push_back({abs_path, "efs_key_export_failed"});
+      }
+    }
   }
 #endif
   EmitProgress(50);
@@ -616,6 +814,7 @@ Status BackupEngine::MergeMetaManifestEntries() {
         mf.reparse_tag = se.reparse_tag;
         mf.reparse_target = se.reparse_target;
         mf.stream_name = se.stream_name;
+        mf.efs_encrypted = se.efs_encrypted;
         break;
       }
     }
@@ -709,11 +908,15 @@ Status BackupEngine::ChunkPendingFiles(BackupMode mode,
     uint64_t expected_size = 0;
     uint64_t inode_id = 0;
     std::string stream_name;
+    bool file_sparse = false;
+    std::vector<winmeta::SparseRun> sparse_runs;
     for (const auto& se : pending_scan_entries_) {
       if (se.absolute_path == file_path) {
         expected_size = se.size;
         inode_id = se.inode_id;
         stream_name = se.stream_name;
+        file_sparse = se.sparse;
+        sparse_runs = se.sparse_runs;
         break;
       }
     }
@@ -729,6 +932,10 @@ Status BackupEngine::ChunkPendingFiles(BackupMode mode,
         entry.gid = se.gid;
         entry.mtime_unix = se.mtime_unix;
         entry.atime_unix = se.atime_unix;
+        entry.sparse = se.sparse;
+        for (const auto& r : se.sparse_runs) {
+          entry.sparse_runs.push_back({r.offset, r.length});
+        }
         break;
       }
     }
@@ -749,33 +956,45 @@ Status BackupEngine::ChunkPendingFiles(BackupMode mode,
       inode_canonical_idx[key] = i;
     }
 
-    pending_file_bytes_[i] = ReadFileBytes(file_path);
-    const auto& bytes = pending_file_bytes_[i];
-    if (bytes.empty() && expected_size > 0) {
-      scan_issues_.push_back({file_path, "unreadable"});
-      pending_manifest_[i].relative_path.clear();
-      continue;
-    }
-
-    hcrbo_cfg = EbHcrboConfigForFileSize(bytes.size(), options.chunk_profile,
+    hcrbo_cfg = EbHcrboConfigForFileSize(expected_size, options.chunk_profile,
                                          digest_algo_);
     EbHcrboChunker chunker(hcrbo_cfg);
     EbHcrboStats hstats{};
     Status ch_st;
-    if (mode == BackupMode::kIncremental) {
-      const CfiIndex history = FindPriorCfi(prior, rel_final);
-      ch_st = chunker.ChunkIncremental(bytes.data(), bytes.size(), history,
-                                       &pending_chunks_[i], &pending_cfi_[i],
-                                       &hstats);
-    } else {
-      ch_st = chunker.ChunkFull(bytes.data(), bytes.size(), &pending_chunks_[i],
-                                &pending_cfi_[i], &hstats);
+#ifdef _WIN32
+    if (options.sparse_mode != SparseMode::kOff && file_sparse && !sparse_runs.empty()) {
+      const CfiIndex history =
+          (mode == BackupMode::kIncremental) ? FindPriorCfi(prior, rel_final)
+                                             : CfiIndex{};
+      ch_st = ChunkSparseFile(&chunker, mode, file_path, sparse_runs, history,
+                              &pending_chunks_[i], &pending_cfi_[i], &hstats);
+      pending_file_bytes_[i].clear();
+    } else
+#endif
+    {
+      pending_file_bytes_[i] = ReadFileBytes(file_path);
+      const auto& bytes = pending_file_bytes_[i];
+      if (bytes.empty() && expected_size > 0) {
+        scan_issues_.push_back({file_path, "unreadable"});
+        pending_manifest_[i].relative_path.clear();
+        continue;
+      }
+      if (mode == BackupMode::kIncremental) {
+        const CfiIndex history = FindPriorCfi(prior, rel_final);
+        ch_st = chunker.ChunkIncremental(bytes.data(), bytes.size(), history,
+                                         &pending_chunks_[i], &pending_cfi_[i],
+                                         &hstats);
+      } else {
+        ch_st = chunker.ChunkFull(bytes.data(), bytes.size(), &pending_chunks_[i],
+                                  &pending_cfi_[i], &hstats);
+      }
+      if (!ch_st.ok()) return ch_st;
+      PopulateAnchorChecksums(bytes.data(), bytes.size(), &pending_cfi_[i]);
     }
     if (!ch_st.ok()) return ch_st;
-    PopulateAnchorChecksums(bytes.data(), bytes.size(), &pending_cfi_[i]);
     stats_.chunks_reused_from_cfi += hstats.chunks_reused_from_cfi;
 
-    pending_manifest_[i].size = bytes.size();
+    pending_manifest_[i].size = expected_size > 0 ? expected_size : pending_manifest_[i].size;
     pending_manifest_[i].cfi = pending_cfi_[i];
 
     if (file_count > 0) {
@@ -792,6 +1011,8 @@ Status BackupEngine::ChunkPendingFiles(BackupMode mode,
     pending_file_bytes_[i] = pending_file_bytes_[canon];
     pending_manifest_[i].cfi = pending_cfi_[i];
     pending_manifest_[i].size = pending_manifest_[canon].size;
+    pending_manifest_[i].sparse = pending_manifest_[canon].sparse;
+    pending_manifest_[i].sparse_runs = pending_manifest_[canon].sparse_runs;
   }
   return Status::Ok();
 }
@@ -812,11 +1033,25 @@ Status BackupEngine::StorePendingChunks(const BackupOptions& options) {
     entry.chunk_hashes_hex.clear();
     for (const auto& chunk : chunks) {
       entry.chunk_hashes_hex.push_back(BytesToHex(chunk.hash, 32));
+      if (entry.sparse) entry.sparse_chunk_offsets.push_back(chunk.offset);
       if (chunk.reused_from_cfi && chunk_store_->Exists(chunk.hash)) {
         ++stats_.chunks_reused;
         continue;
       }
-      const uint8_t* ptr = bytes.data() + chunk.offset;
+      std::vector<uint8_t> slice;
+      const uint8_t* ptr = nullptr;
+      if (entry.sparse) {
+#ifdef _WIN32
+        const Status rd = ReadFileRangeBytes(pending_files_[fi], chunk.offset,
+                                             chunk.length, &slice);
+        if (!rd.ok()) return rd;
+        ptr = slice.data();
+#else
+        return Status::InvalidArgument("sparse restore unsupported on this platform");
+#endif
+      } else {
+        ptr = bytes.data() + chunk.offset;
+      }
       bool newly_written = false;
       const Status put_st = chunk_store_->PutKnownHash(
           ptr, chunk.length, chunk.hash, &newly_written, &put_opts);
@@ -946,6 +1181,29 @@ Status BackupEngine::CommitManifestFile() {
   br.durability_downgraded = durability_downgraded_;
   br.window_truncated = window_truncated_;
   br.window_end_unix = window_end_unix_;
+  br.vss_used = backup_vss_used_;
+  if (backup_vss_used_) {
+    br.vss_consistency = backup_vss_info_.consistency;
+    br.vss_mode = backup_vss_info_.vss_mode;
+    br.vss_snapshot_set_id = backup_vss_info_.snapshot_set_id;
+    br.vss_volumes = backup_vss_info_.volumes;
+    br.vss_cross_volume = backup_vss_info_.cross_volume;
+    br.vss_shadow_storage_ok = backup_vss_info_.shadow_storage_ok;
+    br.vss_writers.reserve(backup_vss_info_.writers.size());
+    for (const auto& w : backup_vss_info_.writers) {
+      br.vss_writers.push_back({w.id, w.name, w.state});
+    }
+  }
+  for (const auto& f : doc.files) {
+    if (f.sparse && f.has_sparse_meta()) ++br.sparse_file_count;
+    if (f.efs_encrypted) ++br.efs_skipped_count;
+  }
+  if (backup_vss_used_ && !backup_vss_info_.shadow_storage_bytes_by_volume.empty()) {
+    br.vss_shadow_storage_bytes = backup_vss_info_.shadow_storage_bytes_by_volume;
+  }
+  if (!last_recovery_key_.empty()) {
+    br.recovery_key_issued = last_recovery_key_;
+  }
   pending_plugin_reports_.clear();
   report::PopulateReportIssueCounts(&br);
   (void)report::WriteBackupReport(repo_path_, br);
@@ -1007,6 +1265,7 @@ Status BackupEngine::VerifyManifestDocument(const ManifestDocument& doc,
       continue;
     }
     if (file.chunk_hashes_hex.empty() && file.size > 0) {
+      if (file.efs_encrypted) continue;
       return Status::Corrupt("empty chunk list for non-empty file: " +
                              file.relative_path);
     }
@@ -1029,7 +1288,14 @@ Status BackupEngine::VerifyManifestDocument(const ManifestDocument& doc,
       }
       total += payload.size();
     }
-    if (total != file.size) {
+    if (file.sparse && file.has_sparse_meta()) {
+      uint64_t run_total = 0;
+      for (const auto& run : file.sparse_runs) run_total += run.second;
+      if (total != run_total) {
+        return Status::Corrupt("manifest sparse data size mismatch for " +
+                               file.relative_path);
+      }
+    } else if (total != file.size) {
       return Status::Corrupt("manifest file size mismatch for " +
                              file.relative_path);
     }
@@ -1125,6 +1391,29 @@ Status BackupEngine::RunJob(const std::string& job_id, BackupMode mode,
   if (opts.plugins.empty()) {
     opts.plugins = job.plugins;
   }
+  if (job.use_vss) {
+    opts.use_vss = true;
+    if (!job.vss_mode.empty()) {
+      (void)winmeta::ParseVssConsistencyMode(job.vss_mode, &opts.vss_mode);
+    }
+    opts.vss_fallback_live = opts.vss_fallback_live || job.vss_fallback_live;
+    opts.vss_include_junction_volumes = job.vss_include_junction_volumes;
+  }
+  opts.quiesce_profile = job.quiesce_profile;
+  opts.post_backup_webhook_url = job.post_backup_webhook_url;
+  if (!job.quiesce_profile.empty() && job.quiesce_profile != "none") {
+    opts.use_vss = true;
+    if (job.quiesce_profile == "sql" || job.quiesce_profile == "exchange" ||
+        job.quiesce_profile == "system" || job.quiesce_profile == "custom") {
+      opts.vss_mode = winmeta::VssConsistencyMode::kApp;
+    }
+  }
+  if (job.vss_app_failure_policy == "fail_job") {
+    opts.vss_app_failure_policy = BackupOptions::VssAppFailurePolicy::kFailJob;
+  } else if (job.vss_app_failure_policy == "fallback_live") {
+    opts.vss_app_failure_policy =
+        BackupOptions::VssAppFailurePolicy::kFallbackLive;
+  }
 
   active_job_.job_id = job.id;
   active_job_.retention_tag = job.retention_tag;
@@ -1162,6 +1451,8 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
   scan_issues_.clear();
   pending_plugin_reports_.clear();
   source_root_ = source_path;
+  backup_vss_used_ = false;
+  backup_vss_info_ = {};
   ResetBackupWindowState();
 
   sb_.critical.txn_id = GetNextTxnId(sb_);
@@ -1255,6 +1546,39 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
     }
   }
 
+  winmeta::VssSession vss;
+  bool vss_active = false;
+  VssReleaseGuard vss_guard(&vss, &vss_active, &scan_issues_, &backup_vss_info_);
+  if (effective.use_vss) {
+    std::vector<std::string> vss_roots;
+    vss_roots.push_back(source_path);
+    for (const std::string& root : extra_scan_roots) {
+      if (!root.empty()) vss_roots.push_back(root);
+    }
+    winmeta::VssBeginOptions vss_opts{};
+    vss_opts.mode = effective.vss_mode;
+    vss_opts.include_junction_volumes = effective.vss_include_junction_volumes;
+    st = vss.Begin(vss_roots, vss_opts);
+    if (!st.ok()) {
+      if (effective.vss_fallback_live) {
+        const std::string& msg = st.message();
+        if (msg.find("insufficient shadow") != std::string::npos ||
+            msg.find("shadow storage") != std::string::npos) {
+          scan_issues_.push_back({"", "vss_shadow_storage_low:" + msg});
+        } else {
+          scan_issues_.push_back({"", "vss_unavailable:" + msg});
+        }
+      } else {
+        (void)PersistSuperBlock(BackupPhase::kAborted);
+        return st;
+      }
+    } else {
+      vss_active = true;
+      backup_vss_used_ = true;
+      backup_vss_info_ = vss.info();
+    }
+  }
+
   st = DispatchTransition(BackupEvent::kScanFile);
   if (!st.ok()) {
     (void)PersistSuperBlock(BackupPhase::kAborted);
@@ -1269,7 +1593,8 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
   }
 
   const auto scan_t0 = std::chrono::steady_clock::now();
-  st = ScanFiles(source_path, effective, extra_scan_roots, plugin_scan_hints);
+  st = ScanFiles(source_path, effective, extra_scan_roots, plugin_scan_hints,
+                 vss_active ? &vss : nullptr);
   if (profile) {
     const auto scan_t1 = std::chrono::steady_clock::now();
     pipeline_phase_stats_.scan_ns.fetch_add(
@@ -1347,6 +1672,23 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
     }
   }
 
+  vss_guard.release();
+  if (backup_vss_used_ &&
+      effective.vss_mode == winmeta::VssConsistencyMode::kAuto &&
+      backup_vss_info_.consistency == "crash" &&
+      !backup_vss_info_.writers.empty()) {
+    scan_issues_.push_back({"", "vss_writer_degraded"});
+    if (effective.vss_app_failure_policy ==
+        BackupOptions::VssAppFailurePolicy::kFailJob) {
+      (void)PersistSuperBlock(BackupPhase::kAborted);
+      return Status::Internal("vss app writer failure policy fail_job");
+    }
+    if (effective.vss_app_failure_policy ==
+        BackupOptions::VssAppFailurePolicy::kFallbackLive) {
+      scan_issues_.push_back({"", "vss_app_fallback_live"});
+    }
+  }
+
   const auto flush_t0 = std::chrono::steady_clock::now();
   std::future<Status> merge_future =
       std::async(std::launch::async, [this] { return MergeMetaManifestEntries(); });
@@ -1413,6 +1755,26 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
         br.issues = scan_issues_;
         report::PopulateReportIssueCounts(&br);
         (void)report::WriteBackupReport(repo_path_, br);
+      }
+    }
+  }
+
+  if (!effective.post_backup_webhook_url.empty()) {
+    report::BackupReport br{};
+    if (report::LoadBackupReport(repo_path_, sb_.critical.txn_id, &br).ok()) {
+      const std::string json = report::BackupReportToJson(br);
+      const std::string body_path = RepoJoin(repo_path_, "reports/webhook_body.tmp");
+      std::ofstream body_out(PathFromUtf8(body_path), std::ios::trunc);
+      if (body_out) {
+        body_out << json;
+        body_out.close();
+        const std::string cmd =
+            "powershell -NoProfile -Command \"Invoke-RestMethod -Uri '" +
+            effective.post_backup_webhook_url +
+            "' -Method Post -ContentType 'application/json' -InFile '" +
+            body_path + "'\"";
+        int hook_rc = 0;
+        (void)RunShellCommand(cmd, &hook_rc);
       }
     }
   }

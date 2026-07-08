@@ -1,6 +1,6 @@
 # ebbackup 备份内核工程技术文档
 
-XeLaTeX 中文技术手册（**v1.1 完整扩写**）：**Part I** 覆盖 `engine_cpp/` 备份内核 16 章；**Part II** 覆盖 bench 门禁、C API、compact/GC 与测试矩阵 4 章。目标 **120+ 页** PDF。
+XeLaTeX 中文技术手册（**v1.4 完整扩写**）：**Part I** 覆盖 `engine_cpp/` 备份内核 16 章；**Part II** 覆盖 bench 门禁、C API ABI v37、compact/GC 与测试矩阵 4 章；**第 22 章** Phase 16--19（稀疏/EFS/VSS/envelope）。目标 **200+ 页** PDF。
 
 ## 构建
 

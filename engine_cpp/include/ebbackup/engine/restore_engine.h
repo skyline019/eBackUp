@@ -39,6 +39,7 @@ struct RestoreInodeKeyHash {
 
 struct RestoreOptions {
   std::string encryption_password;
+  std::string recovery_key;
   BackupFilterOptions filter;
   RestorePathRemap path_remap;
   SymlinkRemap symlink_remap;

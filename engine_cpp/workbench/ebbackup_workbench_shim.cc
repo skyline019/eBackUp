@@ -8,6 +8,8 @@
 #include <vector>
 
 #include "ebbackup/catalog/snapshot_meta.h"
+#include "ebbackup/crypto/envelope.h"
+#include "ebbackup/engine/backup_engine.h"
 #include "ebbackup/engine/restore_options_json.h"
 #include "ebbackup/store/maintenance_wizard.h"
 
@@ -110,6 +112,13 @@ void AppendRepoStatsJson(const EbRepoStats& s, std::string* j) {
   *j += ",\"unique_chunks\":" + std::to_string(s.unique_chunks);
   *j += ",\"tombstoned_chunks\":" + std::to_string(s.tombstoned_chunks);
   *j += ",\"ampl_ratio\":" + std::to_string(s.ampl_ratio);
+  *j += ",\"live_uncompressed_bytes\":" + std::to_string(s.live_uncompressed_bytes);
+  *j += ",\"live_stored_payload_bytes\":" + std::to_string(s.live_stored_payload_bytes);
+  *j += ",\"compress_ratio\":" + std::to_string(s.compress_ratio);
+  *j += ",\"compressed_chunk_count\":" + std::to_string(s.compressed_chunk_count);
+  *j += ",\"raw_chunk_count\":" + std::to_string(s.raw_chunk_count);
+  *j += ",\"has_zstd_dict\":" + std::string(s.has_zstd_dict ? "true" : "false");
+  *j += ",\"zstd_dict_bytes\":" + std::to_string(s.zstd_dict_bytes);
   *j += '}';
 }
 
@@ -664,6 +673,66 @@ EBBACKUP_WORKBENCH_API int ebbackup_workbench_set_backup_hooks_json(
   eb_backup_set_backup_hooks(eng, pre.empty() ? nullptr : pre.c_str(),
                              post.empty() ? nullptr : post.c_str());
   return CopyOut("{\"ok\":true}", out, out_cap);
+}
+
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_init_encrypt_json(const char* repo_path,
+                                                                  const char* password,
+                                                                  char* out, size_t out_cap) {
+  if (!repo_path || !password || !password[0]) {
+    return CopyOut(ErrJson(EB_ERROR_INVALID_ARGUMENT, "repo_path and password required"), out,
+                   out_cap);
+  }
+  std::string recovery_key;
+  uint8_t master_key[32]{};
+  const ebbackup::Status st =
+      ebbackup::crypto::CreateEnvelope(repo_path, password, &recovery_key, master_key);
+  if (!st.ok()) return CopyOut(ErrJson(EB_ERROR_IO, st.message().c_str()), out, out_cap);
+  std::string j = "{\"ok\":true,\"recovery_key\":";
+  JsonEscape(recovery_key, &j);
+  j += '}';
+  return CopyOut(j, out, out_cap);
+}
+
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_unwrap_recovery_key_json(
+    EbBackupEngine* eng, const char* recovery_key, char* out, size_t out_cap) {
+  if (!eng || !recovery_key || !recovery_key[0]) {
+    return CopyOut(ErrJson(EB_ERROR_INVALID_ARGUMENT, "engine and recovery_key required"), out,
+                   out_cap);
+  }
+  const EbStatus st = eb_backup_unwrap_with_recovery_key(eng, recovery_key);
+  if (st != EB_OK) return CopyOut(LastErrJson(eng, st), out, out_cap);
+  return CopyOut("{\"ok\":true}", out, out_cap);
+}
+
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_rotate_password_json(
+    EbBackupEngine* eng, const char* old_password, const char* new_password, char* out,
+    size_t out_cap) {
+  if (!eng || !old_password || !new_password) {
+    return CopyOut(ErrJson(EB_ERROR_INVALID_ARGUMENT, "passwords required"), out, out_cap);
+  }
+  const EbStatus st = eb_backup_rotate_password(eng, old_password, new_password);
+  if (st != EB_OK) return CopyOut(LastErrJson(eng, st), out, out_cap);
+  return CopyOut("{\"ok\":true}", out, out_cap);
+}
+
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_upgrade_legacy_envelope_json(
+    EbBackupEngine* eng, const char* password, char* out, size_t out_cap) {
+  if (!eng || !password || !password[0]) {
+    return CopyOut(ErrJson(EB_ERROR_INVALID_ARGUMENT, "engine and password required"), out,
+                   out_cap);
+  }
+  const char* repo_path = eb_backup_engine_repo_path(eng);
+  if (!repo_path || !repo_path[0]) {
+    return CopyOut(ErrJson(EB_ERROR_INVALID_ARGUMENT, "repo not open"), out, out_cap);
+  }
+  std::string recovery_key;
+  const ebbackup::Status st =
+      ebbackup::crypto::UpgradeLegacyToEnvelope(repo_path, password, &recovery_key);
+  if (!st.ok()) return CopyOut(ErrJson(EB_ERROR_IO, st.message().c_str()), out, out_cap);
+  std::string j = "{\"ok\":true,\"recovery_key\":";
+  JsonEscape(recovery_key, &j);
+  j += '}';
+  return CopyOut(j, out, out_cap);
 }
 
 }  // extern "C"

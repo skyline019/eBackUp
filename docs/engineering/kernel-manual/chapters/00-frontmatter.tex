@@ -1,7 +1,7 @@
 \chapter*{摘要}
 \addcontentsline{toc}{chapter}{摘要}
 
-本文档为 \textbf{ebbackup 备份内核}（目录 \filepath{engine\_cpp/}）与 \textbf{运维质量闭环}（bench L1--L7、compact/GC、363 项 gtest、C API ABI v29）的\textbf{完整扩写版}工程技术手册。
+本文档为 \textbf{ebbackup 备份内核}（目录 \filepath{engine\_cpp/}）与 \textbf{运维质量闭环}（bench L1--L7、compact/GC、393 项 gtest、C API ABI v37）的\textbf{完整扩写版}工程技术手册。
 
 \textbf{Part I} 自底向上解析备份内核：Content ID 恒为 \texttt{SHA256(content)}；增量路径 HCRBO + CFI 锚点 reuse；提交点耐久性要求 manifest 写入 superblock 前必须 \texttt{ChunkStore::Flush()}（fsync）。Pipeline 自 \wave{4}（\versiontag{0.8.0}）支持全局 chunk 队列；\wave{5}（\versiontag{0.9.0}）修复 ChunkStore 并发并引入 Stage 3.1/3.2 分层门禁；\versiontag{0.9.4} Sprint 4 在流式 CDC 上增加 Phase B seg1 bulk 与 Phase A \texttt{FastCdcSlice} opt-in 路由。
 
@@ -32,8 +32,8 @@
 Part & 章节 \\
 \midrule
 Part I 内核 & 概述、架构、不变量、BackupEngine、FastCDC/HCRBO、Digest/Crypto、ChunkStore/EbPack、Manifest/Snapshot、Pipeline v4、流式 CDC、恢复/校验、审计/RAR、CLI/daemon \\
-Part II 运维 & bench L1--L7、C API ABI v29、compact/GC、测试/CI \\
-Part I 扩展 & 第 21 章能力 Wave A--T（ABI v14--v29） \\
+Part II 运维 & bench L1--L7、C API ABI v37、compact/GC、测试/CI \\
+Part I 扩展 & 第 21 章 Wave A--T（ABI v14--v29）；第 22 章 Phase 16--19（ABI v33--v37） \\
 附录 & 源码索引、术语表、环境变量、manifest v4/v5、Wave 演进、统计字段索引 \\
 \bottomrule
 \end{longtable}
@@ -48,5 +48,6 @@ Part I 扩展 & 第 21 章能力 Wave A--T（ABI v14--v29） \\
 2026-07-07 & v1.1 & \textbf{完整扩写}：01/02/03/17--20/99 深度重写；目标 120+ 页；对齐 \versiontag{0.9.4} ABI v12、232 gtest、Stage 3.1 floors \\
 2026-07-08 & v1.2 & 第 21 章能力 Wave A--T；C API 扩至 ABI v29；363 gtest；\filepath{docs/WAVE\_ARCHIVE.md} 交叉引用 \\
 2026-07-08 & v1.3 & 第 21 章详实扩写：manifest v5/MBI/三路恢复/Hybrid CDC/插件/窗口 + TikZ 图例 \\
+2026-07-09 & v1.4 & 第 22 章 Phase 16--19（稀疏/EFS/VSS/envelope/Webhook）；C API 扩至 ABI v37；393 gtest；Workbench IT 13 \\
 \bottomrule
 \end{longtable}

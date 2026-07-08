@@ -23,6 +23,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::runtime_info,
             commands::init_repo,
+            commands::init_repo_encrypt,
+            commands::unwrap_recovery_key,
+            commands::rotate_password,
+            commands::upgrade_legacy_envelope,
+            commands::test_webhook,
             commands::open_repo,
             commands::switch_profile,
             commands::close_repo,

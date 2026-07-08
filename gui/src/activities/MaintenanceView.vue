@@ -14,6 +14,11 @@ import { confirmDestructive } from "@/utils/confirmDestructive";
 import { enrichError, formatGenericError } from "@/utils/errorMessages";
 import FieldTip from "@/components/FieldTip.vue";
 import EmptyState from "@/components/EmptyState.vue";
+import {
+  refreshSyncStatus,
+  syncStatusData,
+  syncStatusLoading,
+} from "@/composables/useBackupAlerts";
 
 const repo = useRepoStore();
 const ui = useUiStore();
@@ -54,6 +59,7 @@ const WIZARD_STEPS = ["分析", "Prune", "GC", "Compact", "完成"];
 
 onMounted(async () => {
   if (repo.isOpen) {
+    await refreshSyncStatus();
     await loadOrphanExplain();
     try {
       const check = await syncMaintenanceCheck();
@@ -64,6 +70,16 @@ onMounted(async () => {
   }
 });
 
+async function refreshSyncCard() {
+  await refreshSyncStatus();
+  try {
+    const check = await syncMaintenanceCheck();
+    maintenanceBlockReason.value = check.blocked ? check.reason : "";
+  } catch {
+    maintenanceBlockReason.value = "";
+  }
+}
+
 function reasonLabel(reason: string) {
   return REASON_LABELS[reason] ?? reason;
 }
@@ -73,6 +89,7 @@ function chunkPrefix(hex: string) {
 }
 
 const maintenanceBlockReason = ref("");
+const syncStatus = computed(() => syncStatusData.value);
 
 async function ensureSyncBeforeDestructive(actionLabel: string): Promise<boolean> {
   if (!repo.isOpen) return false;
@@ -246,6 +263,33 @@ async function runGc() {
       class="sync-block-alert"
       :title="maintenanceBlockReason"
     />
+    <section v-if="repo.isOpen" class="panel-card sync-status-card">
+      <div class="head">
+        <h2>同步状态</h2>
+        <div class="head-actions">
+          <el-button link type="primary" :loading="syncStatusLoading" @click="refreshSyncCard">
+            刷新
+          </el-button>
+        </div>
+      </div>
+      <FieldTip
+        content="维护操作（Compact / GC / 重整）在同步有待传 chunk 或维护锁定时会被阻止。"
+      />
+      <template v-if="syncStatus">
+        <dl class="status-dl">
+          <dt>待同步 txn</dt>
+          <dd>{{ syncStatus.pending_txn || "—" }}</dd>
+          <dt>待传 chunk</dt>
+          <dd>{{ syncStatus.pending_chunk_count }}</dd>
+          <dt>失败 chunk</dt>
+          <dd>{{ syncStatus.failed_chunks ?? syncStatus.pending_chunk_count }}</dd>
+          <dt>维护锁定</dt>
+          <dd>{{ syncStatus.maintenance_blocked ? "是" : "否" }}</dd>
+        </dl>
+      </template>
+      <p v-else class="hint">暂无同步状态（未配置 sync 或尚未导出）。</p>
+    </section>
+
     <section v-if="repo.info" class="panel-card stats-grid">
       <div class="head">
         <h2>仓库统计</h2>
@@ -412,6 +456,24 @@ async function runGc() {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+.status-dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+.status-dl dt {
+  color: var(--text-soft);
+}
+.status-dl dd {
+  margin: 0;
+}
+.hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-soft);
 }
 .cards {
   display: grid;

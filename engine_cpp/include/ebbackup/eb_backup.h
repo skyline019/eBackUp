@@ -10,7 +10,7 @@ extern "C" {
 /* All path arguments (repo_path, source_path, dest_path, filter paths, etc.)
  * are UTF-8 encoded, without embedded NUL bytes. */
 
-#define EB_BACKUP_ABI_VERSION 29u
+#define EB_BACKUP_ABI_VERSION 37u
 
 #define EB_BACKUP_FLAG_LZ4 0x0001u
 #define EB_BACKUP_FLAG_PIPELINE 0x0002u
@@ -23,6 +23,11 @@ extern "C" {
 #define EB_BACKUP_FLAG_MANIFEST_BINARY 0x0100u
 #define EB_BACKUP_INIT_LEGACY 0x0200u
 #define EB_BACKUP_FLAG_NO_PIPELINE 0x0400u
+#define EB_BACKUP_FLAG_VSS 0x0800u
+#define EB_BACKUP_FLAG_VSS_APP 0x1000u
+#define EB_BACKUP_INIT_RECOVERY_KEY 0x2000u
+#define EB_BACKUP_FLAG_SPARSE_OFF 0x4000u
+#define EB_BACKUP_FLAG_EFS_EXPORT_KEYS 0x8000u
 
 #define EB_RESTORE_FLAG_SKIP_CONTENT_VERIFY 0x0001u
 
@@ -59,6 +64,13 @@ typedef struct EbRepoStats {
   uint64_t unique_chunks;
   uint64_t tombstoned_chunks;
   double ampl_ratio;
+  uint64_t live_uncompressed_bytes;
+  uint64_t live_stored_payload_bytes;
+  double compress_ratio;
+  uint64_t compressed_chunk_count;
+  uint64_t raw_chunk_count;
+  uint8_t has_zstd_dict;
+  uint64_t zstd_dict_bytes;
 } EbRepoStats;
 
 typedef struct EbCompactReport {
@@ -172,6 +184,17 @@ EbStatus eb_backup_prune_snapshots(EbBackupEngine* eng,
                                      EbPruneReport* report);
 
 void eb_backup_set_password(EbBackupEngine* eng, const char* password);
+/** ABI v34: unlock encrypted repo with recovery key (26-char). */
+EbStatus eb_backup_unwrap_with_recovery_key(EbBackupEngine* eng,
+                                            const char* recovery_key);
+/** ABI v34: rotate envelope password; repo must already be unlocked. */
+EbStatus eb_backup_rotate_password(EbBackupEngine* eng, const char* old_password,
+                                   const char* new_password);
+/** ABI v32: crash|app|auto when EB_BACKUP_FLAG_VSS without EB_BACKUP_FLAG_VSS_APP. */
+EbStatus eb_backup_set_vss_mode(EbBackupEngine* eng, const char* mode);
+/** ABI v32: 0=false, non-zero=true; default true. */
+void eb_backup_set_vss_include_junction_volumes(EbBackupEngine* eng, int include);
+void eb_backup_set_vss_fallback_live(EbBackupEngine* eng, int enable);
 void eb_backup_set_audit_key(EbBackupEngine* eng, const char* audit_key);
 void eb_backup_set_backup_hooks(EbBackupEngine* eng, const char* pre_cmd,
                                 const char* post_cmd);

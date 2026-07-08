@@ -82,6 +82,32 @@ TEST(RepoStatsTest, EngineGetRepoStatsMatchesCompute) {
   EXPECT_EQ(direct.physical_bytes, via_engine.physical_bytes);
   EXPECT_EQ(direct.live_bytes, via_engine.live_bytes);
   EXPECT_EQ(direct.unique_chunks, via_engine.unique_chunks);
+  EXPECT_EQ(direct.live_uncompressed_bytes, via_engine.live_uncompressed_bytes);
+  EXPECT_EQ(direct.compress_ratio, via_engine.compress_ratio);
+}
+
+TEST(RepoStatsTest, CompressRatioVisibleForLiveChunks) {
+  const std::string repo = test::TempDir("stats_compress");
+  const std::string source = test::TempDir("stats_compress_src");
+  ASSERT_TRUE(test::InitV03Repo(repo).ok());
+  test::WriteFile(source + "/compressible.txt",
+                  std::string(512 * 1024, static_cast<char>('A')));
+
+  BackupEngine engine(repo);
+  BackupOptions opts{};
+  opts.compress_mode = CompressMode::kZstd;
+  opts.compress_tier = CompressTier::kBalanced;
+  opts.use_zstd_dict = true;
+  ASSERT_TRUE(engine.Open().ok());
+  ASSERT_TRUE(engine.RunBackup(source, BackupMode::kFull, opts).ok());
+
+  RepoStats stats{};
+  ASSERT_TRUE(ComputeRepoStats(repo, &stats).ok());
+  EXPECT_GT(stats.live_uncompressed_bytes, 0u);
+  EXPECT_GT(stats.live_stored_payload_bytes, 0u);
+  EXPECT_LT(stats.compress_ratio, 1.0);
+  EXPECT_LT(stats.live_stored_payload_bytes, stats.live_uncompressed_bytes);
+  EXPECT_GE(stats.compressed_chunk_count, 1u);
 }
 
 }  // namespace

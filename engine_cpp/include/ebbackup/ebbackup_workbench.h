@@ -163,6 +163,20 @@ EBBACKUP_WORKBENCH_API int ebbackup_workbench_get_backup_report_json(
 EBBACKUP_WORKBENCH_API int ebbackup_workbench_set_backup_hooks_json(
     EbBackupEngine* eng, const char* json, char* out, size_t out_cap);
 
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_init_encrypt_json(const char* repo_path,
+                                                                  const char* password,
+                                                                  char* out, size_t out_cap);
+
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_unwrap_recovery_key_json(
+    EbBackupEngine* eng, const char* recovery_key, char* out, size_t out_cap);
+
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_rotate_password_json(
+    EbBackupEngine* eng, const char* old_password, const char* new_password,
+    char* out, size_t out_cap);
+
+EBBACKUP_WORKBENCH_API int ebbackup_workbench_upgrade_legacy_envelope_json(
+    EbBackupEngine* eng, const char* password, char* out, size_t out_cap);
+
 #ifdef __cplusplus
 }
 #endif

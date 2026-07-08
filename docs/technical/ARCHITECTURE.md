@@ -15,7 +15,9 @@
 │  BackupPipeline — 文件调度、分块、压缩、存储队列           │
 ├──────────────┬──────────────┬──────────────┬──────────────┤
 │ Chunk/HCRBO  │ Compress     │ ChunkStore   │ Snapshot/GC  │
-│ FastCDC/CFI  │ LZ4/zstd     │ EbPack/Legacy│ Compact      │
+│ FastCDC/CFI  │ ContentClass │ EbPack/Legacy│ Compact      │
+│              │ LZ4/zstd     │              │              │
+│              │ CompressTier │              │              │
 ├──────────────┴──────────────┴──────────────┴──────────────┤
 │  Crypto (AES-GCM) · Digest (Legacy/Standard/SHA-NI)       │
 │  Durability · Superblock · Persistent Index                 │
@@ -105,6 +107,7 @@ FileAggregator ──► manifest entry ──► Flush/fsync ──► superblo
 ## 相关文档
 
 - [CHUNK_AND_CDC.md](CHUNK_AND_CDC.md) — FastCDC、HCRBO、流式路径细节
+- [COMPRESSION.md](COMPRESSION.md) — CompressTier、Zstd LDM、仓库字典
 - [STORAGE_AND_DURABILITY.md](STORAGE_AND_DURABILITY.md) — 仓库布局与耐久性
 - [VERSION_HISTORY.md](../VERSION_HISTORY.md) — 版本演进时间线
 - [PERF_BASELINE.md](../reference/PERF_BASELINE.md) — L1–L7 门禁

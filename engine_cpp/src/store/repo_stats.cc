@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <unordered_set>
 
+#include "ebbackup/codec/zstd_dict.h"
+#include "ebbackup/common/path_encoding.h"
 #include "ebbackup/engine/manifest.h"
 #include "ebbackup/state/superblock.h"
 #include "ebbackup/store/chunk_store.h"
@@ -94,6 +96,28 @@ Status ComputeRepoStats(const std::string& repo_path, RepoStats* out) {
   out->ampl_ratio =
       live > 0 ? static_cast<double>(out->physical_bytes) / static_cast<double>(live)
                : 1.0;
+
+  ChunkStore::ReferencedCompressStats compress{};
+  store.ComputeReferencedCompressStats(referenced, &compress);
+  out->live_uncompressed_bytes = compress.uncompressed_bytes;
+  out->live_stored_payload_bytes = compress.stored_payload_bytes;
+  out->compressed_chunk_count = compress.compressed_chunks;
+  out->raw_chunk_count = compress.raw_chunks;
+  if (compress.uncompressed_bytes > 0) {
+    out->compress_ratio =
+        static_cast<double>(compress.stored_payload_bytes) /
+        static_cast<double>(compress.uncompressed_bytes);
+  } else {
+    out->compress_ratio = 1.0;
+  }
+
+  const std::string dict_path = ZstdDictionaryPath(repo_path);
+  std::error_code ec;
+  if (std::filesystem::exists(PathFromUtf8(dict_path), ec)) {
+    out->has_zstd_dict = true;
+    out->zstd_dict_bytes = std::filesystem::file_size(PathFromUtf8(dict_path), ec);
+  }
+
   return Status::Ok();
 }
 

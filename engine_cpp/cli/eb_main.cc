@@ -25,7 +25,8 @@
 #include "ebbackup/scan/exclude_suggestions.h"
 #include "ebbackup/store/chunk_compactor.h"
 #include "ebbackup/store/retention_policy.h"
-#include "ebbackup/store/snapshot_store.h"
+#include "ebbackup/crypto/envelope.h"
+#include "ebbackup/winmeta/vss_shadow_storage.h"
 
 namespace {
 
@@ -33,6 +34,8 @@ void PrintUsage() {
   std::fprintf(stderr,
                "Usage:\n"
                "  eb init <repo> [--legacy-digest] [--legacy-init]\n"
+               "      [--encrypt] [--password-env VAR] [--password-file PATH]\n"
+               "      [--recovery-key-out PATH]\n"
                "  eb backup <repo> <source> [--incremental] [--progress] [--lz4]\n"
                "      [--job JOB_ID]  (with --job, source comes from jobs.json)\n"
                "      [--compress auto|lz4|zstd|off] [--compress-tier fast|balanced|max]\n"
@@ -45,6 +48,9 @@ void PrintUsage() {
                "      [--ext EXT] [--min-size N] [--max-size N]\n"
                "      [--mtime-after UNIX] [--mtime-before UNIX] [--uid N]\n"
                "      [--plugins ID,ID] [--pre-cmd CMD] [--post-cmd CMD]\n"
+               "      [--vss] [--vss-mode crash|app|auto] [--vss-fallback-live]\n"
+               "      [--vss-no-junction-volumes] [--sparse auto|off]\n"
+               "      [--efs-export-keys]\n"
                "  eb verify <repo> [--require-anchor] [--at TXN] [--password-env VAR]\n"
                "      [--password-file PATH]\n"
                "  eb verify-chain <repo> [--at TXN] [--json]\n"
@@ -52,6 +58,11 @@ void PrintUsage() {
                "  eb orphan-explain <repo> [--json] [--limit N]\n"
                "  eb audit-ops list <repo> [--json]\n"
                "  eb recover <repo>\n"
+               "  eb unlock <repo> [--password-env VAR] [--password-file PATH]\n"
+               "      [--recovery-key KEY]\n"
+               "  eb rotate-password <repo> [--password-env VAR] [--password-file PATH]\n"
+               "      --new-password PASS | --new-password-file PATH\n"
+               "  eb vss status\n"
                "  eb restore <repo> <dest> [--password-env VAR] [--password-file PATH]\n"
                "      [--filter-file PATH] [--include PATH] [--exclude PATH]\n"
                "      [--include-glob GLOB] [--exclude-glob GLOB]\n"
@@ -157,6 +168,36 @@ void ApplyPluginsCli(int argc, char** argv, std::vector<std::string>* out) {
     }
   }
   if (!item.empty()) out->push_back(item);
+}
+
+void ApplyVssCli(int argc, char** argv, ebbackup::BackupOptions* opts) {
+  if (!opts) return;
+  opts->use_vss = HasFlag(argc, argv, "--vss");
+  opts->vss_fallback_live = HasFlag(argc, argv, "--vss-fallback-live");
+  opts->vss_include_junction_volumes =
+      !HasFlag(argc, argv, "--vss-no-junction-volumes");
+  if (const char* mode = GetFlagValue(argc, argv, "--vss-mode")) {
+    ebbackup::winmeta::VssConsistencyMode parsed{};
+    if (ebbackup::winmeta::ParseVssConsistencyMode(mode, &parsed)) {
+      opts->vss_mode = parsed;
+    }
+  }
+  if (opts->use_vss && opts->vss_mode == ebbackup::winmeta::VssConsistencyMode::kCrash &&
+      HasFlag(argc, argv, "--vss-app")) {
+    opts->vss_mode = ebbackup::winmeta::VssConsistencyMode::kApp;
+  }
+}
+
+void ApplySparseCli(int argc, char** argv, ebbackup::BackupOptions* opts) {
+  if (!opts) return;
+  if (const char* mode = GetFlagValue(argc, argv, "--sparse")) {
+    if (std::strcmp(mode, "off") == 0) {
+      opts->sparse_mode = ebbackup::SparseMode::kOff;
+    } else {
+      opts->sparse_mode = ebbackup::SparseMode::kAuto;
+    }
+  }
+  opts->efs_export_keys = HasFlag(argc, argv, "--efs-export-keys");
 }
 
 std::string ReadPassword(int argc, char** argv) {
@@ -278,8 +319,78 @@ int main(int argc, char** argv) {
       opts.ebpack = true;
       opts.coalesced_meta = true;
     }
-    return StatusExit(ebbackup::BackupEngine::InitRepoEx(argv[2], opts));
+    const ebbackup::Status init_st =
+        ebbackup::BackupEngine::InitRepoEx(argv[2], opts);
+    if (!init_st.ok()) return StatusExit(init_st);
+    if (HasFlag(argc, argv, "--encrypt")) {
+      const std::string password = ReadPassword(argc, argv);
+      if (password.empty()) {
+        std::fprintf(stderr, "error: --encrypt requires password\n");
+        return 1;
+      }
+      std::string recovery_key;
+      uint8_t master_key[32]{};
+      const ebbackup::Status enc_st = ebbackup::crypto::CreateEnvelope(
+          argv[2], password, &recovery_key, master_key);
+      if (!enc_st.ok()) return StatusExit(enc_st);
+      if (const char* out_path = GetFlagValue(argc, argv, "--recovery-key-out")) {
+        std::ofstream out(out_path, std::ios::trunc);
+        out << recovery_key << "\n";
+      } else {
+        std::fprintf(stderr, "recovery_key: %s\n", recovery_key.c_str());
+      }
+    }
+    return 0;
   }
+
+  if (cmd == "unlock") {
+    if (argc < 3) {
+      PrintUsage();
+      return 1;
+    }
+    ebbackup::BackupEngine engine(argv[2]);
+    const ebbackup::Status open_st = engine.Open();
+    if (!open_st.ok()) return StatusExit(open_st);
+    if (const char* rk = GetFlagValue(argc, argv, "--recovery-key")) {
+      return StatusExit(engine.UnwrapWithRecoveryKey(rk));
+    }
+    const std::string password = ReadPassword(argc, argv);
+    return StatusExit(engine.UnlockRepo(password));
+  }
+
+  if (cmd == "rotate-password") {
+    if (argc < 3) {
+      PrintUsage();
+      return 1;
+    }
+    std::string new_password;
+    if (const char* np = GetFlagValue(argc, argv, "--new-password")) {
+      new_password = np;
+    } else if (const char* npf = GetFlagValue(argc, argv, "--new-password-file")) {
+      std::ifstream in(npf);
+      std::getline(in, new_password);
+    }
+    if (new_password.empty()) {
+      std::fprintf(stderr, "error: new password required\n");
+      return 1;
+    }
+    ebbackup::BackupEngine engine(argv[2]);
+    const ebbackup::Status open_st = engine.Open();
+    if (!open_st.ok()) return StatusExit(open_st);
+    const std::string old_password = ReadPassword(argc, argv);
+    return StatusExit(engine.RotatePassword(old_password, new_password));
+  }
+
+#ifdef _WIN32
+  if (cmd == "vss" && argc >= 3 && std::strcmp(argv[2], "status") == 0) {
+    std::vector<ebbackup::winmeta::VssShadowStorageInfo> entries;
+    const ebbackup::Status st = ebbackup::winmeta::QueryShadowStorage(&entries);
+    if (!st.ok()) return StatusExit(st);
+    std::printf("%s\n",
+                ebbackup::winmeta::FormatShadowStorageStatusJson(entries).c_str());
+    return 0;
+  }
+#endif
 
   if (cmd == "backup") {
     const char* job_id = GetFlagValue(argc, argv, "--job");
@@ -317,6 +428,8 @@ int main(int argc, char** argv) {
         opts.post_backup_cmd = post;
       }
       ApplyPluginsCli(argc, argv, &opts.plugins);
+      ApplyVssCli(argc, argv, &opts);
+      ApplySparseCli(argc, argv, &opts);
       const ebbackup::Status filter_st =
           ebbackup::LoadFilterFromCli(argc, argv, &opts.filter);
       if (!filter_st.ok()) return StatusExit(filter_st);
@@ -352,6 +465,8 @@ int main(int argc, char** argv) {
       opts.post_backup_cmd = post;
     }
     ApplyPluginsCli(argc, argv, &opts.plugins);
+    ApplyVssCli(argc, argv, &opts);
+    ApplySparseCli(argc, argv, &opts);
     const ebbackup::Status filter_st = ebbackup::LoadFilterFromCli(argc, argv, &opts.filter);
     if (!filter_st.ok()) return StatusExit(filter_st);
 
@@ -816,6 +931,8 @@ int main(int argc, char** argv) {
     opts.use_encryption = HasFlag(argc, argv, "--encrypt");
     opts.encryption_password = ReadPassword(argc, argv);
     ApplyCompressCli(argc, argv, &opts);
+    ApplyVssCli(argc, argv, &opts);
+    ApplySparseCli(argc, argv, &opts);
     const ebbackup::Status filter_st = ebbackup::LoadFilterFromCli(argc, argv, &opts.filter);
     if (!filter_st.ok()) return StatusExit(filter_st);
     int debounce_ms = 2000;
@@ -1008,6 +1125,8 @@ int main(int argc, char** argv) {
       ebbackup::BackupOptions opts{};
       opts.use_lz4 = HasFlag(argc, argv, "--lz4");
       opts.use_pipeline = HasFlag(argc, argv, "--pipeline");
+      ApplyVssCli(argc, argv, &opts);
+      ApplySparseCli(argc, argv, &opts);
       const bool drain = sub == "drain" || HasFlag(argc, argv, "--drain");
       const ebbackup::Status st = engine.RunJobQueue(drain, opts);
       if (st.ok()) std::printf("queue-run: OK\n");
@@ -1108,14 +1227,23 @@ int main(int argc, char** argv) {
     if (!st.ok()) return StatusExit(st);
     std::printf(
         "repo-stats: physical=%llu live=%llu orphan=%llu manifest=%llu "
-        "unique_chunks=%llu tombstoned=%llu ampl_ratio=%.3f\n",
+        "unique_chunks=%llu tombstoned=%llu ampl_ratio=%.3f "
+        "live_uncompressed=%llu live_stored_payload=%llu compress_ratio=%.4f "
+        "compressed_chunks=%llu raw_chunks=%llu zstd_dict=%s(%llu bytes)\n",
         static_cast<unsigned long long>(stats.physical_bytes),
         static_cast<unsigned long long>(stats.live_bytes),
         static_cast<unsigned long long>(stats.orphan_bytes),
         static_cast<unsigned long long>(stats.manifest_bytes),
         static_cast<unsigned long long>(stats.unique_chunks),
         static_cast<unsigned long long>(stats.tombstoned_chunks),
-        stats.ampl_ratio);
+        stats.ampl_ratio,
+        static_cast<unsigned long long>(stats.live_uncompressed_bytes),
+        static_cast<unsigned long long>(stats.live_stored_payload_bytes),
+        stats.compress_ratio,
+        static_cast<unsigned long long>(stats.compressed_chunk_count),
+        static_cast<unsigned long long>(stats.raw_chunk_count),
+        stats.has_zstd_dict ? "yes" : "no",
+        static_cast<unsigned long long>(stats.zstd_dict_bytes));
     return 0;
   }
 

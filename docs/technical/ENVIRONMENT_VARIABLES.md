@@ -4,6 +4,19 @@
 
 ---
 
+## 压缩（运行时选项）
+
+压缩档位与字典主要通过 **CLI / daemon / BackupOptions** 配置，见 [COMPRESSION.md](COMPRESSION.md)。
+
+| 选项 | 说明 |
+|------|------|
+| `--compress-tier fast\|balanced\|max` | 三档 Zstd 策略；balanced/max 默认启用字典 |
+| `--compress-level N` | 覆盖档位内 Zstd level |
+| `--zstd-dict` / `--no-zstd-dict` | 强制启用或禁用仓库字典 |
+| `compress_tier`（daemon JSON） | 同 CLI 档位 |
+
+---
+
 ## 备份 Pipeline
 
 | 变量 | 默认值 | 说明 |
@@ -62,6 +75,7 @@ $env:EB_BENCH_FLOOR_PATH = "e:\recoveryProjects\engine_cpp\bench\baselines\ci_fl
 
 ## 相关文档
 
+- [COMPRESSION.md](COMPRESSION.md) — CompressTier、字典与 repo-stats 压缩率
 - [CHUNK_AND_CDC.md](CHUNK_AND_CDC.md) — CDC 路径与环境变量交互
 - [TEST_AND_CI.md](TEST_AND_CI.md)
 - [PERF_BASELINE.md](../reference/PERF_BASELINE.md)

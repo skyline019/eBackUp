@@ -1,5 +1,108 @@
 # Changelog
 
+## v0.10.3 — 2026-07-08
+
+### Added — Phase 16–19 收尾（ABI v37）
+
+- **Manifest EFS meta**：`kMetaEfs` 持久化 `efs_encrypted` + `efs_key_blob_b64`
+- **EFS Tier B 完整**：`ReadEncryptedFileRaw` / `WriteEncryptedFileRaw`；恢复 `efs_restored`
+- **VSS WMI**：`Win32_ShadowStorage` 优先；`vssadmin` fallback
+- **Workbench**：`init_encrypt` / `unwrap_recovery_key` / `rotate_password` / `upgrade_legacy_envelope` JSON API
+- **C API flags**：`EB_BACKUP_FLAG_SPARSE_OFF`、`EB_BACKUP_FLAG_EFS_EXPORT_KEYS`
+- **GUI**：恢复密钥向导、解锁/轮换密码、作业 quiesce/webhook、稀疏/EFS 高级选项、Webhook 测试
+- **ebrecover-portable.zip**：CI artifact + `package_ebrecover_portable.ps1`
+- **报告**：`recovery_key_issued`（本次 txn 新生成时）
+
+## v0.10.2 — 2026-07-08
+
+### Added — EFS + 告警 + 云可观测（Phase 19 / ABI v36）
+
+- **EFS Tier A**：检测加密文件、skip 内容、`efs_encrypted_skipped` issue、`efs_skipped_count`
+- **EFS Tier B**：`--efs-export-keys` + `ReadEncryptedFileRaw` → manifest `efs_key_blob_b64`
+- **Webhook**：`post_backup_webhook_url`（job/daemon）；备份完成后 POST 报告 JSON
+- **sync_cpp**：`status --json` 增 `failed_chunks`、`backoff_until_unix`、`last_error`
+- **GUI**：`BackupJobDto` / 报告 DTO 扩展 quiesce、webhook、EFS/VSS 字段
+
+## v0.10.1 — 2026-07-08
+
+### Added — VSS 运维深化（Phase 18 / ABI v35）
+
+- **真实影子存储**：`vss_shadow_storage.cc` — `vssadmin list shadowstorage` 解析与预检增强
+- **CLI**：`eb vss status` — 影子关联与空间诊断
+- **Job**：`quiesce_profile`、`vss_app_failure_policy`；schedule/daemon 集成
+- **报告**：`vss_shadow_storage_bytes[]` 按卷
+
+## v0.10.0 — 2026-07-08
+
+### Added — 恢复密钥与灾备交付（Phase 17 / ABI v34）
+
+- **`crypto.envelope.json`**：主密钥 + 密码/恢复密钥双包裹；向后兼容 legacy salt
+- **C API**：`eb_backup_unwrap_with_recovery_key`、`eb_backup_rotate_password`
+- **CLI**：`eb init --encrypt --recovery-key-out`；`eb unlock`；`eb rotate-password`
+- **ebrecover**：`list`；`--password` / `--recovery-key`；restore 进度
+
+## v0.9.9 — 2026-07-08
+
+### Added — NTFS 稀疏文件（Phase 16 / ABI v33）
+
+- **稀疏检测/备份/恢复**：`FSCTL_GET_RETRIEVAL_POINTERS` / `FSCTL_SET_SPARSE`
+- **Manifest**：sparse runs + chunk offsets；报告 `sparse_file_count`
+- **CLI**：`--sparse auto|off`（Windows 默认 auto）
+- **测试**：`sparse_backup_restore_test`
+
+## v0.9.8 — 2026-07-08
+
+### Added — VSS 深化（Phase 15 / ABI v32）
+
+- **VSS 生命周期**：`Begin` / `FinishBackup` / `End` 拆分；持久 `IVssBackupComponents`；读完成后 `GatherWriterStatus` → `BackupComplete`
+- **多卷闭包**：`vss_volume_closure.cc` — junction 探测 + 多卷 `AddToSnapshotSet`
+- **一致性模式**：crash / app / auto；`--vss-mode`；`EB_BACKUP_FLAG_VSS_APP`（0x1000）
+- **影子预检**：默认 512MB 阈值；`vss_shadow_storage_low` issue
+- **报告扩展**：`vss_mode`、`vss_cross_volume`、`vss_shadow_storage_ok`、`vss_writers[]`
+- **Job / GUI**：`jobs.json` VSS 字段；BackupView 模式与 junction 选项；`eb_backup_set_vss_mode`
+- **文档**：[`docs/technical/VSS.md`](docs/technical/VSS.md)
+
+## v0.9.7 — 2026-07-08
+
+### Added — VSS 核心（Phase 14 / ABI v31）
+
+- **Windows VSS 快照读**：`--vss` / `EB_BACKUP_FLAG_VSS`；crash-consistent 目录备份；`--vss-fallback-live` 可选降级
+- **`VssSession`**：`engine_cpp/src/winmeta/vss_session.cc`；路径重映射 `walk_root` / `logical_root` 扫描
+- **备份报告**：`vss_used`、`vss_consistency`、`vss_snapshot_set_id`、`vss_volumes`
+- **GUI**：BackupView 高级「使用 VSS 卷影副本」；BackupReportPanel 展示 VSS 状态
+- **Schedule**：`use_vss` / `vss_fallback_live` 配置键
+
+## v0.9.6 — 2026-07-08
+
+### Added — Tiered compression & repo-stats observability
+
+- **CompressTier** 三档：`fast`（默认）/ `balanced` / `max`；CLI `--compress-tier`、`--compress-level`、`--zstd-dict` / `--no-zstd-dict`
+- **Zstd LDM** 与 **仓库级字典**（`{repo}/meta/zstd_dict.bin`）；`balanced`/`max` 默认启用字典训练与加载
+- **ABI v30**：`EbRepoStats` 扩展 `live_uncompressed_bytes`、`live_stored_payload_bytes`、`compress_ratio`、`compressed_chunk_count`、`raw_chunk_count`、`has_zstd_dict`、`zstd_dict_bytes`
+- **`eb repo-stats`** / Workbench `repo_info_json` 输出压缩率与字典信息
+- **文档**：[`docs/technical/COMPRESSION.md`](docs/technical/COMPRESSION.md)
+
+### Added — Pipeline / restore / resilience
+
+- **Pipeline 死锁规避**：`ForEachRecord` 锁外回调、store shard 独立锁序
+- **GB 级流式**：大文件 backup streaming、restore 分段校验（`restore_streaming_test`）
+- **Decode fuzz**：`tests/fuzz/decode_corruption_test.cc`（ChunkStore / EbPack record 变异，`Get()` 不 crash）
+
+### Changed — CI & sync/GUI
+
+- GitHub Actions 触发路径含 `sync_cpp/**`、`gui/**`；`EBBACKUP_BUILD_SYNC=ON`
+- Windows：`ebsync_tests` + `npm run build` + Workbench Rust 集成测试
+- Linux：`ebsync_tests` + GUI 前端 build；ASan job 含 sync
+
+### Fixed
+
+- **ZstdDictTest** 全量套件偶发 SEH：测试 fixture 串行化 + 独立 temp 路径
+- Workbench 集成测试支持 `.dll` / `.so` / `.dylib`（`EBBACKUP_DLL_DIR`）
+
+### Docs
+
+- 全量文档同步至 ABI v30、ctest **383** gtest、`COMPRESSION.md`、CI/sync 矩阵
+
 ## v0.9.5 — 2026-07-07
 
 ### Added — Desktop Workbench GUI (`gui/`)

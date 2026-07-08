@@ -56,6 +56,13 @@ struct EbBackupEngineImpl {
   std::string pre_backup_cmd;
   std::string post_backup_cmd;
   std::vector<std::string> plugins;
+  ebbackup::winmeta::VssConsistencyMode vss_mode_override{
+      ebbackup::winmeta::VssConsistencyMode::kCrash};
+  bool vss_mode_override_set{false};
+  bool vss_include_junction_override_set{false};
+  bool vss_include_junction_volumes{true};
+  bool vss_fallback_live_set{false};
+  bool vss_fallback_live{false};
   EbProgressFn progress_fn{nullptr};
   void* progress_user{nullptr};
 };
@@ -119,6 +126,26 @@ void ForwardProgress(uint64_t pct, void* user_data) {
   }
 }
 
+void ApplyVssFlags(uint32_t flags, EbBackupEngineImpl* impl,
+                   ebbackup::BackupOptions* options) {
+  if (!options) return;
+  options->use_vss = (flags & EB_BACKUP_FLAG_VSS) != 0;
+  if (!options->use_vss) return;
+  if (flags & EB_BACKUP_FLAG_VSS_APP) {
+    options->vss_mode = ebbackup::winmeta::VssConsistencyMode::kApp;
+  } else if (impl && impl->vss_mode_override_set) {
+    options->vss_mode = impl->vss_mode_override;
+  } else {
+    options->vss_mode = ebbackup::winmeta::VssConsistencyMode::kCrash;
+  }
+  if (impl && impl->vss_include_junction_override_set) {
+    options->vss_include_junction_volumes = impl->vss_include_junction_volumes;
+  }
+  if (impl && impl->vss_fallback_live_set) {
+    options->vss_fallback_live = impl->vss_fallback_live;
+  }
+}
+
 EbStatus RunWithMode(EbBackupEngine* eng, const char* source_path,
                      ebbackup::BackupMode mode, uint32_t flags) {
   if (!eng || !source_path) return EB_ERROR_INVALID_ARGUMENT;
@@ -138,6 +165,11 @@ EbStatus RunWithMode(EbBackupEngine* eng, const char* source_path,
   if (flags & EB_BACKUP_FLAG_BALANCED_DURABILITY) {
     options.durability = ebbackup::DurabilityMode::kBalanced;
   }
+  ApplyVssFlags(flags, impl, &options);
+  options.sparse_mode = (flags & EB_BACKUP_FLAG_SPARSE_OFF) != 0
+                            ? ebbackup::SparseMode::kOff
+                            : ebbackup::SparseMode::kAuto;
+  options.efs_export_keys = (flags & EB_BACKUP_FLAG_EFS_EXPORT_KEYS) != 0;
   options.encryption_password = impl->password;
   options.filter = impl->filter;
   options.pre_backup_cmd = impl->pre_backup_cmd;
@@ -262,6 +294,63 @@ void eb_backup_set_password(EbBackupEngine* eng, const char* password) {
   auto* impl = reinterpret_cast<EbBackupEngineImpl*>(eng);
   impl->password = password ? password : "";
   g_bundle_password = impl->password;
+}
+
+EbStatus eb_backup_unwrap_with_recovery_key(EbBackupEngine* eng,
+                                            const char* recovery_key) {
+  if (!eng || !recovery_key) return EB_ERROR_INVALID_ARGUMENT;
+  auto* impl = reinterpret_cast<EbBackupEngineImpl*>(eng);
+  const ebbackup::Status st = impl->engine->UnwrapWithRecoveryKey(recovery_key);
+  if (!st.ok()) {
+    impl->last_error = st.message();
+    return ToEbStatus(st);
+  }
+  return EB_OK;
+}
+
+EbStatus eb_backup_rotate_password(EbBackupEngine* eng, const char* old_password,
+                                   const char* new_password) {
+  if (!eng || !old_password || !new_password) return EB_ERROR_INVALID_ARGUMENT;
+  auto* impl = reinterpret_cast<EbBackupEngineImpl*>(eng);
+  const ebbackup::Status st =
+      impl->engine->RotatePassword(old_password, new_password);
+  if (!st.ok()) {
+    impl->last_error = st.message();
+    return ToEbStatus(st);
+  }
+  impl->password = new_password;
+  return EB_OK;
+}
+
+EbStatus eb_backup_set_vss_mode(EbBackupEngine* eng, const char* mode) {
+  if (!eng) return EB_ERROR_INVALID_ARGUMENT;
+  auto* impl = reinterpret_cast<EbBackupEngineImpl*>(eng);
+  if (!mode || !mode[0]) {
+    impl->vss_mode_override_set = false;
+    return EB_OK;
+  }
+  ebbackup::winmeta::VssConsistencyMode parsed{};
+  if (!ebbackup::winmeta::ParseVssConsistencyMode(mode, &parsed)) {
+    impl->last_error = "invalid vss mode";
+    return EB_ERROR_INVALID_ARGUMENT;
+  }
+  impl->vss_mode_override = parsed;
+  impl->vss_mode_override_set = true;
+  return EB_OK;
+}
+
+void eb_backup_set_vss_include_junction_volumes(EbBackupEngine* eng, int include) {
+  if (!eng) return;
+  auto* impl = reinterpret_cast<EbBackupEngineImpl*>(eng);
+  impl->vss_include_junction_volumes = include != 0;
+  impl->vss_include_junction_override_set = true;
+}
+
+void eb_backup_set_vss_fallback_live(EbBackupEngine* eng, int enable) {
+  if (!eng) return;
+  auto* impl = reinterpret_cast<EbBackupEngineImpl*>(eng);
+  impl->vss_fallback_live = enable != 0;
+  impl->vss_fallback_live_set = true;
 }
 
 void eb_backup_set_audit_key(EbBackupEngine* eng, const char* audit_key) {
@@ -475,6 +564,13 @@ EbStatus eb_backup_repo_stats(EbBackupEngine* eng, EbRepoStats* out) {
   out->unique_chunks = stats.unique_chunks;
   out->tombstoned_chunks = stats.tombstoned_chunks;
   out->ampl_ratio = stats.ampl_ratio;
+  out->live_uncompressed_bytes = stats.live_uncompressed_bytes;
+  out->live_stored_payload_bytes = stats.live_stored_payload_bytes;
+  out->compress_ratio = stats.compress_ratio;
+  out->compressed_chunk_count = stats.compressed_chunk_count;
+  out->raw_chunk_count = stats.raw_chunk_count;
+  out->has_zstd_dict = stats.has_zstd_dict ? 1u : 0u;
+  out->zstd_dict_bytes = stats.zstd_dict_bytes;
   return EB_OK;
 }
 
@@ -930,6 +1026,7 @@ EbStatus eb_backup_run_job(EbBackupEngine* eng, const char* job_id, int incremen
   if (flags & EB_BACKUP_FLAG_BALANCED_DURABILITY) {
     options.durability = ebbackup::DurabilityMode::kBalanced;
   }
+  ApplyVssFlags(flags, impl, &options);
   options.encryption_password = impl->password;
   options.filter = impl->filter;
   options.pre_backup_cmd = impl->pre_backup_cmd;

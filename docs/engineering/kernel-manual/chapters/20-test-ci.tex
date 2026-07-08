@@ -1,39 +1,39 @@
 \chapter{测试矩阵与 CI}
 \label{ch:test-ci}
 
-\section{测试规模概览（\versiontag{0.9.4}）}
+\section{测试规模概览（\versiontag{0.10.3}）}
 
 \begin{itemize}[nosep]
-  \item \textbf{232} GoogleTest \texttt{TEST()} 宏（\texttt{ebbackup\_tests} target）；
-  \item \textbf{76} 测试源文件（\filepath{*\_test.cc}）；
+  \item \textbf{393} GoogleTest \texttt{TEST()} 宏（\texttt{ebbackup\_tests} target）；
+  \item \textbf{90+} 测试源文件（\filepath{*\_test.cc}，含 winmeta/efs/sparse/vss\_shadow）；
   \item C API：\texttt{eb\_run\_tests\_capi}（8 tests）；
   \item Bench 门禁：\texttt{ebbackup\_bench\_check}（L1--L7）；
-  \item CI：\filepath{.github/workflows/ebbackup.yml} — Windows + Linux Release + Linux ASan。
+  \item Workbench Rust IT：\filepath{workbench\_integration.rs}（\textbf{13} tests，Windows）；
+  \item CI：\filepath{.github/workflows/ebbackup.yml} — Windows + Linux Release + Linux ASan + \texttt{ebrecover-portable.zip}。
 \end{itemize}
 
-\section{232 测试按目录分解}
+\section{393 测试按目录分解（摘要）}
 
 \begin{longtable}{@{}rlrp{6.5cm}@{}}
 \toprule
 目录 & Tests & 文件数 & 覆盖重点 \\
 \midrule
 \endhead
-\filepath{tests/engine/} & 79 & 24 & E2E、restore、snapshot、manifest、C API、fixture \\
-\filepath{tests/store/} & 23 & 11 & ChunkStore、EbPack、index、compact、GC、repo-stats \\
+\filepath{tests/engine/} & 79+ & 28+ & E2E、restore、manifest、C API、envelope \\
+\filepath{tests/winmeta/} & 20+ & 12+ & VSS、sparse、EFS、ACL、hardlink \\
+\filepath{tests/store/} & 23 & 11 & ChunkStore、EbPack、index、compact、GC \\
+\filepath{tests/report/} & 8+ & 2+ & backup report、RPO、webhook 字段 \\
+\filepath{tests/crypto/} & 23+ & 7+ & AES-GCM、PBKDF2、envelope \\
 \filepath{tests/failure/} & 20 & 4 & powerfail、chaos、balanced durability \\
-\filepath{tests/chunk/} & 20 & 7 & FastCDC、streaming、digest、HCRBO bounds \\
-\filepath{tests/pipeline/} & 20 & 7 & v3/v4、streaming、parity、encrypt \\
-\filepath{tests/crypto/} & 21 & 6 & AES-GCM NIST、PBKDF2、digest 双栈 \\
-\filepath{tests/scan/} & 16 & 3 & backup filter（12）、special files \\
-\filepath{tests/audit/} & 8 & 3 & RAR、Merkle、CARL \\
-\filepath{tests/daemon/} & 9 & 4 & schedule JSON、watch smoke \\
-\filepath{tests/codec/} & 8 & 3 & LZ4、zstd、ContentClass \\
-\filepath{tests/state/} & 5 & 3 & superblock、FSM、sync executor \\
-\filepath{tests/cli/} & 3 & 1 & restore CLI \\
-\filepath{tests/archive/} & 1 & 1 & eb\_bundle \\
-\filepath{tests/bench/} & 1 & 1 & reuse gate \\
+\filepath{tests/chunk/} & 20 & 7 & FastCDC、streaming、digest、HCRBO \\
+\filepath{tests/pipeline/} & 24+ & 8+ & v3/v4、streaming、deadlock parity \\
+\filepath{tests/scan/} & 16+ & 4+ & backup filter、ADS、scan errors \\
+\filepath{tests/job/} & 12+ & 4+ & jobs.json、backup window、multi-job \\
+\filepath{tests/plugin/} & 8+ & 4+ & sqlite、registry、vhdx \\
+\filepath{tests/catalog/} & 10+ & 5+ & path index、MBI、reachability \\
+\filepath{tests/restore/} & 16+ & 2+ & in-place、three-way \\
 \midrule
-\textbf{合计} & \textbf{232} & \textbf{76} & \\
+\textbf{合计} & \textbf{393} & \textbf{90+} & 见 \filepath{docs/technical/TEST\_AND\_CI.md} \\
 \bottomrule
 \end{longtable}
 
@@ -115,8 +115,26 @@ Init helpers：\texttt{InitLegacyRepo}、\texttt{InitV03Repo}、\texttt{InitV05R
 \begin{itemize}[nosep]
   \item 检测 ChunkStore 并发 rehash、use-after-free（v0.9.0 修复的 pipeline store race）；
   \item \texttt{-fno-omit-frame-pointer -g} 保留栈回溯；
-  \item 与 Release bench 互补：ASan 不重跑 L5 绝对吞吐门禁（太慢），但跑全量 232 gtest。
+  \item 与 Release bench 互补：ASan 不重跑 L5 绝对吞吐门禁（太慢），但跑全量 393 gtest。
 \end{itemize}
+
+\section{Workbench Rust 集成测试（13 项）}
+
+\filepath{gui/src-tauri/tests/workbench\_integration.rs} 对 \filepath{ebbackup\_workbench.dll} JSON shim 做 roundtrip：
+
+\begin{itemize}[nosep]
+  \item 仓库 init/open、backup、verify、restore、maintenance wizard；
+  \item 作业 CRUD、队列 drain、RPO/reachability/orphan explain；
+  \item \versiontag{0.10.3}：\texttt{init\_encrypt\_json} recovery key；Phase 18 job 三字段 roundtrip。
+\end{itemize}
+
+本地命令（Windows/WSL 均可，需先 build DLL）：
+\begin{lstlisting}[language=bash,caption={Workbench IT}]
+cmake --build build --config Release --target ebbackup_workbench
+cd gui && npm run sync:runtime
+cd src-tauri && EBBACKUP_DLL_DIR=../../build/engine_cpp/Release \
+  cargo test --test workbench_integration
+\end{lstlisting}
 
 \section{本地等效命令}
 

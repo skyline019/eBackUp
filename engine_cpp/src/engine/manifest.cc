@@ -31,6 +31,8 @@ enum ManifestV4MetaFlags : uint32_t {
   kMetaReparse = 0x80u,
   kMetaStream = 0x100u,
   kMetaReparseTarget = 0x200u,
+  kMetaSparse = 0x400u,
+  kMetaEfs = 0x800u,
 };
 
 void WriteU32(std::vector<uint8_t>& out, uint32_t v) {
@@ -82,6 +84,8 @@ uint32_t BuildV5MetaFlags(const ManifestFileEntry& f) {
   if (f.reparse_tag != 0) flags |= kMetaReparse;
   if (!f.stream_name.empty()) flags |= kMetaStream;
   if (!f.reparse_target.empty()) flags |= kMetaReparseTarget;
+  if (f.has_sparse_meta()) flags |= kMetaSparse;
+  if (f.has_efs_meta()) flags |= kMetaEfs;
   return flags;
 }
 
@@ -101,6 +105,22 @@ void WriteWinMetaFields(std::vector<uint8_t>& body, uint32_t meta_flags,
   if (meta_flags & kMetaReparseTarget) {
     WriteU32(body, static_cast<uint32_t>(f.reparse_target.size()));
     body.insert(body.end(), f.reparse_target.begin(), f.reparse_target.end());
+  }
+  if (meta_flags & kMetaSparse) {
+    WriteU32(body, static_cast<uint32_t>(f.sparse_runs.size()));
+    for (const auto& run : f.sparse_runs) {
+      WriteU64(body, run.first);
+      WriteU64(body, run.second);
+    }
+    WriteU32(body, static_cast<uint32_t>(f.sparse_chunk_offsets.size()));
+    for (const uint64_t off : f.sparse_chunk_offsets) {
+      WriteU64(body, off);
+    }
+  }
+  if (meta_flags & kMetaEfs) {
+    body.push_back(f.efs_encrypted ? 1 : 0);
+    WriteU32(body, static_cast<uint32_t>(f.efs_key_blob_b64.size()));
+    body.insert(body.end(), f.efs_key_blob_b64.begin(), f.efs_key_blob_b64.end());
   }
 }
 
@@ -130,6 +150,36 @@ bool ReadWinMetaFields(const uint8_t*& p, const uint8_t* end, uint32_t meta_flag
     entry->reparse_target.assign(reinterpret_cast<const char*>(p), target_len);
     p += target_len;
   }
+  if (meta_flags & kMetaSparse) {
+    uint32_t run_count = 0;
+    if (!ReadU32(p, end, &run_count)) return false;
+    entry->sparse = run_count > 0;
+    entry->sparse_runs.clear();
+    entry->sparse_runs.reserve(run_count);
+    for (uint32_t i = 0; i < run_count; ++i) {
+      uint64_t off = 0;
+      uint64_t len = 0;
+      if (!ReadU64(p, end, &off) || !ReadU64(p, end, &len)) return false;
+      entry->sparse_runs.push_back({off, len});
+    }
+    uint32_t chunk_off_count = 0;
+    if (!ReadU32(p, end, &chunk_off_count)) return false;
+    entry->sparse_chunk_offsets.clear();
+    entry->sparse_chunk_offsets.reserve(chunk_off_count);
+    for (uint32_t i = 0; i < chunk_off_count; ++i) {
+      uint64_t coff = 0;
+      if (!ReadU64(p, end, &coff)) return false;
+      entry->sparse_chunk_offsets.push_back(coff);
+    }
+  }
+  if (meta_flags & kMetaEfs) {
+    if (p >= end) return false;
+    entry->efs_encrypted = (*p++ != 0);
+    uint32_t blob_len = 0;
+    if (!ReadU32(p, end, &blob_len) || p + blob_len > end) return false;
+    entry->efs_key_blob_b64.assign(reinterpret_cast<const char*>(p), blob_len);
+    p += blob_len;
+  }
   return true;
 }
 
@@ -156,6 +206,23 @@ void AppendMetaLines(std::ostringstream& body, const ManifestFileEntry& f) {
     }
     if (!f.stream_name.empty()) body << f.stream_name << "\n";
     if (!f.reparse_target.empty()) body << f.reparse_target << "\n";
+  }
+  if (f.has_sparse_meta()) {
+    body << "sparse\t" << f.sparse_runs.size() << "\t" << f.sparse_chunk_offsets.size()
+         << "\n";
+    for (const auto& run : f.sparse_runs) {
+      body << run.first << "\t" << run.second << "\n";
+    }
+    for (const uint64_t off : f.sparse_chunk_offsets) {
+      body << off << "\n";
+    }
+  }
+  if (f.has_efs_meta()) {
+    body << "efs\t" << (f.efs_encrypted ? 1 : 0) << "\t" << f.efs_key_blob_b64.size()
+         << "\n";
+    if (!f.efs_key_blob_b64.empty()) {
+      body << f.efs_key_blob_b64 << "\n";
+    }
   }
 }
 
@@ -192,7 +259,7 @@ bool DocumentUsesV3(const ManifestDocument& doc) {
 
 bool DocumentUsesV5(const ManifestDocument& doc) {
   for (const auto& f : doc.files) {
-    if (f.has_win_meta()) return true;
+    if (f.has_win_meta() || f.has_sparse_meta() || f.has_efs_meta()) return true;
   }
   return false;
 }
@@ -315,6 +382,45 @@ Status ParseBodyV2(std::istream& body_in, ManifestDocument* out) {
         }
         if (current.reparse_target.size() != target_len) {
           return Status::Corrupt("winmeta reparse target length mismatch");
+        }
+      }
+    } else if (line.rfind("sparse\t", 0) == 0 && have_file) {
+      size_t run_count = 0;
+      size_t chunk_off_count = 0;
+      std::istringstream iss(line.substr(7));
+      iss >> run_count >> chunk_off_count;
+      current.sparse = run_count > 0;
+      current.sparse_runs.clear();
+      for (size_t i = 0; i < run_count; ++i) {
+        if (!std::getline(body_in, line)) {
+          return Status::Corrupt("sparse run missing");
+        }
+        uint64_t off = 0;
+        uint64_t len = 0;
+        std::istringstream run_iss(line);
+        run_iss >> off >> len;
+        current.sparse_runs.push_back({off, len});
+      }
+      current.sparse_chunk_offsets.clear();
+      for (size_t i = 0; i < chunk_off_count; ++i) {
+        if (!std::getline(body_in, line)) {
+          return Status::Corrupt("sparse chunk offset missing");
+        }
+        current.sparse_chunk_offsets.push_back(std::stoull(line));
+      }
+    } else if (line.rfind("efs\t", 0) == 0 && have_file) {
+      int enc_flag = 0;
+      size_t blob_len = 0;
+      std::istringstream iss(line.substr(4));
+      iss >> enc_flag >> blob_len;
+      current.efs_encrypted = enc_flag != 0;
+      current.efs_key_blob_b64.clear();
+      if (blob_len > 0) {
+        if (!std::getline(body_in, current.efs_key_blob_b64)) {
+          return Status::Corrupt("efs key blob missing");
+        }
+        if (current.efs_key_blob_b64.size() != blob_len) {
+          return Status::Corrupt("efs key blob length mismatch");
         }
       }
     } else if (line.rfind("chunk\t", 0) == 0 && have_file) {
@@ -569,6 +675,25 @@ bool SkipWinMetaFields(const uint8_t*& p, const uint8_t* end, uint32_t meta_flag
     uint32_t target_len = 0;
     if (!ReadU32(p, end, &target_len) || p + target_len > end) return false;
     p += target_len;
+  }
+  if (meta_flags & kMetaSparse) {
+    uint32_t run_count = 0;
+    if (!ReadU32(p, end, &run_count)) return false;
+    for (uint32_t i = 0; i < run_count; ++i) {
+      if (p + 16 > end) return false;
+      p += 16;
+    }
+    uint32_t chunk_off_count = 0;
+    if (!ReadU32(p, end, &chunk_off_count)) return false;
+    if (p + chunk_off_count * 8 > end) return false;
+    p += chunk_off_count * 8;
+  }
+  if (meta_flags & kMetaEfs) {
+    if (p >= end) return false;
+    ++p;
+    uint32_t blob_len = 0;
+    if (!ReadU32(p, end, &blob_len) || p + blob_len > end) return false;
+    p += blob_len;
   }
   return true;
 }

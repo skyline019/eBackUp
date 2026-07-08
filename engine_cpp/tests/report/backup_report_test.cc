@@ -104,6 +104,32 @@ TEST(BackupReportTest, RoundTripJson) {
   EXPECT_EQ(loaded.issues[0].reason, "locked");
 }
 
+TEST(BackupReportTest, RoundTripJsonWithVssFields) {
+  BackupReport report{};
+  report.txn_id = 100;
+  report.vss_used = true;
+  report.vss_consistency = "app";
+  report.vss_mode = "app";
+  report.vss_snapshot_set_id = "{12345678-1234-1234-1234-123456789abc}";
+  report.vss_volumes = {"\\\\?\\Volume{abc}\\"};
+  report.vss_cross_volume = true;
+  report.vss_shadow_storage_ok = true;
+  report.vss_writers.push_back({"id1", "SqlServerWriter", "stable"});
+
+  const std::string json = BackupReportToJson(report);
+  BackupReport loaded{};
+  ASSERT_TRUE(ParseBackupReportJson(json, &loaded).ok());
+  EXPECT_TRUE(loaded.vss_used);
+  EXPECT_EQ(loaded.vss_consistency, "app");
+  EXPECT_EQ(loaded.vss_mode, "app");
+  EXPECT_EQ(loaded.vss_snapshot_set_id, report.vss_snapshot_set_id);
+  ASSERT_EQ(loaded.vss_volumes.size(), 1u);
+  EXPECT_TRUE(loaded.vss_cross_volume);
+  EXPECT_TRUE(loaded.vss_shadow_storage_ok);
+  ASSERT_EQ(loaded.vss_writers.size(), 1u);
+  EXPECT_EQ(loaded.vss_writers[0].name, "SqlServerWriter");
+}
+
 TEST(BackupReportTest, WriteAndLoadFromRepo) {
   const std::string repo = test::TempDir("report_repo");
   BackupReport report{};

@@ -21,6 +21,8 @@ Status ReadJsonStringField(const std::string& json, const char* key,
                            std::string* out);
 Status ReadJsonStringArrayField(const std::string& json, const char* key,
                                 std::vector<std::string>* out);
+Status ReadJsonU64ArrayField(const std::string& json, const char* key,
+                             std::vector<uint64_t>* out);
 Status ReadJsonU64Field(const std::string& json, const char* key, uint64_t* out);
 Status ReadJsonIntField(const std::string& json, const char* key, int* out);
 Status ReadJsonBoolField(const std::string& json, const char* key, bool* out);

@@ -119,6 +119,22 @@ bool ParseJsonObjectArray(const std::string& json, const char* key,
   return true;
 }
 
+bool ParseVssWritersArray(const std::string& json,
+                          std::vector<BackupReport::VssWriterReportEntry>* out) {
+  if (!out) return false;
+  out->clear();
+  std::vector<std::string> objects;
+  if (!ParseJsonObjectArray(json, "vss_writers", &objects)) return false;
+  for (const std::string& obj : objects) {
+    BackupReport::VssWriterReportEntry entry{};
+    (void)ReadJsonStringField(obj, "id", &entry.id);
+    (void)ReadJsonStringField(obj, "name", &entry.name);
+    (void)ReadJsonStringField(obj, "state", &entry.state);
+    out->push_back(std::move(entry));
+  }
+  return true;
+}
+
 bool ParseIssuesArray(const std::string& json, std::vector<BackupPathIssue>* out) {
   if (!out) return false;
   out->clear();
@@ -193,6 +209,8 @@ void PopulateReportIssueCounts(BackupReport* report) {
       ++report->skipped;
     } else if (issue.reason == "window_truncated") {
       ++report->skipped;
+    } else if (issue.reason.rfind("vss_unavailable:", 0) == 0) {
+      ++report->skipped;
     }
   }
 }
@@ -240,6 +258,75 @@ std::string BackupReportToJson(const BackupReport& report) {
   }
   if (report.window_end_unix != 0) {
     out << ",\"window_end_unix\":" << report.window_end_unix;
+  }
+  if (report.vss_used) {
+    out << ",\"vss_used\":true";
+    if (!report.vss_consistency.empty()) {
+      std::string esc;
+      JsonEscape(report.vss_consistency, &esc);
+      out << ",\"vss_consistency\":\"" << esc << "\"";
+    }
+    if (!report.vss_snapshot_set_id.empty()) {
+      std::string esc;
+      JsonEscape(report.vss_snapshot_set_id, &esc);
+      out << ",\"vss_snapshot_set_id\":\"" << esc << "\"";
+    }
+    if (!report.vss_volumes.empty()) {
+      out << ",\"vss_volumes\":[";
+      for (size_t i = 0; i < report.vss_volumes.size(); ++i) {
+        if (i) out << ',';
+        std::string esc;
+        JsonEscape(report.vss_volumes[i], &esc);
+        out << "\"" << esc << "\"";
+      }
+      out << "]";
+    }
+    if (!report.vss_mode.empty()) {
+      std::string esc;
+      JsonEscape(report.vss_mode, &esc);
+      out << ",\"vss_mode\":\"" << esc << "\"";
+    }
+    if (report.vss_cross_volume) {
+      out << ",\"vss_cross_volume\":true";
+    }
+    if (!report.vss_shadow_storage_ok) {
+      out << ",\"vss_shadow_storage_ok\":false";
+    }
+    if (!report.vss_writers.empty()) {
+      out << ",\"vss_writers\":[";
+      for (size_t i = 0; i < report.vss_writers.size(); ++i) {
+        if (i) out << ',';
+        const auto& w = report.vss_writers[i];
+        std::string id_esc;
+        std::string name_esc;
+        std::string state_esc;
+        JsonEscape(w.id, &id_esc);
+        JsonEscape(w.name, &name_esc);
+        JsonEscape(w.state, &state_esc);
+        out << "{\"id\":\"" << id_esc << "\",\"name\":\"" << name_esc
+            << "\",\"state\":\"" << state_esc << "\"}";
+      }
+      out << "]";
+    }
+  }
+  if (report.sparse_file_count != 0) {
+    out << ",\"sparse_file_count\":" << report.sparse_file_count;
+  }
+  if (report.efs_skipped_count != 0) {
+    out << ",\"efs_skipped_count\":" << report.efs_skipped_count;
+  }
+  if (!report.recovery_key_issued.empty()) {
+    std::string rk_esc;
+    JsonEscape(report.recovery_key_issued, &rk_esc);
+    out << ",\"recovery_key_issued\":\"" << rk_esc << "\"";
+  }
+  if (!report.vss_shadow_storage_bytes.empty()) {
+    out << ",\"vss_shadow_storage_bytes\":[";
+    for (size_t i = 0; i < report.vss_shadow_storage_bytes.size(); ++i) {
+      if (i) out << ',';
+      out << report.vss_shadow_storage_bytes[i];
+    }
+    out << "]";
   }
   if (!report.plugins.empty()) {
     out << ",\"plugins\":[";
@@ -300,6 +387,22 @@ Status ParseBackupReportJson(const std::string& json, BackupReport* out) {
   }
   (void)ReadJsonBoolField(json, "durability_downgraded", &report.durability_downgraded);
   (void)ReadJsonBoolField(json, "window_truncated", &report.window_truncated);
+  (void)ReadJsonBoolField(json, "vss_used", &report.vss_used);
+  (void)ReadJsonStringField(json, "vss_consistency", &report.vss_consistency);
+  (void)ReadJsonStringField(json, "vss_mode", &report.vss_mode);
+  (void)ReadJsonStringField(json, "vss_snapshot_set_id", &report.vss_snapshot_set_id);
+  (void)ReadJsonStringArrayField(json, "vss_volumes", &report.vss_volumes);
+  (void)ReadJsonBoolField(json, "vss_cross_volume", &report.vss_cross_volume);
+  bool shadow_ok = true;
+  if (ReadJsonBoolField(json, "vss_shadow_storage_ok", &shadow_ok).ok()) {
+    report.vss_shadow_storage_ok = shadow_ok;
+  }
+  (void)ParseVssWritersArray(json, &report.vss_writers);
+  (void)ParseU64Field(json, "sparse_file_count", &report.sparse_file_count);
+  (void)ParseU64Field(json, "efs_skipped_count", &report.efs_skipped_count);
+  (void)ReadJsonStringField(json, "recovery_key_issued", &report.recovery_key_issued);
+  (void)ReadJsonU64ArrayField(json, "vss_shadow_storage_bytes",
+                              &report.vss_shadow_storage_bytes);
   if (ParseU64Field(json, "window_end_unix", &until)) {
     report.window_end_unix = static_cast<int64_t>(until);
   }
