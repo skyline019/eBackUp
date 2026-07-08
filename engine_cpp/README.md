@@ -138,6 +138,15 @@ eb job add ./repo --json '{"id":"nightly","name":"Nightly","source_path":"./sour
 # Schedule queue drain (JSON: mode=queue_drain, repo_path=..., job_ids=job_a,job_b, plugins=sqlite_checkpoint)
 eb schedule ./queue_drain.json --once
 
+# Outer cloud sync (sync_cpp/ — not in kernel ABI)
+eb-sync init --repo ./repo --endpoint http://127.0.0.1:9000 --bucket ebbackup --prefix myrepo/ --path-style --access-key KEY --secret-key SECRET
+eb-sync status --repo ./repo
+eb-sync push --repo ./repo --once
+eb-sync ferry export --repo ./repo --out-dir D:\ferry --auto-base
+
+# Daemon sync drain (spawns eb-sync; no network in engine_cpp)
+eb schedule ./config/sync_drain.example.json --once
+
 # Windows Service (run as elevated for install/uninstall)
 eb service install --config ./config/queue_drain.example.json --name EbbackupDaemon
 eb service run --config ./config/queue_drain.example.json

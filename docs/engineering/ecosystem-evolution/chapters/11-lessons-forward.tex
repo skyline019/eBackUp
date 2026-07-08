@@ -1,7 +1,7 @@
 \chapter{前瞻：生态下一步与决策准则}
 \label{ch:forward}
 
-\section{当前生态位评估（\versiontag{0.9.4}）}
+\section{当前生态位评估（\versiontag{0.9.5} + Phase 12）}
 
 \begin{table}[htbp]
 \centering
@@ -10,22 +10,23 @@
 \toprule
 维度 & 状态 & 说明 \\
 \midrule
-本地内核可信 & 强 & 232 测试 + commit-point + RAR/Merkle \\
+本地内核可信 & 强 & 363+ gtest + commit-point + RAR/Merkle；ABI v29 封顶 \\
 单文件吞吐 & 中上 & L5 $\sim$171；距 Stage 3.2 远 \\
 多文件吞吐 & 强 & L7 $\sim$646+ \\
-运维闭环 & 强 & snapshot/compact/repo-stats/daemon \\
-云与多节点 & 无 & 刻意边界 \\
+运维闭环 & 强 & snapshot/compact/repo-stats/daemon/service \\
+云与多节点 & 外圈 & \filepath{sync\_cpp/} + S3；内核零网络 \\
 流程成熟度 & 异类 & bench 驱动；非 enterprise 流程 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\section{Sprint 5 可能方向（假设，非承诺）}
+\section{Phase 12 外侧云生态（已规划/落地）}
 
 \begin{enumerate}
-  \item \textbf{Hybrid ChunkCuts + feed-timed replay}：保留 Phase A cut 一次 + Phase B overlap——需新 parity 矩阵；
-  \item \textbf{Topology 合并}：减少默认路由条数（P5 债务）；
-  \item \textbf{文档/生态外圈}：SDK 示例、C API 绑定——不改内核宪法。
+  \item \textbf{内核冻结}：ABI v29 封顶；\filepath{CLOUD\_ECOSYSTEM.md} 书面边界；
+  \item \textbf{轨道 A}：EBB v2 delta 摆渡 + Workbench Sync Activity；
+  \item \textbf{轨道 B}：\filepath{sync\_cpp/} + \texttt{eb-sync} + S3 SigV4；daemon \texttt{sync\_drain} 子进程；
+  \item \textbf{不做}：ABI v30 云 API、FSM 内嵌 remote、双向多设备。
 \end{enumerate}
 
 \section{我将坚持的决策准则}

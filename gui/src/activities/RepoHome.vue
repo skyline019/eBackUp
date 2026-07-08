@@ -9,8 +9,12 @@ import {
   rpoSummaryData,
   rpoLoading,
   staleAlertVisible,
+  syncStatusData,
+  staleSyncAlertVisible,
   refreshRpoSummary,
+  refreshSyncStatus,
 } from "@/composables/useBackupAlerts";
+import { formatTransportLabel, staleSyncMessage } from "@/utils/syncLabels";
 import FieldTip from "@/components/FieldTip.vue";
 
 const repo = useRepoStore();
@@ -89,6 +93,15 @@ function formatRpoTime(unix: number) {
 }
 
 const rpoCard = computed(() => rpoSummaryData.value);
+const syncCard = computed(() => syncStatusData.value);
+const syncCardTransport = computed(() =>
+  syncCard.value
+    ? formatTransportLabel(syncCard.value.transport, syncCard.value.remote_type)
+    : "—"
+);
+const syncStaleTitle = computed(() =>
+  syncCard.value && staleSyncAlertVisible.value ? staleSyncMessage(syncCard.value) : ""
+);
 </script>
 
 <template>
@@ -159,6 +172,31 @@ const rpoCard = computed(() => rpoSummaryData.value);
             : `距上次成功备份 ${rpoCard?.days_since_last_success?.toFixed(1) ?? '?'} 天`
         "
       />
+      <el-alert
+        v-if="staleSyncAlertVisible && repo.isOpen"
+        type="warning"
+        show-icon
+        :closable="false"
+        class="stale-alert"
+        :title="syncStaleTitle || '同步滞后'"
+      />
+      <section v-if="syncCard" class="rpo-card sync-card">
+        <div class="head-row">
+          <h3>同步摘要</h3>
+          <el-button link size="small" @click="refreshSyncStatus">刷新</el-button>
+        </div>
+        <dl class="rpo-dl">
+          <dt>模式</dt>
+          <dd>{{ syncCard.sync_mode_label || syncCardTransport }}</dd>
+          <dt>已同步 txn</dt>
+          <dd>{{ syncCard.synced_txn }} / {{ syncCard.latest_txn }}</dd>
+          <dt>传输</dt>
+          <dd>{{ syncCardTransport }}</dd>
+          <dt>上次同步</dt>
+          <dd>{{ formatRpoTime(syncCard.last_success_unix) }}</dd>
+        </dl>
+        <el-button type="primary" link @click="ui.setActivity('sync')">前往同步 →</el-button>
+      </section>
       <section v-if="rpoCard" class="rpo-card">
         <div class="head-row">
           <h3>RPO 合规摘要</h3>

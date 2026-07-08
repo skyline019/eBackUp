@@ -1,0 +1,11 @@
+{
+  "remote_type": "pds",
+  "domain_id": "YOUR_DOMAIN_ID",
+  "api_endpoint": "https://YOUR_DOMAIN_ID.api.aliyunpds.com",
+  "client_id": "YOUR_RAM_OAUTH_APP_ID",
+  "client_secret": "YOUR_RAM_OAUTH_APP_SECRET",
+  "redirect_uri": "https://YOUR_DOMAIN_ID.auth.aliyunfile.com/v2/oauth/callback",
+  "root_prefix": "ebbackup/repo-name",
+  "oauth_scope": "all",
+  "login_type": "default"
+}

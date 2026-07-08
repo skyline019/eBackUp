@@ -10,6 +10,7 @@ if(MSVC)
 endif()
 
 option(EBBACKUP_BUILD_TESTS "Build backup kernel tests" ON)
+option(EBBACKUP_BUILD_SYNC "Build outer cloud sync (eb-sync)" ON)
 
 if(EBBACKUP_BUILD_TESTS)
   set(GTEST_CAPI_DIR "${CMAKE_SOURCE_DIR}/gtest_capi" CACHE PATH "gtest_capi root")
@@ -21,6 +22,10 @@ if(EBBACKUP_BUILD_TESTS)
 endif()
 
 add_subdirectory(engine_cpp)
+
+if(EBBACKUP_BUILD_SYNC)
+  add_subdirectory(sync_cpp)
+endif()
 
 if(EBBACKUP_BUILD_TESTS)
   enable_testing()

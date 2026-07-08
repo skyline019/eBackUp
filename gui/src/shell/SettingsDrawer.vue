@@ -340,6 +340,14 @@ async function onDeleteProfile(p: { id: string; name: string }) {
               @change="onPreview"
             />
           </el-form-item>
+          <el-form-item label="同步滞后告警（天）">
+            <el-input-number
+              v-model="ui.settings.staleSyncAlertDays"
+              :min="1"
+              :max="365"
+              @change="onPreview"
+            />
+          </el-form-item>
         </el-form>
       </el-tab-pane>
 

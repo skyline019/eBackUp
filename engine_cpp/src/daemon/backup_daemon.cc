@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "ebbackup/codec/content_class.h"
+#include "ebbackup/common/hook_runner.h"
 #include "ebbackup/io/fs_watch.h"
 #include "ebbackup/scan/backup_filter.h"
 
@@ -137,6 +138,8 @@ void ApplyScheduleField(const std::string& key, const std::string& value,
       if (comma == std::string::npos) break;
       start = comma + 1;
     }
+  } else if (key == "sync_cmd") {
+    cfg->sync_cmd = value;
   }
 }
 
@@ -199,7 +202,10 @@ bool ParseJsonSchedule(const std::string& text, ScheduleConfig* out) {
     ApplyScheduleField(key, UnquoteJsonString(value), &cfg);
   }
   const bool queue_drain = cfg.mode == "queue_drain" || cfg.drain_queue;
-  if (queue_drain) {
+  const bool sync_drain = cfg.mode == "sync_drain";
+  if (sync_drain) {
+    if (cfg.sync_cmd.empty()) return false;
+  } else if (queue_drain) {
     if (cfg.repo_path.empty() && cfg.repo_base.empty()) return false;
   } else if (cfg.source_path.empty() || cfg.repo_base.empty()) {
     return false;
@@ -235,7 +241,12 @@ Status LoadScheduleConfig(const std::string& config_path, ScheduleConfig* out) {
     ApplyScheduleField(key, value, &cfg);
   }
   const bool queue_drain = cfg.mode == "queue_drain" || cfg.drain_queue;
-  if (queue_drain) {
+  const bool sync_drain = cfg.mode == "sync_drain";
+  if (sync_drain) {
+    if (cfg.sync_cmd.empty()) {
+      return Status::InvalidArgument("sync_drain config requires sync_cmd");
+    }
+  } else if (queue_drain) {
     if (cfg.repo_path.empty() && cfg.repo_base.empty()) {
       return Status::InvalidArgument("queue_drain config requires repo_path or repo_base");
     }
@@ -424,6 +435,28 @@ Status RunJobQueueDrain(const std::string& repo_path, const BackupOptions& optio
   return Status::Ok();
 }
 
+Status RunSyncDrain(const std::string& sync_cmd, int max_cycles, int interval_seconds) {
+  if (sync_cmd.empty()) {
+    return Status::InvalidArgument("sync_cmd required");
+  }
+  int cycles = 0;
+  for (;;) {
+    if (g_daemon_stop_requested.load()) break;
+    int exit_code = 0;
+    const Status st = RunShellCommand(sync_cmd, &exit_code);
+    if (!st.ok()) return st;
+    if (exit_code != 0) {
+      return Status::Internal("sync_cmd failed with exit code " + std::to_string(exit_code));
+    }
+    ++cycles;
+    if (max_cycles >= 0 && cycles >= max_cycles) break;
+    if (max_cycles < 0 || cycles < max_cycles) {
+      if (!SleepSecondsInterruptible(std::max(1, interval_seconds))) break;
+    }
+  }
+  return Status::Ok();
+}
+
 void RequestDaemonStop() { g_daemon_stop_requested.store(true); }
 
 void ResetDaemonStop() { g_daemon_stop_requested.store(false); }
@@ -432,6 +465,9 @@ bool IsDaemonStopRequested() { return g_daemon_stop_requested.load(); }
 
 Status RunScheduleConfig(const ScheduleConfig& config, int max_runs) {
   ResetDaemonStop();
+  if (config.mode == "sync_drain") {
+    return RunSyncDrain(config.sync_cmd, max_runs, config.interval_seconds);
+  }
   if (config.mode == "queue_drain" || config.drain_queue) {
     const std::string repo = config.repo_path.empty()
                                  ? ScheduleRepoPath(config.repo_base)

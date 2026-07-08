@@ -10,6 +10,7 @@ import {
   DocumentChecked,
   Tools,
   ScaleToOriginal,
+  Connection,
 } from "@element-plus/icons-vue";
 
 const ui = useUiStore();
@@ -18,6 +19,7 @@ const icons: Record<ActivityId, object> = {
   repo: Coin,
   backup: Upload,
   snapshots: Clock,
+  sync: Connection,
   browse: FolderOpened,
   diff: ScaleToOriginal,
   restore: Download,

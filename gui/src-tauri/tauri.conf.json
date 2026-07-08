@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.ebbackup.workbench",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run sync:runtime && npm run dev",
     "devUrl": "http://localhost:1421",
     "beforeBuildCommand": "npm run sync:runtime && npm run build",
     "frontendDist": "../dist"
@@ -29,7 +29,8 @@
     "shortDescription": "ebbackup 备份仓库桌面工作台",
     "longDescription": "ebbackup Workbench：内容寻址备份内核桌面控制台。",
     "resources": {
-      "bin/ebbackup_workbench.dll": "runtime/ebbackup_workbench.dll"
+      "bin/ebbackup_workbench.dll": "runtime/ebbackup_workbench.dll",
+      "bin/eb-sync.exe": "runtime/eb-sync.exe"
     },
     "icon": [
       "icons/32x32.png",

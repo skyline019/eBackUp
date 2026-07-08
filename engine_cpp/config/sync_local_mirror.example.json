@@ -1,0 +1,7 @@
+{
+  "mode": "schedule",
+  "source": "C:\\data\\source",
+  "repo_base": "C:\\ebbackup-data\\repo",
+  "interval_seconds": 3600,
+  "post_backup_cmd": "eb-sync push --repo C:\\ebbackup-data\\repo --once"
+}

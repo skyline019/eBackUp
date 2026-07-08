@@ -176,6 +176,18 @@ export const ACTIVITY_GUIDES: Record<ActivityId, HelpSection> = {
       "先 Dry run 查看将删除的快照数，再正式 Prune。",
     ],
   },
+  sync: {
+    id: "sync",
+    title: "同步",
+    body: [
+      "无云推荐：「摆渡」导出 delta.ebb 物理搬运后对端导入；或「本地镜像」Push 到 NAS/共享目录。",
+      "保存同步配置：摆渡模式（--mode ferry）或指定本地镜像目录（--local-mirror）。",
+      "摆渡向导：选择输出目录 → 导出 Delta → 对端导入（base + delta → 新仓库）。",
+      "本地镜像：Push 将 chunk/meta 写入镜像目录；对端可用 eb-sync pull 还原。",
+      "维护前若存在未导出/未同步 txn，compact/GC 会被门控拦截。",
+      "S3 在线同步为可选项，需另行配置 sync.json 与凭证。",
+    ],
+  },
   browse: {
     id: "browse",
     title: "内容",

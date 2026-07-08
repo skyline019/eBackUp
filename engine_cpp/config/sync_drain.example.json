@@ -1,0 +1,6 @@
+{
+  "mode": "sync_drain",
+  "repo_path": "C:\\ebbackup-data\\repo",
+  "interval_seconds": 300,
+  "sync_cmd": "eb-sync push --repo C:\\ebbackup-data\\repo --drain"
+}

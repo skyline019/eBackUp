@@ -26,6 +26,7 @@
 | [product/WORKBENCH_GUI.md](product/WORKBENCH_GUI.md) | 桌面 Workbench GUI（Tauri + Vue） |
 | [product/BACKUP_CAPABILITY_GAPS.md](product/BACKUP_CAPABILITY_GAPS.md) | **备份能力缺口表**（非网络、创新命题、状态跟踪） |
 | [technical/CAPABILITY_ROADMAP.md](technical/CAPABILITY_ROADMAP.md) | **能力创新路线图**（分阶段 API/文件/测试） |
+| [technical/CLOUD_ECOSYSTEM.md](technical/CLOUD_ECOSYSTEM.md) | **外侧云生态**（内核冻结、S3 同步、弱网双轨） |
 
 ---
 

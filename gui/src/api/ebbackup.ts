@@ -194,6 +194,33 @@ export interface RpoSummaryDto {
   jobs: RpoJobSummaryDto[];
 }
 
+export interface SyncStatusDto {
+  latest_txn: number;
+  synced_txn: number;
+  pending_txn: number;
+  last_export_base_txn: number;
+  last_ferry_target_txn?: number;
+  pending_chunk_count: number;
+  remote_lag_txn: number;
+  generation: number;
+  last_success_unix: number;
+  backoff_until_unix: number;
+  last_error: string;
+  maintenance_blocked: boolean;
+  transport: string;
+  remote_type?: string;
+  local_mirror_root?: string;
+  pds_domain_id?: string;
+  pds_drive_id?: string;
+  pds_authed?: boolean;
+  sync_mode_label?: string;
+}
+
+export interface SyncMaintenanceCheckDto {
+  blocked: boolean;
+  reason: string;
+}
+
 export interface OrphanExplainSampleDto {
   chunk_hex: string;
   reason: "unreferenced" | "tombstoned" | "interrupted_hint";
@@ -284,6 +311,8 @@ export interface ProfilesListDto {
 export interface ProfileStateDto {
   recentRepos: string[];
   lastSourcePath: string;
+  syncFerryOutDirs?: Record<string, string>;
+  syncMirrorDirs?: Record<string, string>;
 }
 
 export async function runtimeInfo() {
@@ -438,6 +467,67 @@ export async function snapshotReachability(txnId: number) {
 export async function rpoSummary() {
   requireTauri();
   return invokeSafe<RpoSummaryDto>("rpo_summary");
+}
+
+export async function syncStatus() {
+  requireTauri();
+  return invokeSafe<SyncStatusDto>("sync_status");
+}
+
+export async function syncPush(once = true) {
+  requireTauri();
+  return invokeSafe<{ ok: boolean; message: string }>("sync_push", { once });
+}
+
+export async function syncFerryExport(
+  outDir: string,
+  options?: { autoBase?: boolean; baseTxnId?: number; targetTxnId?: number }
+) {
+  requireTauri();
+  return invokeSafe<{ ok: boolean; message: string }>("sync_ferry_export", {
+    outDir,
+    autoBase: options?.autoBase ?? true,
+    baseTxnId: options?.baseTxnId,
+    targetTxnId: options?.targetTxnId,
+  });
+}
+
+export async function syncMaintenanceCheck() {
+  requireTauri();
+  return invokeSafe<SyncMaintenanceCheckDto>("sync_maintenance_check");
+}
+
+export async function syncInitLocal(mirrorPath: string) {
+  requireTauri();
+  return invokeSafe<{ ok: boolean; message: string }>("sync_init_local", { mirrorPath });
+}
+
+export async function syncInitFerry() {
+  requireTauri();
+  return invokeSafe<{ ok: boolean; message: string }>("sync_init_ferry");
+}
+
+export async function syncInitPds(
+  domainId: string,
+  credentialsPath: string,
+  rootPrefix?: string
+) {
+  requireTauri();
+  return invokeSafe<{ ok: boolean; message: string }>("sync_init_pds", {
+    domainId,
+    credentialsPath,
+    rootPrefix,
+  });
+}
+
+export async function syncPdsAuthUrl() {
+  requireTauri();
+  return invokeSafe<{ ok: boolean; url: string }>("sync_pds_auth_url");
+}
+
+export async function syncPdsAuth(code: string) {
+  requireTauri();
+  return invokeSafe<{ ok: boolean; message: string }>("sync_pds_auth", { code });
 }
 
 export async function orphanExplain(sampleLimit?: number) {

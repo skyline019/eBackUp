@@ -5,6 +5,7 @@ import {
   gcOrphans,
   orphanExplain,
   runMaintenanceWizard,
+  syncMaintenanceCheck,
   type OrphanExplainDto,
 } from "@/api/ebbackup";
 import { useRepoStore } from "@/stores/repoStore";
@@ -53,8 +54,13 @@ const WIZARD_STEPS = ["分析", "Prune", "GC", "Compact", "完成"];
 
 onMounted(async () => {
   if (repo.isOpen) {
-    await repo.refreshInfo();
     await loadOrphanExplain();
+    try {
+      const check = await syncMaintenanceCheck();
+      maintenanceBlockReason.value = check.blocked ? check.reason : "";
+    } catch {
+      maintenanceBlockReason.value = "";
+    }
   }
 });
 
@@ -64,6 +70,23 @@ function reasonLabel(reason: string) {
 
 function chunkPrefix(hex: string) {
   return hex.length > 12 ? `${hex.slice(0, 12)}…` : hex;
+}
+
+const maintenanceBlockReason = ref("");
+
+async function ensureSyncBeforeDestructive(actionLabel: string): Promise<boolean> {
+  if (!repo.isOpen) return false;
+  try {
+    const check = await syncMaintenanceCheck();
+    maintenanceBlockReason.value = check.blocked ? check.reason : "";
+    if (check.blocked) {
+      ui.pushLog(`${actionLabel} 已阻止：${check.reason}`, "error");
+      return false;
+    }
+    return true;
+  } catch {
+    return true;
+  }
 }
 
 async function loadOrphanExplain() {
@@ -140,6 +163,7 @@ async function runWizardDryRun() {
 
 async function runWizardLive() {
   if (!repo.isOpen) return;
+  if (!(await ensureSyncBeforeDestructive("仓库重整"))) return;
   const ok = await confirmDestructive(
     "执行仓库重整",
     "将依次执行 Prune → GC → Compact（按引擎策略）。建议先 Dry run。"
@@ -165,6 +189,7 @@ async function runWizardLive() {
 
 async function runCompact() {
   if (!repo.isOpen) return;
+  if (!compactDryRun.value && !(await ensureSyncBeforeDestructive("Compact"))) return;
   if (!compactDryRun.value) {
     const ok = await confirmDestructive(
       "执行 Compact",
@@ -188,6 +213,7 @@ async function runCompact() {
 
 async function runGc() {
   if (!repo.isOpen) return;
+  if (!gcDryRun.value && !(await ensureSyncBeforeDestructive("孤儿 GC"))) return;
   if (!gcDryRun.value) {
     const ok = await confirmDestructive(
       "执行孤儿块 GC",
@@ -212,6 +238,14 @@ async function runGc() {
 
 <template>
   <div class="activity-page">
+    <el-alert
+      v-if="maintenanceBlockReason"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="sync-block-alert"
+      :title="maintenanceBlockReason"
+    />
     <section v-if="repo.info" class="panel-card stats-grid">
       <div class="head">
         <h2>仓库统计</h2>

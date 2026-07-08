@@ -1,5 +1,6 @@
 # Build outputs
 build/
+gui/src-tauri/bin/*.exe
 build2/
 sqlite-master/
 out/

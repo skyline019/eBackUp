@@ -1,6 +1,7 @@
 mod commands;
 mod ebbackup_ffi;
 mod profile_store;
+mod sync_runner;
 mod task_progress;
 mod ui_settings;
 
@@ -14,7 +15,8 @@ pub fn run() {
         .setup(|app| {
             use tauri::path::BaseDirectory;
             if let Ok(runtime_dir) = app.path().resolve("runtime", BaseDirectory::Resource) {
-                ebbackup_ffi::set_runtime_dir(runtime_dir);
+                ebbackup_ffi::set_runtime_dir(runtime_dir.clone());
+                sync_runner::set_runtime_dir(runtime_dir);
             }
             Ok(())
         })
@@ -70,6 +72,15 @@ pub fn run() {
             commands::pick_directory,
             commands::pick_file,
             commands::path_exists,
+            commands::sync_status,
+            commands::sync_push,
+            commands::sync_ferry_export,
+            commands::sync_init_local,
+            commands::sync_init_ferry,
+            commands::sync_init_pds,
+            commands::sync_pds_auth_url,
+            commands::sync_pds_auth,
+            commands::sync_maintenance_check,
             profile_store::list_profiles,
             profile_store::get_active_profile,
             profile_store::create_profile,

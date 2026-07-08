@@ -230,6 +230,33 @@ flowchart LR
 
 ---
 
+## Phase 12 — 外侧云生态（非内核） ✅
+
+**原则**：**不进 ABI v30**；网络与远端状态全部在 [`sync_cpp/`](../../sync_cpp/)。
+
+| 交付 | 路径 |
+|------|------|
+| 冻结与架构 | `docs/technical/CLOUD_ECOSYSTEM.md` |
+| 同步运行时 | `sync_cpp/` — `eb-sync` CLI |
+| 状态 | `{repo}/catalog/sync_state.json`、`sync_outbox.jsonl` |
+| 轨道 A | EBB v2 delta + `sync_ferry.example.json` + GUI Sync Activity |
+| 轨道 B | S3 transport + SyncAgent push/drain + `sync_drain.example.json` |
+| Daemon | `mode=sync_drain` → 子进程 `eb-sync push --drain`（无内核网络代码） |
+| GUI | `SyncView.vue`、`useBackupAlerts` stale_sync、Tauri `sync_*` commands |
+
+### 子阶段
+
+1. **12a 无云本地闭环** ✅：`init --local-mirror` / `--mode ferry`、ferry import、本地 pull、维护门控按模式、E2E 测试、GUI 同步方式向导
+2. **12b 文档与摆渡**：CLOUD_ECOSYSTEM、ferry 示例、Workbench delta 向导
+3. **12c sync_cpp 基础**：sync_state、outbox、ebb_reader、SyncAgent
+4. **12d S3 传输（可选）**：WinHTTP + SigV4（Windows）；本地目录 transport 用于无云测试
+5. **12e Sync Agent**：push / plan / status / verify-remote / pull
+6. **12f 可观测与门控**：SyncView、compact 前警告、stale_sync 告警
+
+> **无云起步**：优先 12a（摆渡 + 本地镜像）；S3 在线同步待有云环境后再验。
+
+---
+
 ## ABI 演进约定
 
 | Phase | ABI | 新增 |
@@ -251,6 +278,7 @@ flowchart LR
 | 9 | v27 | Wave Q: report plugins[], GUI summary, schedule plugins=, VHDX E2E |
 | 10 | v28 | smart exclude suggestions, job exclude_paths[], eb suggest-excludes, GUI analyze/adopt |
 | 11 | v29 | backup window, deadline durability adaptive, report window_truncated |
+| 12 | — | **无新 ABI**；云生态在 `sync_cpp/` |
 
 每 Phase 合并前更新：`ABI_AND_FEATURES.md`、`engine_cpp/README.md`、`gui/src/utils/helpContent.ts`。
 

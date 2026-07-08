@@ -467,6 +467,7 @@ async function finishBackupRun(stats: Awaited<ReturnType<typeof runBackup>>, log
     `${logPrefix} — 文件 ${stats.files_processed}，写入块 ${stats.chunks_written}，复用 ${stats.chunks_reused}（${reusePct}%）`,
     "success"
   );
+  ui.pushLog("可前往「同步」页导出 Delta 或 Push 到本地镜像", "meta");
 }
 
 async function run() {

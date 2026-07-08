@@ -24,6 +24,7 @@ struct ScheduleConfig {
   std::string repo_path;
   std::vector<std::string> job_ids;
   bool drain_queue{false};
+  std::string sync_cmd;
 };
 
 Status LoadScheduleConfig(const std::string& config_path, ScheduleConfig* out);
@@ -39,6 +40,9 @@ Status RunWatchBackup(const std::string& source_path, const std::string& repo_pa
 Status RunJobQueueDrain(const std::string& repo_path, const BackupOptions& options,
                         const std::vector<std::string>& pre_enqueue_job_ids = {},
                         int max_cycles = -1, int interval_seconds = 3600);
+
+Status RunSyncDrain(const std::string& sync_cmd, int max_cycles = -1,
+                    int interval_seconds = 300);
 
 std::string ScheduleRepoPath(const std::string& repo_base);
 

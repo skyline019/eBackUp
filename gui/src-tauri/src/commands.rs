@@ -1,5 +1,6 @@
 use crate::ebbackup_ffi::{self, cstr, EnginePtr, SESSION};
 use crate::profile_store;
+use crate::sync_runner;
 use crate::task_progress;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -1066,6 +1067,7 @@ pub async fn sync_runtime_binaries(build_dir: Option<String>) -> Result<serde_js
         let build = build_dir
             .map(PathBuf::from)
             .unwrap_or_else(|| manifest_dir.join("../../build/engine_cpp/Release"));
+        let sync_build = manifest_dir.join("../../build/sync_cpp/Release");
         let dest = manifest_dir.join("bin");
         std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
         let leaf = "ebbackup_workbench.dll";
@@ -1074,7 +1076,12 @@ pub async fn sync_runtime_binaries(build_dir: Option<String>) -> Result<serde_js
             return Err(format!("missing {leaf} under {}", build.display()));
         }
         std::fs::copy(&src, dest.join(leaf)).map_err(|e| e.to_string())?;
-        Ok(serde_json::json!({"ok": true, "message": format!("copied {}", src.display())}))
+        let sync_leaf = "eb-sync.exe";
+        let sync_src = sync_build.join(sync_leaf);
+        if sync_src.is_file() {
+            std::fs::copy(&sync_src, dest.join(sync_leaf)).map_err(|e| e.to_string())?;
+        }
+        Ok(serde_json::json!({"ok": true, "message": format!("copied {} and {}", src.display(), sync_src.display())}))
     })
     .await
     .map_err(|e| format!("sync join: {e}"))?
@@ -1426,4 +1433,190 @@ pub async fn pick_file(app: tauri::AppHandle) -> Result<Option<String>, String> 
     })
     .await
     .map_err(|e| format!("pick file join: {e}"))?
+}
+
+#[tauri::command]
+pub async fn sync_status() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let repo = session_repo_path()?;
+        let out = sync_runner::run_eb_sync(&["status", "--repo", &repo])?;
+        serde_json::from_str(&out).map_err(|e| format!("sync status json: {e}"))
+    })
+    .await
+    .map_err(|e| format!("sync_status join: {e}"))?
+}
+
+#[tauri::command]
+pub async fn sync_push(once: Option<bool>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo = session_repo_path()?;
+        let mut args = vec!["push", "--repo", repo.as_str()];
+        let once_flag = if once.unwrap_or(true) { "--once" } else { "--drain" };
+        args.push(once_flag);
+        let out = sync_runner::run_eb_sync(&args)?;
+        Ok(serde_json::json!({
+            "ok": true,
+            "message": out.trim(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("sync_push join: {e}"))?
+}
+
+#[tauri::command]
+pub async fn sync_ferry_export(
+    out_dir: String,
+    auto_base: Option<bool>,
+    base_txn_id: Option<u64>,
+    target_txn_id: Option<u64>,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo = session_repo_path()?;
+        let mut owned: Vec<String> = vec![
+            "ferry".into(),
+            "export".into(),
+            "--repo".into(),
+            repo,
+            "--out-dir".into(),
+            out_dir,
+        ];
+        if auto_base.unwrap_or(true) {
+            owned.push("--auto-base".into());
+        }
+        if let Some(base) = base_txn_id {
+            if base > 0 {
+                owned.push("--base-at".into());
+                owned.push(base.to_string());
+            }
+        }
+        if let Some(target) = target_txn_id {
+            if target > 0 {
+                owned.push("--target-at".into());
+                owned.push(target.to_string());
+            }
+        }
+        let args: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        let out = sync_runner::run_eb_sync(&args)?;
+        Ok(serde_json::json!({
+            "ok": true,
+            "message": out.trim(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("sync_ferry_export join: {e}"))?
+}
+
+#[tauri::command]
+pub async fn sync_init_local(mirror_path: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo = session_repo_path()?;
+        let out = sync_runner::run_eb_sync(&[
+            "init",
+            "--repo",
+            repo.as_str(),
+            "--local-mirror",
+            mirror_path.as_str(),
+        ])?;
+        Ok(serde_json::json!({
+            "ok": true,
+            "message": out.trim(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("sync_init_local join: {e}"))?
+}
+
+#[tauri::command]
+pub async fn sync_init_ferry() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let repo = session_repo_path()?;
+        let out = sync_runner::run_eb_sync(&["init", "--repo", repo.as_str(), "--mode", "ferry"])?;
+        Ok(serde_json::json!({
+            "ok": true,
+            "message": out.trim(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("sync_init_ferry join: {e}"))?
+}
+
+#[tauri::command]
+pub async fn sync_init_pds(
+    domain_id: String,
+    credentials_path: String,
+    root_prefix: Option<String>,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo = session_repo_path()?;
+        let mut args = vec![
+            "init".to_string(),
+            "--repo".to_string(),
+            repo.clone(),
+            "--pds".to_string(),
+            "--domain".to_string(),
+            domain_id,
+            "--credentials".to_string(),
+            credentials_path,
+        ];
+        if let Some(prefix) = root_prefix {
+            if !prefix.trim().is_empty() {
+                args.push("--pds-prefix".to_string());
+                args.push(prefix);
+            }
+        }
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let out = sync_runner::run_eb_sync(&arg_refs)?;
+        Ok(serde_json::json!({
+            "ok": true,
+            "message": out.trim(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("sync_init_pds join: {e}"))?
+}
+
+#[tauri::command]
+pub async fn sync_pds_auth_url() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let repo = session_repo_path()?;
+        let out = sync_runner::run_eb_sync(&["pds", "auth-url", "--repo", repo.as_str()])?;
+        Ok(serde_json::json!({
+            "ok": true,
+            "url": out.trim(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("sync_pds_auth_url join: {e}"))?
+}
+
+#[tauri::command]
+pub async fn sync_pds_auth(code: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo = session_repo_path()?;
+        let out = sync_runner::run_eb_sync(&[
+            "pds",
+            "auth",
+            "--repo",
+            repo.as_str(),
+            "--code",
+            code.as_str(),
+        ])?;
+        Ok(serde_json::json!({
+            "ok": true,
+            "message": out.trim(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("sync_pds_auth join: {e}"))?
+}
+
+#[tauri::command]
+pub async fn sync_maintenance_check() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let repo = session_repo_path()?;
+        let out = sync_runner::run_eb_sync(&["maintenance-check", "--repo", &repo, "--json"])?;
+        serde_json::from_str(&out).map_err(|e| format!("maintenance-check json: {e}"))
+    })
+    .await
+    .map_err(|e| format!("sync_maintenance_check join: {e}"))?
 }
