@@ -1,9 +1,41 @@
 \chapter{能力 Wave 深化（Wave A--T）}
 \label{ch:capability-waves}
 
-本章归档 \versiontag{0.9.4} 之后的能力 sprint：从可证明备份（ABI v14）到备份窗口（ABI v29）。性能 Wave 1--5 见 \cref{ch:overview,ch:pipeline-v4,ch:streaming-cdc}；完整索引见 \filepath{docs/WAVE\_ARCHIVE.md}。
+本章归档 \versiontag{0.9.4} 之后的能力 sprint：从可证明备份（ABI v14）到备份窗口（ABI v29）。与 Part I 各章的关系：manifest v5 扩展 \cref{ch:manifest-format}；恢复/Filter 扩展 \cref{ch:restore-verify-v4}；Pipeline CDC 路由扩展 \cref{ch:streaming-cdc-v4}；CLI/daemon 子命令见 \cref{ch:daemon-cli-v4}。完整 Wave 索引见 \filepath{docs/WAVE\_ARCHIVE.md}。
 
-\section{Wave 命名与 Phase 对照}
+\section{能力架构总览}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=0.55cm and 0.8cm,
+  box/.style={rectangle, draw=AdrBlue!70, fill=blue!4, rounded corners=2pt,
+    minimum width=2.6cm, minimum height=0.55cm, font=\scriptsize, align=center},
+  side/.style={rectangle, draw=StructGreen!70, fill=green!4, rounded corners=2pt,
+    minimum width=2.4cm, minimum height=0.5cm, font=\tiny, align=center},
+  arr/.style={-{Stealth[length=2mm]}, thick, AdrBlue!60}
+]
+  \node[box] (scan) {Scan + Filter\\{\tiny scan\_entry}};
+  \node[box, right=of scan] (pipe) {Pipeline CDC\\{\tiny backup\_pipeline}};
+  \node[box, right=of pipe] (store) {ChunkStore\\{\tiny EbPack}};
+  \node[box, right=of store] (meta) {Manifest v4/v5\\{\tiny manifest.cc}};
+  \draw[arr] (scan) -- (pipe) -- (store) -- (meta);
+
+  \node[side, below=1.1cm of scan] (pi) {path\_index.jsonl};
+  \node[side, below=1.1cm of pipe] (rep) {reports/<txn>.json};
+  \node[side, below=1.1cm of store] (mbi) {manifest\_browse/*.mbi};
+  \node[side, below=1.1cm of meta] (job) {jobs.json / queue};
+
+  \draw[dashed, gray] (meta.south) -- ++(0,-0.35) -| (pi.north);
+  \draw[dashed, gray] (pipe.south) -- ++(0,-0.35) -| (rep.north);
+  \draw[dashed, gray] (store.south) -- ++(0,-0.35) -| (mbi.north);
+  \draw[dashed, gray] (meta.south) -- ++(0,-0.35) -| (job.north);
+
+  \node[font=\scriptsize, align=center, below=0.15cm of job] {Catalog sidecar 与 Job 策略在 commit 后异步/同步落盘};
+\end{tikzpicture}
+\caption{能力 Wave 在备份主路径上的挂载点}
+\label{fig:capability-arch}
+\end{figure}
 
 \begin{table}[htbp]
 \centering
@@ -28,135 +60,468 @@ Phase & Wave & ABI & 主题 \\
 \end{tabular}
 \end{table}
 
+%====================================================================
 \section{Wave B/E：Manifest v5 与 Windows 元数据}
+\label{sec:cap-manifest-v5}
 
-\subsection{Manifest v5 触发条件}
+\subsection{选型与触发条件}
 
-\texttt{WriteManifestAuto} 在 \texttt{DocumentUsesV5(doc)} 时写入 \texttt{EBMANIFEST5}（见 \filepath{manifest.cc}）。任一文件含 Win 扩展字段即触发 v5。
+\texttt{WriteManifestAuto(path, doc, prefer\_binary)} 在 \texttt{prefer\_binary=true} 时：
+\begin{enumerate}[nosep]
+  \item 若 \texttt{DocumentUsesV5(doc)} $\rightarrow$ \texttt{WriteManifestV5}（header \texttt{EBMANIFEST5}）；
+  \item 否则 $\rightarrow$ \texttt{WriteManifestV4}（header \texttt{EBMANIFEST4}）。
+\end{enumerate}
 
-\subsection{扫描 enrichment}
+\texttt{DocumentUsesV5} 为 true 当任一 \texttt{ManifestFileEntry} 满足 \texttt{has\_win\_meta()}：非空 \texttt{security\_descriptor\_b64}、非零 \texttt{inode\_id}、非零 \texttt{reparse\_tag}、非空 \texttt{reparse\_target} 或 \texttt{stream\_name}。
 
-\filepath{scan\_entry.cc} 在 \texttt{\_WIN32} 下调用 \texttt{EnrichScanEntriesWinMeta}：
+\begin{designbox}[v4/v5 兼容策略]
+读路径 \texttt{ReadManifestAuto} 对 \texttt{EBMANIFEST4} 与 \texttt{EBMANIFEST5} 共用二进制解析器；v5 body 使用 \texttt{inner\_magic = 0xEB4F0002}（v4 为 \texttt{0xEB4F0001}）。旧仓库只读兼容；新 Win 元数据备份自动升级 header。
+\end{designbox}
+
+\subsection{v5 二进制 body 扩展}
+
+v5 在 v4 每文件 meta flags 之后追加 Win 字段（\filepath{manifest.cc}）：
+
+\begin{longtable}{@{}llp{7.5cm}@{}}
+\caption{v5 扩展 meta flags（\texttt{BuildV5MetaFlags}）} \\
+\toprule
+Flag & 值 & 后续字段 \\
+\midrule
+\texttt{kMetaWinSd} & 0x20 & \texttt{u32 sd\_len} + SD base64 bytes \\
+\texttt{kMetaInode} & 0x40 & \texttt{u64 inode\_id} \\
+\texttt{kMetaReparse} & 0x80 & \texttt{u32 reparse\_tag} \\
+\texttt{kMetaStream} & 0x100 & \texttt{u32 stream\_len} + UTF-8 stream name \\
+\texttt{kMetaReparseTarget} & 0x200 & \texttt{u32 target\_len} + UTF-8 junction target \\
+\bottomrule
+\end{longtable}
+
+物理文件布局与 v4 相同：文本行 \texttt{EBMANIFEST5} + LF + binary body + 4B CRC32（LE，覆盖 body）。
+
+\subsection{扫描 enrichment 流程}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=0.7cm,
+  flowstep/.style={rectangle, draw, minimum width=3.2cm, minimum height=0.6cm,
+    font=\scriptsize, align=center},
+  arr/.style={-{Stealth}, thick}
+]
+  \node[flowstep, fill=blue!6] (scan) {ScanFiles 深度优先};
+  \node[flowstep, fill=green!6, below=of scan] (win) {EnrichScanEntriesWinMeta\\{\tiny \_WIN32 only}};
+  \node[flowstep, fill=yellow!8, below=of win] (ads) {AppendAlternateStreams\\{\tiny FindFirstStreamW}};
+  \node[flowstep, fill=orange!8, below=of ads] (pipe) {Pipeline / sequential chunk};
+  \draw[arr] (scan) -- (win) -- (ads) -- (pipe);
+\end{tikzpicture}
+\caption{Windows 扫描 enrichment（\filepath{scan\_entry.cc}）}
+\label{fig:win-scan-enrich}
+\end{figure}
+
+\textbf{ADS 路径语义}：主文件 \texttt{docs/file.txt}；ADS 条目 \texttt{relative\_path = docs/file.txt:Zone.Identifier}，\texttt{stream\_name = Zone.Identifier}。恢复时 \texttt{restore\_engine} 将 \texttt{path:stream} 映射为 \texttt{CreateFileW} 写入 alternate stream。
+
+\textbf{硬链 dedup}（Wave E）：备份阶段按 \texttt{inode\_id + stream\_name} 去重 chunk 引用；恢复阶段首路径 \texttt{CreateFile} 写内容，后续同 inode 路径 \texttt{CreateHardLinkW} 指向前者。
+
+%====================================================================
+\section{Wave C/D：尽力一致扫描与备份报告}
+\label{sec:cap-scan-report}
+
+\subsection{ScanResult 与 issue 收集}
+
+\texttt{ScanFiles} 返回 \texttt{ScanResult\{entries[], issues[]\}}。单路径失败\textbf{不 abort} 整库：
 \begin{itemize}[nosep]
-  \item 常规文件采集 ACL、inode、reparse；
-  \item \texttt{AppendAlternateStreams}：\texttt{FindFirstStreamW} 枚举 ADS，\texttt{relative\_path} 追加 \texttt{:stream}。
+  \item \texttt{unreadable}：权限/IO 错误；
+  \item \texttt{depth\_exceeded}：超过 \texttt{kMaxScanDepth}；
+  \item \texttt{reparse\_junction}：联接点目录不递归（WIN-03）。
 \end{itemize}
 
-\subsection{恢复}
+Pipeline \texttt{ReaderStage} 对 issue 集合内路径 skip chunk；sequential 路径在 \texttt{ChunkPendingFiles} 读失败时同样 skip 并记入 \texttt{scan\_issues\_}。
 
-\filepath{restore\_engine.cc}：硬链 dedup（\texttt{CreateHardLinkW}）；联接点 \texttt{RecreateReparsePoint}；ADS 写入 \texttt{path:stream}。
+\subsection{备份报告 JSON}
 
-\section{Wave C/D：尽力一致与备份报告}
+Commit 后写入 \filepath{reports/<txn>.json}（\filepath{report/backup\_report.cc}）：
 
-\begin{lstlisting}[caption={备份报告 JSON 字段（节选）},label={lst:backup-report}]
-{
-  "txn_id": 42,
-  "scan_issues": { "unreadable": 1, "depth_exceeded": 0 },
-  "reparse_junction": 2,
-  "hook_failed": false
-}
+\begin{longtable}{@{}lp{9cm}@{}}
+\caption{备份报告主要字段} \\
+\toprule
+字段 & 含义 \\
+\midrule
+\texttt{txn\_id} & 本次事务 ID \\
+\texttt{files\_processed} / \texttt{chunks\_*} & 与 \texttt{BackupStats} 对齐 \\
+\texttt{scan\_issues} & 分桶计数：\texttt{unreadable}、\texttt{depth\_exceeded} 等 \\
+\texttt{reparse\_junction} & 跳过的联接点目录数 \\
+\texttt{hook\_failed} & pre/post hook 非零退出 \\
+\texttt{plugins[]} & Wave Q：各插件 \texttt{PluginReportJson} \\
+\texttt{durability\_downgraded} & Wave T：deadline 触发 Balanced \\
+\texttt{window\_truncated} / \texttt{window\_end\_unix} & Wave T：超时截断 \\
+\bottomrule
+\end{longtable}
+
+\subsection{Hooks}
+
+\texttt{hook\_runner.cc} 在 backup 前后执行 shell 命令；C API \texttt{eb\_backup\_set\_backup\_hooks}；CLI \texttt{--pre-cmd}/\texttt{--post-cmd}。非零退出写入 \texttt{hook\_failed}，不 rollback 已提交 chunk（尽力一致语义）。
+
+%====================================================================
+\section{可证明备份：路径索引与 Merkle Diff（ABI v14--v15）}
+\label{sec:cap-provable}
+
+\subsection{PathIndex sidecar}
+
+\filepath{catalog/path\_index.jsonl}：每行一条 \texttt{PathIndexRecord} JSON：
+\begin{lstlisting}[caption={path\_index.jsonl 单行},label={lst:path-index-line}]
+{"path":"src/main.cc","txn_id":42,"size":8192,"content_hash_hex":"...",
+ "file_type":"regular","mtime_unix":1710000000}
 \end{lstlisting}
 
-Hooks：\texttt{eb\_backup\_set\_backup\_hooks}；CLI \texttt{--pre-cmd}/\texttt{--post-cmd}。
+\textbf{写入时机}：\texttt{AppendManifestToPathIndex} 在 manifest commit 成功后追加本次 txn 全部文件；\texttt{BuildPathIndexFromSnapshots} 可从历史 snapshot 全量 rebuild。
 
-\section{Wave F/G：多 Job 模型}
+\textbf{查询}：\texttt{QueryPathHistoryPage(path, offset, limit)} 按 path 精确匹配分页；C API \texttt{eb\_backup\_query\_path\_history\_json}。
 
-\filepath{catalog/jobs.json} 结构（节选）：
+\subsection{Manifest Diff 与 Merkle proof}
 
-\begin{lstlisting}[caption={jobs.json 作业条目},label={lst:jobs-json}]
-{
-  "id": "nightly-docs",
-  "name": "Documents",
-  "source_path": "C:/Users/me/Documents",
-  "exclude_globs": ["Thumbs.db"],
-  "exclude_paths": [],
-  "plugins": [],
-  "window_start": "02:00",
-  "window_end": "06:00",
-  "deadline_grace_seconds": 300,
-  "durability_adaptive": true
-}
-\end{lstlisting}
-
-\texttt{RunJob} 合并 filter + plugins + window；\texttt{snapshot\_meta.jsonl} 记录 \texttt{job\_id}、\texttt{immutable\_until\_unix}。
-
-\section{Wave I：Hybrid CDC}
-
-默认路径（\versiontag{0.10+}）：\texttt{FastCdcSlice} 切分 + stream replay 混合。环境变量：
+\texttt{manifest\_diff.cc} 比较 txn A/B：
 \begin{itemize}[nosep]
-  \item \texttt{EBBACKUP\_CDC\_HYBRID=0} — 禁用混合，回退纯 stream；
-  \item \texttt{EBBACKUP\_FORCE\_STREAM\_CDC=1} — 强制 stream-feed。
+  \item \texttt{added} / \texttt{removed} / \texttt{modified} 文件集合；
+  \item 对 \texttt{modified} 附 \texttt{merkle\_proof}（\filepath{merkle\_proof.cc} 子集证明）；
+  \item 输出 \texttt{diff\_merkle\_root} 供 GUI DiffView 展示。
 \end{itemize}
 
-\texttt{PipelinePhaseStats}：\texttt{hybrid\_cuts\_ns}、\texttt{hybrid\_replay\_ns} 与 \texttt{stream\_cdc\_ns} 互斥计数——测试断言须 OR 组合。
+\subsection{恢复验收报告}
 
-\section{Wave M：三路就地恢复}
+\texttt{restore\_acceptance.cc} 在 restore 完成后导出 JSON：逐文件 chunk 校验结果、Merkle 子树摘要、Win meta 应用 \texttt{issues[]}（ACL best\_effort 失败等）。
 
-Preview JSON 分类：\texttt{added}、\texttt{removed}、\texttt{modified}、\texttt{conflict}、\texttt{both\_changed}。
+%====================================================================
+\section{Wave F/G：多 Job 模型与 RunJob}
+\label{sec:cap-multi-job}
 
-C API：\texttt{eb\_backup\_preview\_in\_place\_json} / \texttt{eb\_backup\_apply\_in\_place\_json} 支持 \texttt{base\_txn\_id}、\texttt{use\_three\_way}、\texttt{dry\_run}。
+\subsection{jobs.json  schema}
 
-\section{Wave L/N：Catalog 与合规}
+\begin{structbox}[BackupJob 主要字段（\filepath{job/job\_config.h}）]
+\begin{itemize}[nosep]
+  \item \texttt{id} / \texttt{name}：作业标识与展示名；
+  \item \texttt{source\_path}：备份源根目录；
+  \item \texttt{exclude\_paths[]} / \texttt{exclude\_globs[]}：Filter 合并；
+  \item \texttt{plugins[]}：Wave P 插件 ID 列表；
+  \item \texttt{retention\_tag} / \texttt{immutability\_days} / \texttt{worm}：Prune/WORM 策略；
+  \item \texttt{window\_*}：Wave T 备份窗口（见 \cref{sec:cap-backup-window}）。
+\end{itemize}
+\end{structbox}
+
+\subsection{RunJob 合并语义}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=0.65cm,
+  box/.style={rectangle, draw, minimum width=3.4cm, minimum height=0.55cm,
+    font=\scriptsize, align=center},
+  arr/.style={-{Stealth}, thick}
+]
+  \node[box, fill=blue!6] (load) {GetJob(job\_id)};
+  \node[box, fill=yellow!8, below=of load] (win) {窗外? $\rightarrow$ Conflict};
+  \node[box, fill=green!6, below=of win] (merge) {合并 filter + plugins + window};
+  \node[box, fill=orange!8, below=of merge] (run) {RunBackup(source, mode, opts)};
+  \node[box, fill=purple!6, below=of run] (meta) {snapshot\_meta.jsonl\\job\_id / immutable\_until};
+  \draw[arr] (load) -- (win) -- (merge) -- (run) -- (meta);
+\end{tikzpicture}
+\caption{\texttt{BackupEngine::RunJob} 控制流（\filepath{backup\_engine.cc}）}
+\label{fig:run-job-flow}
+\end{figure}
+
+\texttt{snapshot\_meta.jsonl} 每 txn 一行，记录 \texttt{job\_id}、\texttt{retention\_tag}、\texttt{immutable\_until\_unix}。Prune 时 \texttt{retention\_policy.cc} 检查 WORM：\texttt{immutable\_until} 未过期则拒绝删除；immutable repo 需 ops audit key。
+
+%====================================================================
+\section{Wave I：Hybrid CDC 路由}
+\label{sec:cap-hybrid-cdc}
+
+\subsection{三路 CDC 决策}
+
+Pipeline 对大文件（$>$ \texttt{kStreamFeedBytes}，默认 32MB）在 \textbf{full backup} 模式下按优先级路由：
 
 \begin{table}[htbp]
 \centering
+\caption{CDC 路径路由（\filepath{backup\_pipeline.cc}）}
 \small
-\begin{tabular}{@{}ll@{}}
+\begin{tabular}{@{}llp{5.5cm}@{}}
 \toprule
-Sidecar & 路径 \\
+路径 & 启用条件 & profile 计数 \\
 \midrule
-Path index & \filepath{catalog/path\_index.jsonl} \\
-Manifest browse & \filepath{catalog/manifest\_browse/<txn>.mbi} \\
-Job queue & \filepath{catalog/job\_queue.jsonl} \\
-Job reports & \filepath{catalog/jobs/<job\_id>.jsonl} \\
-Ops audit & \filepath{audit/rar.chain}（GUI append） \\
+Hybrid & 默认；\texttt{EBBACKUP\_CDC\_HYBRID=0} 关闭 & \texttt{hybrid\_cuts\_ns}、\texttt{hybrid\_replay\_ns} \\
+Fast slice & \texttt{EBBACKUP\_CDC\_FAST\_SLICE=1} & \texttt{chunk\_ns}（整文件 cuts） \\
+Stream feed & \texttt{EBBACKUP\_FORCE\_STREAM\_CDC=1} 或 fallback & \texttt{stream\_cdc\_ns} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\section{Wave P/Q：插件接口}
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  decision/.style={diamond, draw, aspect=2, inner sep=1pt, font=\tiny, align=center},
+  action/.style={rectangle, draw, rounded corners, minimum width=2.2cm,
+    minimum height=0.5cm, font=\scriptsize},
+  arr/.style={-{Stealth}, thick}
+]
+  \node[decision] (hybrid) {Hybrid\\enabled?};
+  \node[action, below left=1cm and 0.6cm of hybrid, fill=green!8] (h) {ChunkFileStreamingHybrid};
+  \node[decision, below right=1cm and 0.6cm of hybrid] (fast) {Fast slice\\enabled?};
+  \node[action, below=of fast, fill=yellow!8] (f) {ChunkFileStreamingFastSlice};
+  \node[action, right=1.2cm of f, fill=blue!8] (s) {ChunkFileStreaming (stream feed)};
+  \draw[arr] (hybrid) -- node[left, font=\tiny]{Y} (h);
+  \draw[arr] (hybrid) -- node[right, font=\tiny]{N} (fast);
+  \draw[arr] (fast) -- node[left, font=\tiny]{Y} (f);
+  \draw[arr] (fast) -- node[above, font=\tiny]{N} (s);
+\end{tikzpicture}
+\caption{单大文件 CDC 路由决策树}
+\label{fig:cdc-router}
+\end{figure}
 
-\begin{lstlisting}[caption={IBackupPlugin 生命周期},label={lst:plugin-lifecycle}]
-Quiesce() -> ExtraScanRoots() + ScanHints() -> [backup scan/chunk] -> Thaw()
-\end{lstlisting}
+Hybrid 路径：先用 \texttt{FastCdcSlice::ChunkCuts} 切分边界，再对 carry 段做 stream replay——兼顾 L5 吞吐与 chunk 边界 parity。测试断言 \texttt{stream\_cdc\_ns > 0 || hybrid\_cuts\_ns > 0}。
 
-内置插件 ID：\texttt{sqlite\_checkpoint}、\texttt{registry\_hive}、\texttt{vhdx\_scan}。
+%====================================================================
+\section{Wave M：三路就地恢复}
+\label{sec:cap-three-way}
 
-\section{Wave R：智能排除}
+\subsection{语义：base / target / live}
 
-\filepath{exclude\_suggestions.cc} catalog 含 \texttt{.git}、\texttt{node\_modules}、\texttt{.next}、\texttt{.turbo}、\texttt{Thumbs.db}、\texttt{*.log} 等。
-
-C API \texttt{eb\_backup\_suggest\_exclude\_filters\_json} 参数 \texttt{include\_ide\_dirs} 控制 \texttt{.vscode}/\texttt{.idea} 建议。
-
-\section{Wave T：备份窗口}
-
-\filepath{job/backup\_window.cc}：
+就地恢复比较三份视图：
 \begin{itemize}[nosep]
-  \item \texttt{IsWithinBackupWindow(start, end, now)} — 支持跨午夜；
-  \item \texttt{ShouldDowngradeDurability(end, grace, now)}；
-  \item \texttt{WindowEndUnix(...)} — 报告字段。
+  \item \textbf{base}：\texttt{--base-at TXN} 或默认上一 snapshot；
+  \item \textbf{target}：本次 restore 目标 txn（\texttt{--at}）；
+  \item \textbf{live}：目标目录当前磁盘内容。
 \end{itemize}
 
-\texttt{RunBackup} 中途 \texttt{MaybeAdaptBackupWindow}；超时 \texttt{TruncatePendingFilesAt}。
+启用条件：\texttt{use\_three\_way=true} 且 \texttt{base\_txn\_id != target\_txn}。
 
-\section{源码索引（能力 Wave 新增/主要修改）}
+\subsection{分类状态机}
+
+\begin{longtable}{@{}llp{7cm}@{}}
+\caption{三路合并 \texttt{action} 分类（\filepath{in\_place\_restore.cc}）} \\
+\toprule
+\texttt{action} & 条件摘要 & apply 行为 \\
+\midrule
+\texttt{unchanged} & live 已匹配 target & skip \\
+\texttt{modify} & base$\rightarrow$target 变更，live 仍像 base & 写入 target 内容 \\
+\texttt{add} & target 新增，live 无 & 创建 \\
+\texttt{remove} & target 删除 & 按 orphan policy skip/delete \\
+\texttt{conflict} & 路径类型冲突等 & 依 \texttt{in\_place\_conflict} 策略 \\
+\texttt{both\_changed} & base 与 target 均变，live 与两者都不同 & 需用户决议（GUI bulk） \\
+\bottomrule
+\end{longtable}
+
+Preview JSON 字段：\texttt{base\_action}（\texttt{same/changed}）、\texttt{live\_state}（\texttt{matches\_base/matches\_target/diverged}）、\texttt{reason}。
+
+C API：\texttt{eb\_backup\_preview\_in\_place\_json} / \texttt{eb\_backup\_apply\_in\_place\_json}；\texttt{dry\_run=true} 仅输出计划不写盘。
+
+%====================================================================
+\section{Wave L：Manifest Browse 索引（MBI）}
+\label{sec:cap-mbi}
+
+大规模仓库 browse 不扫描完整 manifest v4/v5 body，而读 sidecar \filepath{catalog/manifest\_browse/<txn>.mbi}。
+
+\subsection{MBI 二进制布局}
+
+Magic \texttt{EBMBI001}（8B）；header 24B；随后 sorted records：
+
+\begin{longtable}{@{}rrll@{}}
+\caption{MBI record 序列化（\filepath{manifest\_browse\_index.cc}）} \\
+\toprule
+偏移 & 长度 & 字段 & 说明 \\
+\midrule
+0 & 4 & \texttt{path\_len u32} & UTF-8 相对路径 \\
+4 & $L$ & path bytes & \\
+$4+L$ & 8 & \texttt{size u64} & \\
+ & 4 & \texttt{file\_type u8} + pad3 & \\
+ & 8 & \texttt{mtime i64} & \\
+ & 4 & \texttt{chunk\_count u32} & \\
+\bottomrule
+\end{longtable}
+
+\texttt{QueryManifestBrowsePage} 按 \texttt{prefix} 二分定位 + \texttt{offset/limit} 分页；sidecar 缺失时 fallback 全量 manifest 线性扫描（\texttt{index\_source=manifest} 调试字段）。
+
+%====================================================================
+\section{Wave N/O：合规与运维可解释}
+\label{sec:cap-ops}
+
+\subsection{增量链可达性（ABI v24）}
+
+\texttt{AnalyzeSnapshotReachability} 自 latest txn 沿 parent 链标记 reachable chunk；输出 JSON 供 \texttt{eb verify-chain} 与 GUI 徽章。不可达 chunk 不等于 orphan（可能仍被中间 snapshot 引用）——与 \texttt{GcOrphans} 语义分离。
+
+\subsection{RPO 摘要}
+
+\texttt{RpoSummaryJson}：最近成功 backup 时间、\texttt{stale\_backup\_alert\_days} 阈值、合规布尔；RepoHome 卡片消费。
+
+\subsection{孤儿解释（Wave O）}
+
+\texttt{orphan\_explain.cc}：自 \texttt{repo\_stats} + 索引枚举无 manifest 引用的 chunk，按 pack/txn 分桶；Maintenance GUI 渲染解释图；CLI \texttt{eb orphan-explain --json}。
+
+\subsection{Ops 审计（ABI v25）}
+
+GUI 破坏性操作（prune、GC apply 等）append-only 写入 \texttt{audit/rar.chain}；\texttt{eb audit-ops list} 分页读取。与 backup RAR 共用链格式，entry type 区分 \texttt{ops} vs \texttt{backup}。
+
+%====================================================================
+\section{Wave P/Q：垂直插件}
+\label{sec:cap-plugins}
+
+\subsection{IBackupPlugin 生命周期}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=0.55cm,
+  phase/.style={rectangle, draw=AdrBlue!70, fill=blue!5, minimum width=2.8cm,
+    minimum height=0.55cm, font=\scriptsize, align=center},
+  arr/.style={-{Stealth}, thick}
+]
+  \node[phase] (q) {Quiesce()};
+  \node[phase, below=of q] (e) {ExtraScanRoots()\\ScanHints()};
+  \node[phase, below=of e] (b) {RunBackup scan/chunk};
+  \node[phase, below=of b] (t) {Thaw()};
+  \draw[arr] (q) -- (e) -- (b) -- (t);
+  \node[font=\tiny, right=0.3cm of e, align=left] {合并额外根目录\\skip\_subtree hints};
+\end{tikzpicture}
+\caption{插件会话 \texttt{PluginSession} RAII 顺序}
+\label{fig:plugin-lifecycle}
+\end{figure}
+
+\begin{longtable}{@{}llp{7.5cm}@{}}
+\caption{内置插件} \\
+\toprule
+ID & 平台 & 行为 \\
+\midrule
+\texttt{sqlite\_checkpoint} & 全平台 & 源树 \texttt{*.db} 执行 \texttt{PRAGMA wal\_checkpoint(FULL)}；skip \texttt{-wal/-shm} \\
+\texttt{registry\_hive} & Windows & \texttt{RegSaveKey} 导出至 \texttt{.ebbackup/registry/} \\
+\texttt{vhdx\_scan} & Windows & \texttt{Mount-Vhd -ReadOnly} 挂载至 \texttt{.ebbackup/vhdx/<n>/} \\
+\bottomrule
+\end{longtable}
+
+Wave Q：\texttt{reports/<txn>.json} 追加 \texttt{plugins[]}、\texttt{plugin\_skipped}/\texttt{plugin\_failed}；schedule JSON \texttt{plugins=} 逗号列表。
+
+%====================================================================
+\section{Wave R：智能排除建议}
+\label{sec:cap-exclude}
+
+\subsection{浅扫描算法}
+
+\texttt{SuggestExcludeFilters(source, opts)}（\filepath{exclude\_suggestions.cc}）：
+\begin{enumerate}[nosep]
+  \item BFS 遍历源目录，深度 $\leq$ \texttt{max\_depth}（默认 4），访问上限 \texttt{max\_dirs\_visited}；
+  \item 目录 basename 命中 catalog（\texttt{.git}、\texttt{node\_modules}、\texttt{.next}、\texttt{Thumbs.db} 等）$\rightarrow$ \texttt{exclude\_path} 建议；
+  \item 文件 basename glob 命中（\texttt{*.log}）$\rightarrow$ \texttt{exclude\_glob}；
+  \item \texttt{include\_ide\_dirs=false} 时跳过 \texttt{.vscode}/\texttt{.idea} 建议；
+  \item 与 \texttt{existing} filter 去重；输出 \texttt{recommended} 合并集（\textbf{不自动写入} job）。
+\end{enumerate}
+
+\begin{table}[htbp]
+\centering
+\caption{建议条目字段}
+\small
+\begin{tabular}{@{}llp{6cm}@{}}
+\toprule
+字段 & 类型 & 说明 \\
+\midrule
+\texttt{apply\_as} & string & \texttt{exclude\_path} 或 \texttt{exclude\_glob} \\
+\texttt{pattern} & string & 路径前缀或 glob \\
+\texttt{kind} & string & \texttt{build\_artifact} / \texttt{os\_metadata} / \texttt{ide} 等 \\
+\texttt{reason} & string & 人类可读解释 \\
+\texttt{hit\_count} & u32 & 浅扫描命中次数 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+C API \texttt{eb\_backup\_suggest\_exclude\_filters\_json}；CLI \texttt{eb suggest-excludes --include-ide}。
+
+%====================================================================
+\section{Wave T：备份窗口与 deadline 自适应}
+\label{sec:cap-backup-window}
+
+\subsection{BackupWindowPolicy}
+
+\begin{structbox}[字段语义（\filepath{job/backup\_window.h}）]
+\begin{itemize}[nosep]
+  \item \texttt{window\_start} / \texttt{window\_end}：本地时区 \texttt{HH:MM}（24h）；
+  \item \texttt{deadline\_grace\_seconds}：距 \texttt{window\_end} 不足该秒数时触发 durability 降级（默认 300）；
+  \item \texttt{durability\_adaptive}：是否启用 Strict$\rightarrow$Balanced 自适应。
+\end{itemize}
+\end{structbox}
+
+\subsection{跨午夜判定}
+
+\texttt{IsWithinBackupWindow(now, policy)}（\filepath{backup\_window.cc}）：
+\begin{itemize}[nosep]
+  \item 仅 \texttt{start}：\texttt{now\_min $\geq$ start\_min}；
+  \item 仅 \texttt{end}：\texttt{now\_min $<$ end\_min}；
+  \item \texttt{start $\leq$ end}：同日窗口 \texttt{[start, end)}；
+  \item \texttt{start $>$ end}：跨午夜 \texttt{now $\geq$ start || now $<$ end}。
+\end{itemize}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.12cm,y=0.8cm]
+  \draw[thick,->] (0,0) -- (120,0) node[right, font=\scriptsize]{本地时间 (min)};
+  \foreach \x/\lab in {0/0,30/02:00,90/06:00,120/24:00} {
+    \draw (\x,0.08) -- (\x,-0.08);
+    \node[below, font=\tiny] at (\x,-0.25) {\lab};
+  }
+  \draw[very thick, blue!70] (30,0.4) -- (90,0.4);
+  \node[font=\scriptsize, blue!70] at (60,0.85) {允许备份窗口};
+  \draw[fill=orange!40, opacity=0.7] (82,0.15) rectangle (90,0.65);
+  \node[font=\tiny, align=center] at (86,1.1) {grace\\降级区};
+  \draw[dashed, red!70] (90,0) -- (90,0.9);
+  \node[font=\tiny, red!70, above] at (90,0.95) {window\_end};
+\end{tikzpicture}
+\caption{备份窗口与 grace 降级区（同日窗口示意）}
+\label{fig:backup-window}
+\end{figure}
+
+\subsection{RunBackup 中途自适应}
+
+\begin{enumerate}[nosep]
+  \item \texttt{InitBackupWindow}：解析 policy，计算 \texttt{window\_end\_unix\_}；
+  \item 每个文件 chunk 完成后 \texttt{MaybeAdaptBackupWindow}：
+  \begin{itemize}[nosep]
+    \item \texttt{ShouldDowngradeDurability} $\rightarrow$ \texttt{SetDurabilityMode(Balanced)}，置 \texttt{durability\_downgraded\_}；
+    \item \texttt{now $\geq$ window\_end\_unix\_} $\rightarrow$ 置 \texttt{window\_truncated\_}。
+  \end{itemize}
+  \item 超时后 \texttt{TruncatePendingFilesAt(i)} 截断 pending 队列，commit 已完成部分；
+  \item 报告写入 \texttt{durability\_downgraded}、\texttt{window\_truncated}、\texttt{window\_end\_unix}。
+\end{enumerate}
+
+\texttt{RunJob} / \texttt{RunJobQueue}：窗外返回 \texttt{Status::Conflict("outside backup window")}；queue drain \textbf{跳过}不记失败。
+
+%====================================================================
+\section{Job 队列与平台服务（Wave L/N/O+）}
+
+\subsection{持久化队列}
+
+\filepath{catalog/job\_queue.jsonl}：每行 \texttt{\{job\_id, mode, enqueued\_at\}}。\texttt{RunJobQueue(drain)} 顺序 pop 并 \texttt{RunJob}；daemon \texttt{queue\_drain} schedule 模式周期性 drain。
+
+\subsection{Windows Service / systemd}
+
+\texttt{eb service install --config PATH} 注册 SCM；\texttt{eb service run} 入口调用 \texttt{RunScheduleConfig}；循环内 \texttt{RequestDaemonStop()} + 1s 分片 sleep 支持优雅退出。Linux 模板 \filepath{deploy/ebbackup.service} + \filepath{ebbackup.timer}。
+
+%====================================================================
+\section{源码索引（能力 Wave）}
 
 \begin{longtable}{@{}lp{9cm}@{}}
 \toprule
-路径 & Wave \\
+路径 & 职责 \\
 \midrule
-\filepath{src/catalog/path\_index.cc} & v14 \\
-\filepath{src/catalog/manifest\_diff.cc} & v15 \\
-\filepath{src/winmeta/win\_meta.cc} & B/E \\
-\filepath{src/scan/scan\_entry.cc} & C/D/E \\
-\filepath{src/scan/exclude\_suggestions.cc} & R \\
-\filepath{src/job/job\_config.cc} & F/T \\
-\filepath{src/job/backup\_window.cc} & T \\
-\filepath{src/job/job\_queue.cc} & L/N \\
-\filepath{src/plugins/} & P/Q \\
-\filepath{src/engine/restore\_engine.cc} & M/K \\
-\filepath{gui/src/activities/BackupView.vue} & G/R/T \\
-\filepath{gui/src/activities/RestoreView.vue} & M \\
-\filepath{gui/src/activities/MaintenanceView.vue} & O \\
+\filepath{src/catalog/path\_index.cc} & PathIndex JSONL append/query \\
+\filepath{src/catalog/manifest\_diff.cc} & Snapshot diff + Merkle \\
+\filepath{src/catalog/manifest\_browse\_index.cc} & MBI sidecar 读写 \\
+\filepath{src/winmeta/win\_meta.cc} & Win 元数据 capture/restore \\
+\filepath{src/scan/scan\_entry.cc} & ScanResult + ADS enrichment \\
+\filepath{src/scan/exclude\_suggestions.cc} & Wave R catalog + 浅扫描 \\
+\filepath{src/report/backup\_report.cc} & 报告 JSON 序列化 \\
+\filepath{src/common/hook\_runner.cc} & pre/post backup hooks \\
+\filepath{src/job/job\_config.cc} & jobs.json CRUD \\
+\filepath{src/job/backup\_window.cc} & 窗口判定 + grace \\
+\filepath{src/job/job\_queue.cc} & 队列 drain \\
+\filepath{src/plugin/} & 内置垂直插件 \\
+\filepath{src/restore/in\_place\_restore.cc} & 三路 preview/apply \\
+\filepath{src/store/orphan\_explain.cc} & 孤儿解释 JSON \\
+\filepath{src/engine/backup\_engine.cc} & RunJob / window 截断 \\
+\filepath{src/engine/restore\_engine.cc} & Win meta apply + hardlink \\
+\filepath{src/pipeline/backup\_pipeline.cc} & Hybrid CDC 路由 \\
+\filepath{cli/eb\_service\_win.cc} & Windows SCM 集成 \\
 \bottomrule
 \end{longtable}

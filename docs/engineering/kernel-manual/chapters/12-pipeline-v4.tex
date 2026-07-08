@@ -62,7 +62,7 @@ bool PipelineWorkersExplicitlyRequested(size_t worker_count) {
 \textbf{路由语义说明}：
 \begin{enumerate}
   \item \textbf{Inline（L3a）}：单文件小对象走 \texttt{RunSingleFileInlinePipeline}，主线程顺序 chunk+encode+store，与 \texttt{--no-pipeline} 等价，保证 micro-bench \texttt{pipeline\_ratio $\geq$ 0.90}。
-  \item \textbf{Streaming}：单文件大对象、full backup、默认 \texttt{worker\_count==0} 且环境未设 \texttt{EBBACKUP\_PIPELINE\_WORKERS} 时，走 2 encode + 1 store 的 StreamingChunkCpuPipeline（见 \cref{ch:streaming-cdc}）。
+  \item \textbf{Streaming}：单文件大对象、full backup、默认 \texttt{worker\_count==0} 且环境未设 \texttt{EBBACKUP\_PIPELINE\_WORKERS} 时，走 2 encode + 1 store 的 StreamingChunkCpuPipeline（见 \cref{ch:streaming-cdc-v4}）。
   \item \textbf{v4}：多文件并行、\textbf{任意增量 backup}、或用户/环境显式要求 pipeline workers 时，启动完整 v4 DAG。
 \end{enumerate}
 
@@ -405,4 +405,4 @@ Finalize 由 \texttt{RecordStoredChunkHash}（Store 路径）与 \texttt{TryFina
 
 \section{本章小结}
 
-Pipeline v4 通过全局 \texttt{ChunkTask}/\texttt{EncodedChunkTask} 队列与 FileAggregator finalize 协议，在多文件与增量场景实现 Reader/Chunker/Compressor/Store 四阶段充分并行。\texttt{ScheduleFilesByColor} 降低同目录锁竞争与 EbPack shard 热点；\texttt{ResolvePipelineWorkerCount} 与 \texttt{EBBACKUP\_PIPELINE\_WORKERS} 提供可观测的并发度旋钮。单文件大对象的流式 CDC 与 Sprint 4 优化见 \cref{ch:streaming-cdc}。
+Pipeline v4 通过全局 \texttt{ChunkTask}/\texttt{EncodedChunkTask} 队列与 FileAggregator finalize 协议，在多文件与增量场景实现 Reader/Chunker/Compressor/Store 四阶段充分并行。\texttt{ScheduleFilesByColor} 降低同目录锁竞争与 EbPack shard 热点；\texttt{ResolvePipelineWorkerCount} 与 \texttt{EBBACKUP\_PIPELINE\_WORKERS} 提供可观测的并发度旋钮。单文件大对象的流式 CDC 与 Sprint 4 优化见 \cref{ch:streaming-cdc-v4}。
