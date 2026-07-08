@@ -649,9 +649,15 @@ Status ChunkStore::PutKnownHash(const uint8_t* data, size_t len,
   enc_req.data = data;
   enc_req.len = len;
   enc_req.mode = mode;
+  enc_req.tier = options ? options->compress_tier : CompressTier::kFast;
+  enc_req.compress_level = options ? options->compress_level : 0;
   enc_req.cpu_budget_permille =
       options ? options->cpu_budget_permille : 1000u;
   enc_req.path_hint = options ? options->path_hint : nullptr;
+  if (options && options->use_zstd_dict) {
+    enc_req.zstd_dict = options->zstd_dict ? options->zstd_dict : zstd_dict_;
+    enc_req.dict_trainer = options->dict_trainer;
+  }
 
   ContentClassStats delta{};
   ContentEncodeResult encoded{};
@@ -665,6 +671,10 @@ Status ChunkStore::PutKnownHash(const uint8_t* data, size_t len,
     options->content_stats->zstd_wins += delta.zstd_wins;
     options->content_stats->cpu_budget_spent_permille +=
         delta.cpu_budget_spent_permille;
+    options->content_stats->bytes_before_compress +=
+        delta.bytes_before_compress;
+    options->content_stats->bytes_after_compress += delta.bytes_after_compress;
+    options->content_stats->dict_hits += delta.dict_hits;
   }
 
   ChunkCodec codec = encoded.codec;
@@ -789,8 +799,18 @@ Status ChunkStore::DecodePayload(const ParsedHeader& parsed,
   } else if (codec == ChunkCodec::kZstd ||
              codec == ChunkCodec::kEncryptedZstd) {
     std::vector<uint8_t> decoded;
-    const Status st = ZstdDecompress(payload.data(), payload.size(),
-                                   parsed.header.uncompressed_len, &decoded);
+    ZstdDecompressOptions zopts{};
+    if (zstd_dict_ && !zstd_dict_->empty()) {
+      if (auto ddict = zstd_dict_->AcquireDDict()) {
+        zopts.ddict = std::move(ddict);
+      } else {
+        zopts.dict = zstd_dict_->data();
+        zopts.dict_size = zstd_dict_->size();
+      }
+    }
+    const Status st = ZstdDecompressEx(payload.data(), payload.size(),
+                                       parsed.header.uncompressed_len, zopts,
+                                       &decoded);
     if (!st.ok()) return st;
     payload = std::move(decoded);
   }

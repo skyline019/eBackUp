@@ -31,6 +31,7 @@
 #include "ebbackup/chunk/chunk_profile.h"
 #include "ebbackup/chunk/rolling_checksum.h"
 #include "ebbackup/codec/content_class.h"
+#include "ebbackup/codec/zstd_dict.h"
 #include "ebbackup/common/digest.h"
 #include "ebbackup/common/fsync.h"
 #include "ebbackup/common/hook_runner.h"
@@ -186,13 +187,24 @@ void NormalizeCompressOptions(BackupOptions* opts) {
 
 ChunkStorePutOptions BuildPutOptions(const BackupOptions& options,
                                      const std::string& path_hint,
-                                     ContentClassStats* stats) {
+                                     ContentClassStats* stats,
+                                     const ZstdDictionary* zstd_dict,
+                                     ZstdDictTrainer* dict_trainer) {
   ChunkStorePutOptions put{};
   put.use_encryption = options.use_encryption;
   put.compress_mode = options.compress_mode;
+  put.compress_tier = options.compress_tier;
+  put.compress_level = options.compress_level;
+  put.use_zstd_dict = options.use_zstd_dict;
   put.cpu_budget_permille = options.cpu_budget_permille;
   if (!path_hint.empty()) put.path_hint = path_hint.c_str();
   put.content_stats = stats;
+  if (options.use_zstd_dict && zstd_dict && !zstd_dict->empty()) {
+    put.zstd_dict = zstd_dict;
+  }
+  if (options.use_zstd_dict) {
+    put.dict_trainer = dict_trainer;
+  }
   return put;
 }
 
@@ -215,6 +227,9 @@ BackupOptions ResolveBackupOptions(const BackupSuperBlock& sb,
   NormalizeCompressOptions(&effective);
   if (RepoUsesEbPack(sb) && !options.disable_pipeline) {
     effective.use_pipeline = true;
+  }
+  if (effective.compress_tier != CompressTier::kFast) {
+    effective.use_zstd_dict = true;
   }
   return effective;
 }
@@ -395,6 +410,11 @@ Status BackupEngine::Open() {
   }
   const Status cs = chunk_store_->Open();
   if (!cs.ok()) return cs;
+  if (const Status dict_st = LoadRepoZstdDictionary(repo_path_, &zstd_dict_);
+      !dict_st.ok()) {
+    return dict_st;
+  }
+  chunk_store_->SetZstdDictionary(zstd_dict_.empty() ? nullptr : &zstd_dict_);
   phase_ = GetPhase(sb_);
   const bool needs_self_check =
       (phase_ != BackupPhase::kIdle && phase_ != BackupPhase::kComplete &&
@@ -785,8 +805,9 @@ Status BackupEngine::StorePendingChunks(const BackupOptions& options) {
     if (entry.relative_path.empty()) continue;
     const auto& bytes = pending_file_bytes_[fi];
     auto& chunks = pending_chunks_[fi];
-    ChunkStorePutOptions put_opts =
-        BuildPutOptions(options, entry.relative_path, &stats_.content_class);
+    ChunkStorePutOptions put_opts = BuildPutOptions(
+        options, entry.relative_path, &stats_.content_class,
+        zstd_dict_.empty() ? nullptr : &zstd_dict_, &zstd_dict_trainer_);
     if (has_content_key_) put_opts.content_key = content_key_;
     entry.chunk_hashes_hex.clear();
     for (const auto& chunk : chunks) {
@@ -845,12 +866,21 @@ Status BackupEngine::RunPipelineBackup(BackupMode mode,
   BackupPipelineOptions pipe_opts{};
   pipe_opts.use_lz4 = options.use_lz4;
   pipe_opts.compress_mode = options.compress_mode;
+  pipe_opts.compress_tier = options.compress_tier;
+  pipe_opts.compress_level = options.compress_level;
+  pipe_opts.use_zstd_dict = options.use_zstd_dict;
   pipe_opts.cpu_budget_permille = options.cpu_budget_permille;
   pipe_opts.chunk_profile = options.chunk_profile;
   pipe_opts.durability = options.durability;
   pipe_opts.use_encryption = options.use_encryption;
   pipe_opts.content_key = has_content_key_ ? content_key_ : nullptr;
   pipe_opts.content_stats = &stats_.content_class;
+  if (options.use_zstd_dict && !zstd_dict_.empty()) {
+    pipe_opts.zstd_dict = &zstd_dict_;
+  }
+  if (options.use_zstd_dict) {
+    pipe_opts.dict_trainer = &zstd_dict_trainer_;
+  }
   pipe_opts.digest_algo = digest_algo_;
   pipe_opts.queue_depth = 32;
   pipe_opts.worker_count = options.worker_count;
@@ -1187,6 +1217,12 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
     chunk_store_->SetDurabilityMode(DurabilityMode::kStrict);
   }
   chunk_store_->SetDeferPersistentIndexSave(persistent_index);
+  zstd_dict_trainer_.Reset();
+  if (effective.use_zstd_dict) {
+    chunk_store_->SetZstdDictionary(zstd_dict_.empty() ? nullptr : &zstd_dict_);
+  } else {
+    chunk_store_->SetZstdDictionary(nullptr);
+  }
 
   const bool profile = PipelineProfileEnabled();
   if (effective.use_pipeline || profile) {
@@ -1424,7 +1460,24 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
     PrintPipelinePhaseStats(pipeline_phase_stats_, total_sec);
   }
 
+  if (const Status dict_st = FinalizeCompressionArtifacts(effective); !dict_st.ok()) {
+    (void)PersistSuperBlock(BackupPhase::kAborted);
+    return dict_st;
+  }
+
   return PersistSuperBlock(BackupPhase::kIdle);
+}
+
+Status BackupEngine::FinalizeCompressionArtifacts(const BackupOptions& options) {
+  if (!options.use_zstd_dict) return Status::Ok();
+  ZstdDictionary trained;
+  const Status st = zstd_dict_trainer_.FinalizeAndSave(repo_path_, &trained);
+  if (!st.ok()) return st;
+  if (!trained.empty()) {
+    zstd_dict_.ReplaceWith(std::move(trained));
+    chunk_store_->SetZstdDictionary(&zstd_dict_);
+  }
+  return Status::Ok();
 }
 
 Status BackupEngine::Verify(const BackupOptions& options) {

@@ -15,4 +15,6 @@ enum class ChunkCodec : uint8_t {
 
 enum class CompressMode { kOff = 0, kLz4, kZstd, kAuto };
 
+enum class CompressTier { kFast = 0, kBalanced, kMax };
+
 }  // namespace ebbackup

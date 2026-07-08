@@ -35,7 +35,8 @@ void PrintUsage() {
                "  eb init <repo> [--legacy-digest] [--legacy-init]\n"
                "  eb backup <repo> <source> [--incremental] [--progress] [--lz4]\n"
                "      [--job JOB_ID]  (with --job, source comes from jobs.json)\n"
-               "      [--compress auto|lz4|zstd|off] [--cpu-budget PCT]\n"
+               "      [--compress auto|lz4|zstd|off] [--compress-tier fast|balanced|max]\n"
+               "      [--compress-level N] [--zstd-dict] [--no-zstd-dict] [--cpu-budget PCT]\n"
                "      [--durability strict|balanced]\n"
                "      [--pipeline] [--no-pipeline] [--encrypt] [--password-env VAR]\n"
                "      [--password-file PATH] [--filter-file PATH]\n"
@@ -189,6 +190,26 @@ void ApplyCompressCli(int argc, char** argv, ebbackup::BackupOptions* opts) {
   if (const char* budget = GetFlagValue(argc, argv, "--cpu-budget")) {
     const int pct = std::atoi(budget);
     if (pct > 0) opts->cpu_budget_permille = static_cast<uint32_t>(pct * 10);
+  }
+  if (const char* tier = GetFlagValue(argc, argv, "--compress-tier")) {
+    if (std::strcmp(tier, "balanced") == 0) {
+      opts->compress_tier = ebbackup::CompressTier::kBalanced;
+      opts->use_zstd_dict = true;
+    } else if (std::strcmp(tier, "max") == 0) {
+      opts->compress_tier = ebbackup::CompressTier::kMax;
+      opts->use_zstd_dict = true;
+    } else {
+      opts->compress_tier = ebbackup::CompressTier::kFast;
+    }
+  }
+  if (HasFlag(argc, argv, "--zstd-dict")) {
+    opts->use_zstd_dict = true;
+  }
+  if (const char* level = GetFlagValue(argc, argv, "--compress-level")) {
+    opts->compress_level = std::atoi(level);
+  }
+  if (HasFlag(argc, argv, "--no-zstd-dict")) {
+    opts->use_zstd_dict = false;
   }
   if (const char* dur = GetFlagValue(argc, argv, "--durability")) {
     if (std::strcmp(dur, "balanced") == 0) {

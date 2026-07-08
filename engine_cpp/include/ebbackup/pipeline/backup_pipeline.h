@@ -6,6 +6,7 @@
 
 #include "ebbackup/chunk/chunk_profile.h"
 #include "ebbackup/codec/content_class.h"
+#include "ebbackup/codec/zstd_dict.h"
 #include "ebbackup/common/digest.h"
 #include "ebbackup/common/status.h"
 #include "ebbackup/engine/backup_engine.h"
@@ -26,10 +27,15 @@ struct BackupPipelineOptions {
   size_t store_shard_count{16};
   DigestAlgo digest_algo{DigestAlgo::kLegacy};
   CompressMode compress_mode{CompressMode::kOff};
+  CompressTier compress_tier{CompressTier::kFast};
+  int compress_level{0};
+  bool use_zstd_dict{true};
   uint32_t cpu_budget_permille{1000};
   ChunkProfileMode chunk_profile{ChunkProfileMode::kAuto};
   DurabilityMode durability{DurabilityMode::kStrict};
   ContentClassStats* content_stats{nullptr};
+  const ZstdDictionary* zstd_dict{nullptr};
+  ZstdDictTrainer* dict_trainer{nullptr};
   PipelinePhaseStats* phase_stats{nullptr};
   std::vector<report::BackupPathIssue>* scan_issues{nullptr};
 };

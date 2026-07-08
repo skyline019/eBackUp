@@ -33,6 +33,8 @@ set(EBBACKUP_CORE_SOURCES
   src/chunk/chunk_profile.cc
   src/codec/lz4_codec.cc
   src/codec/zstd_codec.cc
+  src/codec/compress_policy.cc
+  src/codec/zstd_dict.cc
   src/codec/content_class.cc
   src/io/mmap_reader.cc
   src/io/file_meta.cc
@@ -194,6 +196,8 @@ if(EBBACKUP_BUILD_TESTS)
     tests/chunk/chunk_profile_test.cc
     tests/codec/lz4_codec_test.cc
     tests/codec/zstd_codec_test.cc
+    tests/codec/compress_policy_test.cc
+    tests/codec/zstd_dict_test.cc
     tests/codec/content_class_test.cc
     tests/store/chunk_store_test.cc
     tests/store/eb_pack_test.cc

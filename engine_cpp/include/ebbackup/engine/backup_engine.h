@@ -13,6 +13,7 @@
 #include "ebbackup/chunk/eb_hcrbo.h"
 #include "ebbackup/codec/codec_types.h"
 #include "ebbackup/codec/content_class.h"
+#include "ebbackup/codec/zstd_dict.h"
 #include "ebbackup/common/digest.h"
 #include "ebbackup/common/status.h"
 #include "ebbackup/engine/manifest.h"
@@ -57,6 +58,9 @@ struct BackupOptions {
   std::string encryption_password;
   BackupFilterOptions filter;
   CompressMode compress_mode{CompressMode::kOff};
+  CompressTier compress_tier{CompressTier::kFast};
+  int compress_level{0};
+  bool use_zstd_dict{false};
   uint32_t cpu_budget_permille{1000};
   DurabilityMode durability{DurabilityMode::kStrict};
   ChunkProfileMode chunk_profile{ChunkProfileMode::kAuto};
@@ -192,6 +196,8 @@ class BackupEngine {
   void MaybeAdaptBackupWindow();
   void TruncatePendingFilesAt(size_t index);
 
+  Status FinalizeCompressionArtifacts(const BackupOptions& options);
+
   std::string repo_path_;
   BackupSuperBlock sb_{};
   BackupPhase phase_{BackupPhase::kIdle};
@@ -234,6 +240,8 @@ class BackupEngine {
   bool durability_downgraded_{false};
   bool window_truncated_{false};
   std::string audit_key_;
+  ZstdDictionary zstd_dict_{};
+  ZstdDictTrainer zstd_dict_trainer_{};
 };
 
 void RegisterBackupSyncRules(BackupSyncExecutor* exec, BackupEngine* engine);

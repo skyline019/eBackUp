@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "ebbackup/codec/content_class.h"
+#include "ebbackup/codec/zstd_dict.h"
 #include "ebbackup/common/digest.h"
 #include "ebbackup/common/status.h"
 #include "ebbackup/store/chunk_index.h"
@@ -50,9 +51,14 @@ struct ChunkStorePutOptions {
   bool use_encryption{false};
   const uint8_t* content_key{nullptr};
   CompressMode compress_mode{CompressMode::kOff};
+  CompressTier compress_tier{CompressTier::kFast};
+  int compress_level{0};
+  bool use_zstd_dict{true};
   uint32_t cpu_budget_permille{1000};
   const char* path_hint{nullptr};
   ContentClassStats* content_stats{nullptr};
+  const ZstdDictionary* zstd_dict{nullptr};
+  ZstdDictTrainer* dict_trainer{nullptr};
 };
 
 class ChunkStore {
@@ -123,6 +129,9 @@ class ChunkStore {
   void SetContentKey(const uint8_t key[32]);
   void ClearContentKey();
   bool has_content_key() const { return has_content_key_; }
+
+  void SetZstdDictionary(const ZstdDictionary* dict) { zstd_dict_ = dict; }
+  const ZstdDictionary* zstd_dictionary() const { return zstd_dict_; }
 
   Status SavePersistentIndex() const;
 
@@ -205,6 +214,7 @@ class ChunkStore {
   mutable std::mutex index_entries_mu_;
   mutable std::mutex tombstones_mu_;
   bool pipeline_dedup_trust_{false};
+  const ZstdDictionary* zstd_dict_{nullptr};
 
   int append_fd_{-1};
   bool append_session_active_{false};

@@ -232,6 +232,10 @@ struct PipelineShared {
     options.content_stats->zstd_wins += delta.zstd_wins;
     options.content_stats->cpu_budget_spent_permille +=
         delta.cpu_budget_spent_permille;
+    options.content_stats->bytes_before_compress +=
+        delta.bytes_before_compress;
+    options.content_stats->bytes_after_compress += delta.bytes_after_compress;
+    options.content_stats->dict_hits += delta.dict_hits;
   }
 
   void RecordFileProcessed(uint64_t file_size) {
@@ -352,6 +356,12 @@ Status EncodeChunkPayload(const uint8_t* data, size_t len,
   req.len = len;
   req.path_hint = path_hint;
   req.cpu_budget_permille = options.cpu_budget_permille;
+  req.tier = options.compress_tier;
+  req.compress_level = options.compress_level;
+  if (options.use_zstd_dict) {
+    req.zstd_dict = options.zstd_dict;
+    req.dict_trainer = options.dict_trainer;
+  }
   if (options.compress_mode != CompressMode::kOff) {
     req.mode = options.compress_mode;
   } else if (options.use_lz4) {
@@ -1021,6 +1031,12 @@ Status RunSingleFileInlinePipeline(const std::string& path,
     req.len = desc.length;
     req.path_hint = relative_path.c_str();
     req.cpu_budget_permille = options.cpu_budget_permille;
+    req.tier = options.compress_tier;
+    req.compress_level = options.compress_level;
+    if (options.use_zstd_dict) {
+      req.zstd_dict = options.zstd_dict;
+      req.dict_trainer = options.dict_trainer;
+    }
     if (options.compress_mode != CompressMode::kOff) {
       req.mode = options.compress_mode;
     } else if (options.use_lz4) {
@@ -1037,6 +1053,9 @@ Status RunSingleFileInlinePipeline(const std::string& path,
     content_delta.zstd_wins += enc_delta.zstd_wins;
     content_delta.cpu_budget_spent_permille +=
         enc_delta.cpu_budget_spent_permille;
+    content_delta.bytes_before_compress += enc_delta.bytes_before_compress;
+    content_delta.bytes_after_compress += enc_delta.bytes_after_compress;
+    content_delta.dict_hits += enc_delta.dict_hits;
     const auto enc_t1 = std::chrono::steady_clock::now();
     encode_ns += static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(enc_t1 - enc_t0)
@@ -1100,6 +1119,11 @@ Status RunSingleFileInlinePipeline(const std::string& path,
     options.content_stats->zstd_wins += content_delta.zstd_wins;
     options.content_stats->cpu_budget_spent_permille +=
         content_delta.cpu_budget_spent_permille;
+    options.content_stats->bytes_before_compress +=
+        content_delta.bytes_before_compress;
+    options.content_stats->bytes_after_compress +=
+        content_delta.bytes_after_compress;
+    options.content_stats->dict_hits += content_delta.dict_hits;
   }
 
   if (shared->result) {

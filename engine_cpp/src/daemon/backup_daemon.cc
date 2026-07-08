@@ -96,6 +96,18 @@ void ApplyScheduleField(const std::string& key, const std::string& value,
     } else if (value == "off") {
       cfg->backup_options.compress_mode = CompressMode::kOff;
     }
+  } else if (key == "compress_tier") {
+    if (value == "balanced") {
+      cfg->backup_options.compress_tier = CompressTier::kBalanced;
+    } else if (value == "max") {
+      cfg->backup_options.compress_tier = CompressTier::kMax;
+    } else {
+      cfg->backup_options.compress_tier = CompressTier::kFast;
+    }
+  } else if (key == "compress_level") {
+    cfg->backup_options.compress_level = std::atoi(value.c_str());
+  } else if (key == "zstd_dict") {
+    cfg->backup_options.use_zstd_dict = ParseBool(value);
   } else if (key == "cpu_budget") {
     const int pct = std::max(1, std::min(100, std::atoi(value.c_str())));
     cfg->backup_options.cpu_budget_permille =
