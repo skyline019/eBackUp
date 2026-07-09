@@ -1,0 +1,156 @@
+% 07 — NTFS 稀疏文件：从零到 run map + offset chunking
+
+\section{起点：按逻辑 size 读盘导致仓库膨胀}
+
+**Sparse file** 逻辑 EOF 可达 TB（如数据库预分配），但 **hole** 区域不占用簇。
+ naive 备份按 \texttt{GetFileSizeEx} 连续 \texttt{ReadFile} → 读大量零、chunk 哈希无意义重复，仓库体积接近逻辑 size。
+
+\begin{evolbox}[GAP-WIN-05 / Phase 16 / ABI v33]
+\textbf{检测}：\winapi{FILE\_ATTRIBUTE\_SPARSE\_FILE}。\\
+\textbf{布局}：\winapi{FSCTL\_GET\_RETRIEVAL\_POINTERS} → \texttt{sparse\_runs[]}。\\
+\textbf{备份}：仅对 allocated run 读字节 + 记录 \texttt{sparse\_chunk\_offsets[]}。\\
+\textbf{恢复}：\winapi{FSCTL\_SET\_SPARSE} + 按 offset 写入。
+\end{evolbox}
+
+\section{问题形式化：逻辑大小 vs 物理占用}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.08cm,y=0.6cm]
+  \draw[thick] (0,0) -- (100,0) node[right, font=\scriptsize]{逻辑偏移};
+  \fill[blue!30] (5,0.3) rectangle (25,0.9);
+  \fill[blue!30] (60,0.3) rectangle (75,0.9);
+  \node[font=\tiny] at (15,1.2) {run 1：读盘 chunk};
+  \node[font=\tiny] at (67,1.2) {run 2};
+  \node[font=\tiny, gray] at (40,0.6) {hole：跳过};
+  \draw[<->, gray] (0,-0.5) -- (100,-0.5);
+  \node[font=\tiny, gray] at (50,-0.9) {logical size = 100 单位};
+\end{tikzpicture}
+\caption{稀疏文件：仅蓝色区间进入 chunk 仓}
+\end{figure}
+
+\section{检测：IsSparseFilePath}
+
+\begin{lstlisting}[caption={IsSparseFilePath (sparse\_file.cc)}]
+DWORD attrs = GetFileAttributesW(Utf8ToWide(path_utf8).c_str());
+return (attrs != INVALID_FILE_ATTRIBUTES) &&
+       (attrs & FILE_ATTRIBUTE_SPARSE_FILE);
+\end{lstlisting}
+
+开关：
+\begin{itemize}[nosep]
+  \item CLI：\texttt{--sparse auto|off}；
+  \item C API：\texttt{EB\_BACKUP\_FLAG\_SPARSE\_OFF} 禁用优化（退化为整文件读）。
+\end{itemize}
+
+Enrich 阶段（\filepath{scan\_entry.cc}）在 \texttt{enable\_sparse} 且主 \$DATA regular 文件上调用。
+
+\section{数据 run：QuerySparseRuns}
+
+核心 IOCTL：\winapi{FSCTL\_GET\_RETRIEVAL\_POINTERS}。
+
+\begin{lstlisting}[caption={QuerySparseRuns 核心循环 (sparse\_file.cc)}]
+STARTING_VCN_INPUT_BUFFER in{};
+in.StartingVcn.QuadPart = 0;
+DeviceIoControl(h, FSCTL_GET_RETRIEVAL_POINTERS, &in, ...);
+
+for each extent in RETRIEVAL_POINTERS_BUFFER:
+  if (extent.Lcn == -1) continue;  // hole，跳过
+  run_off = VCN * cluster_size;
+  run_len = (NextVcn - Vcn) * cluster_size;
+  runs->push_back({run_off, run_len});
+\end{lstlisting}
+
+\begin{designbox}[非 sparse 退化路径]
+若 \texttt{!IsSparseFilePath} 且 \texttt{logical\_size > 0}，整文件单 run \texttt{[0, logical\_size)}——与普通文件 chunk 路径统一。
+\end{designbox}
+
+Cluster 大小：卷根 \winapi{GetDiskFreeSpaceW}；失败默认 4096。
+
+\section{Enrich 与 size 字段}
+
+\texttt{QuerySparseRuns} 返回 \texttt{logical\_size}（EOF）→ 覆盖 \texttt{ScanEntry.size}。
+Manifest 的 \texttt{size} 始终是\textbf{逻辑}大小，与 restore 校验一致。
+
+\section{备份：ChunkSparseFile}
+
+BackupEngine 对 \texttt{sparse\_runs} 区间调用 \texttt{ReadSparseFileBytes}，每段 chunk 化并记录起始逻辑偏移：
+
+\begin{lstlisting}[caption={sparse\_chunk\_offsets 含义（概念）}]
+// chunk i 的字节对应逻辑文件 [sparse_chunk_offsets[i], ...]
+for each run:
+  for each chunk in run:
+    sparse_chunk_offsets.push_back(current_logical_offset);
+\end{lstlisting}
+
+第二条 hardlink 路径复用同一 chunk 链（专册 05）。
+
+\section{Manifest：kMetaSparse}
+
+\begin{longtable}{@{}llp{7cm}@{}}
+\toprule
+字段 & 类型 & 含义 \\
+\midrule
+\texttt{sparse} & bool & 文本/逻辑标记 \\
+\texttt{sparse\_runs[]} & \texttt{(offset,length)} & allocated 区间 \\
+\texttt{sparse\_chunk\_offsets[]} & \texttt{u64} & 第 i 个 chunk 的逻辑起始偏移 \\
+\bottomrule
+\end{longtable}
+
+二进制序列化（\filepath{manifest.cc}）：
+
+\begin{lstlisting}[caption={kMetaSparse 写入}]
+WriteU32(body, f.sparse_runs.size());
+for (auto& run : f.sparse_runs) { WriteU64(body, run.first); WriteU64(body, run.second); }
+WriteU32(body, f.sparse_chunk_offsets.size());
+for (uint64_t off : f.sparse_chunk_offsets) WriteU64(body, off);
+\end{lstlisting}
+
+\section{恢复流程}
+
+\texttt{restore\_engine.cc} 分支：
+
+\begin{enumerate}
+  \item \winapi{CreateFileW} 创建目标（或 truncate 已有）；
+  \item \winapi{FSCTL\_SET\_SPARSE} 标记稀疏属性；
+  \item 对每个 chunk：\winapi{SetFilePointerEx}(\texttt{sparse\_chunk\_offsets[i]}) + \winapi{WriteFile}；
+  \item hole 区域保持未分配（读取为零）。
+\end{enumerate}
+
+\begin{lstlisting}[caption={稀疏 restore 写 loop (restore\_engine.cc)}]
+PrepareSparseRestoreFileWin32(win_handle, file.size);  // SET_SPARSE + SetEndOfFile
+for (size_t ci = 0; ci < file.chunk_hashes_hex.size(); ++ci) {
+  const uint64_t off = file.sparse_chunk_offsets[ci];
+  WritePathBytesAtWin32(win_handle, off, payload.data(), payload.size());
+}
+\end{lstlisting}
+
+\section{Restore 校验}
+
+\begin{itemize}[nosep]
+  \item \texttt{sum(run.length)} 与已写入 payload 总字节一致；
+  \item \winapi{GetFileSizeEx} == manifest \texttt{size}（逻辑 EOF）；
+  \item 失败记 \texttt{restore\_issues}，不 silent truncate。
+\end{itemize}
+
+\section{与 VSS / 锁定文件}
+
+VSS shadow 路径上 sparse IOCTL 行为与 live 卷一致——run map 反映\textbf{快照时刻}布局，避免 backup 过程中文件扩展导致 run 漂移。
+
+\section{测试}
+
+\filepath{tests/winmeta/sparse\_backup\_restore\_test.cc}：
+
+\begin{enumerate}[nosep]
+  \item 创建 sparse 文件（大 hole + 小数据 run）；
+  \item backup → 验证 chunk 数 $\ll$ 逻辑 size / chunk\_size；
+  \item restore → 逻辑 size 与 run 内容一致。
+\end{enumerate}
+
+\section{限制}
+
+\begin{warnbox}[非 NTFS / 压缩]
+NTFS 压缩文件、ReFS sparse 语义不同；当前实现针对 NTFS \winapi{FILE\_ATTRIBUTE\_SPARSE\_FILE}。
+\end{warnbox}
+
+报告字段：\texttt{sparse\_file\_count}（JSON backup report）。

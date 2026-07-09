@@ -1,0 +1,159 @@
+% 05 — 硬链接与 inode：从零到 dedup + CreateHardLinkW
+
+\section{起点：两条路径备份了两份内容}
+
+NTFS **hard link** 使 \texttt{dir/A.txt} 与 \texttt{dir/B.txt} 指向同一 MFT record（相同 inode、相同字节）。
+ naive 备份按路径各读一遍 → 仓库 chunk 翻倍，restore 得到两个独立文件而非链接结构。
+
+\begin{evolbox}[GAP-WIN-04：inode 驱动的结构 dedup]
+\textbf{采集}：\texttt{GetFileInformationByHandle} → \texttt{inode\_id} 写入 manifest（\manifestflag{kMetaInode}）。\\
+\textbf{备份}：\texttt{(inode\_id, stream\_name)} 第二次出现 → 复用 canonical entry 的 chunk 列表。\\
+\textbf{恢复}：\texttt{RestoreInodeKey} 表 + \winapi{CreateHardLinkW}。
+\end{evolbox}
+
+\section{NTFS file ID 与 inode\_id 字段}
+
+多个目录项共享同一 **file record**（相同内容、相同 MFT 索引）。
+\texttt{CaptureWinMetaFromPath} 在 enrich 阶段读取：
+
+\begin{lstlisting}[caption={inode\_id 来源 (win\_meta.cc)}]
+BY_HANDLE_FILE_INFORMATION info{};
+if (GetFileInformationByHandle(h, &info)) {
+  entry->inode_id =
+      (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+}
+\end{lstlisting}
+
+\begin{apibox}[inode\_id 不是 Linux inode]
+值来自 NTFS \texttt{nFileIndexHigh/Low}，在单卷内唯一标识 file record；跨卷无意义。
+与 ADS 组合：主 \$DATA 与 \texttt{:Zone.Identifier} 通常\textbf{不同} inode。
+\end{apibox}
+
+\section{备份阶段：BackupEngine 结构 dedup}
+
+Walk 仍产出\textbf{多条} \texttt{ScanEntry}（每个路径一行 manifest）。
+BackupEngine 维护：
+
+\begin{lstlisting}[caption={Hardlink dedup 概念 (backup\_engine.cc)}]
+using InodeKey = std::pair<uint64_t, std::string>;  // inode_id, stream_name
+std::unordered_map<InodeKey, size_t> inode_canonical;  // → manifest index
+
+if (entry.inode_id != 0) {
+  InodeKey key{entry.inode_id, entry.stream_name};
+  auto it = inode_canonical.find(key);
+  if (it != inode_canonical.end()) {
+    // 第二条及以后：alias manifest 行，复用 chunk_hashes，不读盘
+    AliasManifestEntry(it->second, new_path);
+    continue;
+  }
+}
+// 首路径：正常 ChunkFile，登记 canonical
+inode_canonical[key] = manifest_index;
+\end{lstlisting}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.8cm]
+  \node[wdata] (a) {dir/A.txt};
+  \node[wdata, right=1.5cm of a] (b) {dir/B.txt};
+  \node[wbox, below=1cm of $(a)!0.5!(b)$] (inode) {inode\_id = 0x1A2B};
+  \node[wdata, below=1cm of inode] (chunks) {同一组 chunk\_hashes};
+  \node[wdata, below=1cm of chunks] (read) {仅首路径 ReadFile};
+  \draw[warr] (a) -- (inode);
+  \draw[warr] (b) -- (inode);
+  \draw[warr] (inode) -- (chunks);
+  \draw[warr] (chunks) -- (read);
+\end{tikzpicture}
+\caption{硬链接：manifest 多 path，chunk 链一份，读盘一次}
+\end{figure}
+
+\section{Manifest 形态}
+
+两条 hardlink 在 manifest 中表现为：
+
+\begin{itemize}[nosep]
+  \item \texttt{relative\_path} 不同（\texttt{A.txt} vs \texttt{B.txt}）；
+  \item \texttt{inode\_id} 相同，\manifestflag{kMetaInode} 均置位；
+  \item \texttt{chunk\_hashes} 相同（或第二条为 alias 引用同一 index，取决于实现细节）；
+  \item \texttt{size}、SD 通常相同。
+\end{itemize}
+
+\section{恢复阶段：RestoreInodeKey + CreateHardLinkW}
+
+\texttt{restore\_engine.cc} 按 \texttt{FileTypeOrder} 排序后，对 regular 文件：
+
+\begin{lstlisting}[caption={硬链恢复逻辑 (restore\_engine.cc)}]
+if (file.file_type == FileType::kRegular && file.inode_id != 0 && inode_canonical) {
+  const RestoreInodeKey key{file.inode_id, file.stream_name};
+  const auto found = inode_canonical->find(key);
+  if (found != inode_canonical->end()) {
+    return winmeta::CreateHardLinkUtf8(found->second, write_path);
+  }
+}
+// ... 首路径：写 chunk 内容 ...
+(*inode_canonical)[key] = write_path;
+\end{lstlisting}
+
+\begin{lstlisting}[caption={CreateHardLinkUtf8 (win\_meta.cc)}]
+if (!CreateHardLinkW(link.c_str(), existing.c_str(), nullptr))
+  return Status::IoError("CreateHardLink failed");
+\end{lstlisting}
+
+\begin{designbox}[先写内容，再登记 canonical]
+首条 manifest 路径必须完整 restore 文件字节；后续路径仅 \texttt{CreateHardLinkW}，\textbf{不}再写 chunk。
+若首路径 restore 失败，后续 hardlink 路径会失败——排序保证字典序首路径优先（与目录 restore 顺序协同）。
+\end{designbox}
+
+\section{与 ADS 的组合键}
+
+\texttt{RestoreInodeKey\{inode\_id, stream\_name\}}：
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+键 & 语义 \\
+\midrule
+\texttt{(5, "")} & 主 \$DATA \\
+\texttt{(5, "Zone.Identifier")} & 同名 file 的 ADS（通常 inode $\neq$ 5） \\
+\texttt{(9, "")} & 另一 file record \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+不同 stream \textbf{不会}错误 dedup 为 hardlink。
+
+\section{与稀疏 / EFS}
+
+\begin{itemize}[nosep]
+  \item \textbf{稀疏}：dedup 发生在 chunk 层；首路径走 \texttt{ChunkSparseFile}，alias 路径复用 offsets。
+  \item \textbf{EFS Tier A}：\texttt{needs\_chunking()==false}，hardlink 仅结构 alias，无内容 chunk。
+\end{itemize}
+
+\section{演进时间线}
+
+\begin{longtable}{@{}llp{8cm}@{}}
+\toprule
+阶段 & GAP & 能力 \\
+\midrule
+Wave B & GAP-WIN-04 基础 & inode 进 manifest \\
+Wave E & GAP-WIN-04 done & backup dedup + restore hardlink E2E \\
+\bottomrule
+\end{longtable}
+
+\section{测试}
+
+\filepath{tests/winmeta/hardlink\_backup\_restore\_test.cc}：
+
+\begin{enumerate}[nosep]
+  \item \winapi{CreateHardLink} 创建双路径；
+  \item backup → 验证仓库 chunk 计数不翻倍；
+  \item restore → \winapi{GetFileInformationByHandle} 验证两路径 inode 一致。
+\end{enumerate}
+
+\section{限制}
+
+\begin{itemize}[nosep]
+  \item 仅 Windows restore 支持 hardlink；非 Win 平台 \texttt{CreateHardLinkUtf8} 返回 \texttt{Internal}。
+  \item 跨卷 hard link NTFS 不支持——扫描不会出现跨卷同 inode。
+  \item junction/symlink \textbf{不是} hardlink，走 reparse/symlink 专册逻辑。
+\end{itemize}

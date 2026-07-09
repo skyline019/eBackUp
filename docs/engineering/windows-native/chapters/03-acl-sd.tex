@@ -1,0 +1,160 @@
+% 03 — ACL / 安全描述符：从零到四策略恢复
+
+\section{起点：Unix mode 在 NTFS 上失效}
+
+早期 manifest 只有 \texttt{mode} 字段。
+Windows 上 \texttt{GetFileAttributes} 得到的只读/隐藏位\textbf{不能}表达 DACL 中的 10+ 种 ACE 组合。
+恢复时用 \texttt{CreateFile} 默认 ACL → 用户看到「文件有了，但 nobody 能写」或「Everyone Full Control 丢失」。
+
+\begin{evolbox}[GAP-WIN-01：opaque SD 透传]
+\textbf{决策}：不解析 ACE 语义（避免实现完整 SDDL 引擎），将整个 \winapi{SECURITY\_DESCRIPTOR} 作为 opaque blob → Base64 → manifest。\\
+\textbf{恢复}：\winapi{SetFileSecurityW} 原样写回；失败行为由 \texttt{AclRestorePolicy} 四模式控制（Wave E）。
+\end{evolbox}
+
+\section{Windows ACL 在备份中的角色}
+
+NTFS 权限由 \winapi{SECURITY\_DESCRIPTOR} 承载，包含：
+
+\begin{itemize}[nosep]
+  \item \textbf{Owner SID}、\textbf{Group SID}；
+  \item \textbf{DACL}：有序 ACE 列表（Allow/Deny、继承标志、特殊权限）；
+  \item （未采集）SACL、完整性标签、Central Access Policy。
+\end{itemize}
+
+ebbackup \textbf{不}解释 ACE，只做字节级 roundtrip——这与 rsync/tar 在 Linux 上保存 \texttt{acl\_extended} 的思路一致，复杂度可控。
+
+\section{第一版实现：GetFileSecurityW 两阶段查询}
+
+\begin{lstlisting}[caption={ReadSecurityDescriptorB64 (win\_meta.cc)}]
+const SECURITY_INFORMATION si =
+    OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION |
+    DACL_SECURITY_INFORMATION;
+
+DWORD len = 0;
+GetFileSecurityW(wide.c_str(), si, nullptr, 0, &len);  // 查询长度
+std::vector<uint8_t> buf(len);
+if (!GetFileSecurityW(wide.c_str(), si, buf.data(), len, &len))
+  return Status::IoError("GetFileSecurity failed");
+
+*out_b64 = Base64Encode(buf.data(), len);
+\end{lstlisting}
+
+\begin{designbox}[为何自研 Base64]
+避免引入额外依赖；SD 体积通常 $<$ 4KB，编解码在 enrich 热路径上可忽略。
+manifest 存 \textbf{ASCII Base64} 而非 raw bytes，便于文本 fallback 行与 JSON 报告嵌入。
+\end{designbox}
+
+manifest 持久化：二进制 \manifestflag{kMetaWinSd}（\texttt{u32 len + bytes}）或文本 \texttt{winmeta} 行。
+
+\section{采集时机：每条 ScanEntry 一次}
+
+\texttt{CaptureWinMetaFromPath} 在 enrich 阶段对\textbf{每个路径}调用——包括：
+
+\begin{itemize}[nosep]
+  \item 主数据流常规文件；
+  \item 每条 ADS（\texttt{file.txt:Zone.Identifier} 独立 SD）；
+  \item junction 目录（联接点本身有 ACL，与 target 无关）；
+  \item VSS shadow 路径上的锁定文件副本。
+\end{itemize}
+
+\section{恢复策略：AclRestorePolicy 四模式}
+
+产品化 restore 必须回答：「目标目录已有继承 ACL，是否覆盖？」
+
+\begin{longtable}{@{}llp{6.8cm}@{}}
+\caption{AclRestorePolicy::Mode} \\
+\toprule
+模式 & CLI / JSON & 行为 \\
+\midrule
+\texttt{kInherit} & 默认 & 不写 SD；目标目录继承生效 \\
+\texttt{kPreserve} & \texttt{acl=preserve} & \winapi{SetFileSecurityW}；失败则 \textbf{abort 该文件} \\
+\texttt{kSkip} & \texttt{acl=skip} & 永不写 SD \\
+\texttt{kBestEffort} & \texttt{acl=best\_effort} & 尝试写 SD；失败记 \texttt{acl\_apply\_failed} issue，继续 \\
+\bottomrule
+\end{longtable}
+
+\begin{lstlisting}[caption={ApplyWinMetaOnRestore (win\_meta.cc)}]
+const bool apply_sd =
+    (policy.mode == kPreserve || policy.mode == kBestEffort) &&
+    !win.security_descriptor_b64.empty();
+
+if (apply_sd) {
+  const Status sd_st = ApplySecurityDescriptorB64(wide, win.security_descriptor_b64);
+  if (!sd_st.ok()) {
+    if (policy.mode == kBestEffort) {
+      if (soft_issue_reason) *soft_issue_reason = "acl_apply_failed";
+      return Status::Ok();
+    }
+    return sd_st;
+  }
+}
+\end{lstlisting}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1cm]
+  \node[wdata] (disk) {NTFS 文件};
+  \node[wbox, right=1.2cm of disk] (api) {GetFileSecurityW};
+  \node[wdata, right=1.2cm of api] (b64) {SD Base64};
+  \node[wdata, below=1cm of b64] (man) {manifest kMetaWinSd};
+  \node[wbox, left=1.2cm of man] (rst) {SetFileSecurityW};
+  \node[wdata, left=1.2cm of rst] (out) {恢复目标};
+  \draw[warr] (disk) -- (api) -- (b64) -- (man);
+  \draw[warr] (man) -- (rst) -- (out);
+\end{tikzpicture}
+\caption{ACL 透传路径（语义不解释，字节级 roundtrip）}
+\end{figure}
+
+\section{ApplySecurityDescriptorB64 与特权}
+
+\begin{lstlisting}[caption={恢复写 SD (win\_meta.cc)}]
+std::vector<uint8_t> raw = Base64Decode(b64);
+if (!SetFileSecurityW(wide.c_str(),
+        OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION |
+        DACL_SECURITY_INFORMATION,
+        reinterpret_cast<PSECURITY_DESCRIPTOR>(raw.data()))) {
+  return Status::IoError("SetFileSecurity failed");
+}
+\end{lstlisting}
+
+\begin{warnbox}[特权与 SACL 缺口]
+恢复 Owner/DACL 通常需要 \winapi{SeRestorePrivilege} 或管理员。
+当前 \texttt{SECURITY\_INFORMATION} \textbf{不含 SACL}、强制完整性标签——企业场景若依赖 MIC，需在 roadmap 扩展 flag 位。
+\end{warnbox}
+
+\section{Restore 管线中的调用顺序}
+
+\texttt{restore\_engine.cc} 在文件内容写入\textbf{之后}调用 \texttt{ApplyWinMetaAfterRestore}（内部转 \texttt{ApplyWinMetaOnRestore}）：
+
+\begin{enumerate}[nosep]
+  \item Reparse 目录：先 \texttt{RecreateReparsePoint}，再 ACL；
+  \item 常规文件/目录：写 chunk 或 hardlink 后 ACL；
+  \item \texttt{kBestEffort}：soft issue 写入 \texttt{restore\_issues}，不中断整次 restore。
+\end{enumerate}
+
+\section{与 ADS / 硬链的交叉}
+
+\begin{itemize}
+  \item \textbf{ADS}：每条 stream 独立 manifest entry、独立 SD；恢复时对 \texttt{path:stream} 分别 \texttt{SetFileSecurityW}。
+  \item \textbf{硬链}：多条 path 共享 inode，但每条 manifest 行可带\textbf{相同} SD blob；恢复时对每个 link 路径各 apply 一次（NTFS 上同 inode 的 DACL 本一致）。
+\end{itemize}
+
+\section{演进与测试}
+
+\begin{longtable}{@{}lp{9cm}@{}}
+\toprule
+里程碑 & 内容 \\
+\midrule
+Wave B & SD 进 manifest v5 \\
+Wave E & \texttt{kBestEffort} + restore issue 报告 \\
+测试 & \filepath{acl\_restore\_test.cc}、\filepath{win\_meta\_test.cc} \\
+\bottomrule
+\end{longtable}
+
+\section{已知限制与后续方向}
+
+\begin{itemize}[nosep]
+  \item 不采集 Central Access Policy、资源属性（EAs 中的完整性）。
+  \item 跨域恢复时 SID 可能无法解析，\texttt{kBestEffort} 下常见 \texttt{acl\_apply\_failed}。
+  \item 未来可增 \texttt{kMetaWinSdSacl} 可选位，默认 off 保持仓库体积。
+\end{itemize}

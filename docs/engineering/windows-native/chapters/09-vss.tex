@@ -1,0 +1,204 @@
+% 09 — VSS：从零到快照读路径与多卷闭包
+
+\section{起点：活扫描读不了被锁定的文件}
+
+文件级备份默认 \texttt{CreateFile + ReadFile}。
+SQL Server、Outlook、甚至正在写入的日志常持有 **exclusive share** → \winapi{ERROR\_SHARING\_VIOLATION}，scan issue \texttt{locked}。
+
+\begin{evolbox}[GAP-CONSIST-01 / Phase 14–18]
+\textbf{Phase 14 (ABI v31)}：\texttt{VssSession} — COM + \winapi{IVssBackupComponents} 基础生命周期。\\
+\textbf{Phase 15 (ABI v32)}：crash/app/auto 模式、多卷 junction 闭包、路径映射。\\
+\textbf{Phase 18 (ABI v35)}：影子存储 WMI 预检、\texttt{--vss-fallback-live}。
+\end{evolbox}
+
+\textbf{定位}：VSS 为\textbf{文件级备份}提供一致性读路径；\textbf{不做}块级 raw 镜像（与 Veeam 整机备份不同）。
+
+\section{一致性模式：crash / app / auto}
+
+\begin{longtable}{@{}llp{6.5cm}@{}}
+\caption{VSS 模式对照} \\
+\toprule
+模式 & C API flag & 行为 \\
+\midrule
+crash & \texttt{EB\_BACKUP\_FLAG\_VSS} & \winapi{DoSnapshotSet} 后直接读 shadow；无 writer 协调 \\
+app & \texttt{+ EB\_BACKUP\_FLAG\_VSS\_APP} & \winapi{GatherWriterMetadata} → 快照 → 读 → \winapi{GatherWriterStatus} → \winapi{BackupComplete} \\
+auto & \texttt{set\_vss\_mode("auto")} & 尝试 app；writer 失败降级 crash，issue \texttt{vss\_writer\_degraded} \\
+\bottomrule
+\end{longtable}
+
+\begin{designbox}[为何读完后才 BackupComplete]
+Writer 协议要求：快照后、释放 writer 前完成数据复制。
+ebbackup 在 \textbf{scan + chunk 全部完成} 后调用 \texttt{FinishBackup}，避免 writer 超时与 torn read。
+\end{designbox}
+
+\section{VSS 生命周期}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.65cm]
+  \node[wbox] (init) {InitializeForBackup};
+  \node[wbox, below=of init] (meta) {GatherWriterMetadata（app 模式）};
+  \node[wbox, below=of meta] (b) {StartSnapshotSet + AddToSnapshotSet};
+  \node[wbox, below=of b] (snap) {DoSnapshotSet};
+  \node[wbox, below=of snap] (read) {ScanDirectory + Enrich + Chunk（shadow 路径）};
+  \node[wbox, below=of read] (fin) {GatherWriterStatus + BackupComplete};
+  \node[wbox, below=of fin] (end) {EndBackup / Delete Snapshots};
+  \draw[warr] (init) -- (meta) -- (b) -- (snap) -- (read) -- (fin) -- (end);
+\end{tikzpicture}
+\caption{VSS 生命周期与读顺序}
+\end{figure}
+
+实现：\filepath{vss\_session.cc}，封装 \texttt{VssSession::Begin / FinishBackup / End}。
+
+\section{Begin：闭包、预检、快照}
+
+\begin{lstlisting}[caption={VssSession::Begin 核心 (vss\_session.cc)}]
+CheckPrerequisites();  // Admin 或 SeBackupPrivilege
+
+ComputeVolumeClosure(logical_roots, closure_opts, &closure);
+info_.cross_volume = closure.size() > 1;
+
+if (!opts.skip_shadow_preflight) {
+  CheckShadowStoragePreflightEx(closure, opts.shadow_storage_min_bytes, &storage);
+  // 不足 → 失败或 fallback live（--vss-fallback-live）
+}
+
+impl_->StartSnapshotSet();
+for (const auto& spec : closure)
+  impl_->AddToSnapshotSet(spec, &entry.snapshot_id);
+impl_->DoSnapshotSet();
+
+BuildPathMap(mount_prefix → shadow_prefix);
+\end{lstlisting}
+
+\section{权限与特权}
+
+推荐**管理员**或持有：
+\begin{itemize}[nosep]
+  \item \winapi{SeBackupPrivilege} — 读 bypass ACL；
+  \item \winapi{SeRestorePrivilege} — 配合 restore 场景。
+\end{itemize}
+
+非 elevated：\filepath{vss\_locked\_file\_backup\_test} 可能 \texttt{GTEST\_SKIP}。
+
+\section{多卷闭包：vss\_volume\_closure}
+
+用户备份 \texttt{C:/project}，其中 junction 指向 \texttt{D:/data}。
+\textbf{扫描不展开} D:（专册 06），但 VSS 需对 D: **做快照**才能一致读 junction target 上的文件（若用户另行包含该路径）。
+
+\begin{lstlisting}[caption={ComputeVolumeClosure（概念）}]
+ResolveVolumeForPath(root) → volume_key (\\?\Volume{GUID}\);
+ProbeJunctionVolumes(root, depth=junction_probe_depth, &extra_volumes);
+closure = unique(volume_keys);
+\end{lstlisting}
+
+\begin{lstlisting}[caption={ProbeJunctionVolumes BFS}]
+// 深度 junction_probe_depth（默认 2）
+// IO_REPARSE_TAG_MOUNT_POINT → ReadJunctionTargetUtf8
+// 跨卷 target → 加入 closure，不 recurse 扫描
+\end{lstlisting}
+
+报告：\texttt{vss\_cross\_volume}、\texttt{vss\_volumes[]}（卷 GUID 列表）。
+
+\section{影子存储预检：vss\_shadow\_storage}
+
+\begin{enumerate}
+  \item \textbf{WMI 优先}：\winapi{Win32\_ShadowStorage} 查询 Used/Max Space；
+  \item \textbf{Fallback}：解析 \texttt{vssadmin list shadowstorage} 文本输出；
+  \item \texttt{CheckShadowStoragePreflightEx}：默认 **512MB** 余量（\texttt{shadow\_storage\_min\_bytes}）；
+  \item 失败 + \texttt{--vss-fallback-live}：降级活扫描，issue \texttt{vss\_shadow\_storage\_low}。
+\end{enumerate}
+
+CLI：\texttt{eb vss status}；JSON 报告 \texttt{vss\_shadow\_storage\_bytes[]}、\texttt{vss\_shadow\_storage\_ok}。
+
+\section{路径映射：vss\_path\_map}
+
+快照后逻辑源路径前缀映射到 shadow 设备：
+
+\begin{phasebox}[路径映射示例]
+源：\texttt{C:/data/file.txt}\\
+Shadow：\texttt{\textbackslash?\textbackslash?\textbackslash Volume\{xxx\}\textbackslash data\textbackslash file.txt}\\
+\texttt{ScanDirectory} 的 \texttt{walk\_root} 使用 shadow 前缀；manifest \texttt{relative\_path} 仍为 \texttt{data/file.txt}（对用户透明）。
+\end{phasebox}
+
+\texttt{MapToShadow} / \texttt{MapFromShadow} 在 session 内维护双向表。
+
+\section{与 Win 元数据 enrichment 的衔接}
+
+VSS 不改变 enrichment 代码路径——仅在 \textbf{映射后}绝对路径上调用 \texttt{CaptureWinMetaFromPath}：
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+板块 & VSS 交互 \\
+\midrule
+02 扫描 enrichment & shadow 路径上 ACL/inode/reparse \\
+04 ADS & \texttt{FindFirstStreamW} 对快照一致 \\
+05 硬链 & 快照时间点 inode 稳定 \\
+06 Junction & 闭包扩卷；scan 仍不展开 \\
+07 Sparse & IOCTL run map 在 shadow 有效 \\
+08 EFS & 加密属性在快照上可读 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{备份报告字段（ABI v32+）}
+
+JSON report 扩展：
+\begin{itemize}[nosep]
+  \item \texttt{vss\_used}、\texttt{vss\_mode}、\texttt{vss\_consistency}；
+  \item \texttt{vss\_writers[]}、\texttt{vss\_snapshot\_set\_id}；
+  \item \texttt{vss\_shadow\_storage\_ok}、\texttt{vss\_shadow\_storage\_bytes[]}；
+  \item issue：\texttt{vss\_writer\_degraded}、\texttt{vss\_shadow\_storage\_low}。
+\end{itemize}
+
+\section{Job 扩展（Phase 18）}
+
+\texttt{quiesce\_profile}、\texttt{vss\_app\_failure\_policy} 映射 Writer 失败策略。
+\textbf{不含} SQL/Exchange 专用 Writer 插件——依赖系统已注册 VSS writer。
+
+\section{明确不做}
+
+\begin{itemize}[nosep]
+  \item 块级镜像 / 裸金属恢复；
+  \item 影子空间管理 GUI；
+  \item Hyper-V/VMware 集成（Veeam B\&R 级 VM 备份）。
+\end{itemize}
+
+\section{测试矩阵}
+
+\begin{longtable}{@{}lp{8.5cm}@{}}
+\toprule
+测试文件 & 覆盖 \\
+\midrule
+\filepath{vss\_path\_map\_test.cc} & 前缀映射 roundtrip \\
+\filepath{vss\_lifecycle\_test.cc} & Begin/Finish/End COM 生命周期 \\
+\filepath{vss\_volume\_closure\_test.cc} & junction 卷发现 \\
+\filepath{vss\_shadow\_storage\_test.cc} & WMI/vssadmin 解析 \\
+\filepath{vss\_locked\_file\_backup\_test.cc} & elevated 锁定文件可读 \\
+\filepath{vss\_session\_stub\_test.cc} & 无 VSS 环境 stub \\
+\bottomrule
+\end{longtable}
+
+\section{从零搭建 VSS 读路径的设计教训}
+
+\begin{enumerate}
+  \item \textbf{先 crash 后 app}：crash 模式已解决 80\% 锁定文件；app 模式增加 writer 失败面，需 auto 降级。
+  \item \textbf{闭包与 scan 解耦}：用户 scope 由 scan 决定；VSS 卷集由闭包决定——两者故意不一致。
+  \item \textbf{预检优于运行时失败}：影子存储不足时在 Begin 阶段 fail 或 fallback，避免扫到一半快照被删。
+  \item \textbf{读完成再 BackupComplete}：与 Microsoft VSS 文档顺序一致，减少 SQL/AD writer 报错。
+\end{enumerate}
+
+\section{源码索引}
+
+\begin{longtable}{@{}lp{9cm}@{}}
+\toprule
+文件 & 职责 \\
+\midrule
+\filepath{src/winmeta/vss\_session.cc} & COM 会话、快照、路径映射、FinishBackup \\
+\filepath{src/winmeta/vss\_volume\_closure.cc} & 卷解析、junction BFS 闭包 \\
+\filepath{src/winmeta/vss\_shadow\_storage.cc} & WMI/vssadmin 预检 \\
+\filepath{src/scan/scan\_entry.cc} & walk\_root 使用 shadow 映射 \\
+\filepath{include/ebbackup/winmeta/vss\_session.h} & \texttt{VssBeginOptions}、报告 DTO \\
+\bottomrule
+\end{longtable}

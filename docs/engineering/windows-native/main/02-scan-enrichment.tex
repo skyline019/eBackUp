@@ -1,0 +1,18 @@
+% !TEX program = xelatex
+\documentclass[12pt,a4paper]{ctexart}
+\input{../preamble.tex}
+
+\title{02 — 扫描 Enrichment 与 Windows 元数据采集管线}
+\author{ebbackup · \filepath{scan\_entry.cc} + \filepath{winmeta/}}
+\date{2026-07-09}
+
+\begin{document}
+\maketitle
+\begin{abstract}
+从「walk 只认路径与 size」的缺口出发，叙述 \texttt{EnrichScanEntriesWinMeta} 如何作为后处理层接入 DFS 扫描：
+\texttt{CaptureWinMetaFromPath} API 链、junction 不展开、ADS 追加、sparse/EFS 钩子，以及与 VSS shadow 路径的配合。含流程图与 \filepath{scan\_entry.cc} 源码。
+\end{abstract}
+\tableofcontents
+\newpage
+\input{../chapters/02-scan-enrichment.tex}
+\end{document}

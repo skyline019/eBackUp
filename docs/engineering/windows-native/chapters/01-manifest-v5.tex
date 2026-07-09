@@ -1,0 +1,295 @@
+% 01 — Manifest v5：从零开始的 on-disk 设计
+
+\section{起点：只有 POSIX 字段时发生了什么}
+
+ebbackup 最初面向类 Unix 语义设计 manifest：每条文件记录携带 \texttt{mode/uid/gid/mtime} 与 content-addressed chunk 哈希链。
+在 Windows 上跑通「能备份、能恢复」后，很快暴露三类根本缺口：
+
+\begin{enumerate}[nosep]
+  \item \textbf{权限}：NTFS 使用 \winapi{SECURITY\_DESCRIPTOR}，与 Unix \texttt{mode} 不等价；只存 \texttt{mode} 时恢复后 ACL 丢失。
+  \item \textbf{命名空间}：同一主文件名可挂多个 ADS stream；硬链接使多条路径共享同一 file record；junction 目录是 reparse point 而非普通文件夹。
+  \item \textbf{存储形态}：稀疏文件逻辑尺寸与物理簇不对应；EFS 加密文件在 Tier A 下不应强行读明文。
+\end{enumerate}
+
+\begin{evolbox}[Wave 1 $\rightarrow$ Wave B 的设计转折]
+\textbf{Wave 1（v0.4.x）}：引入二进制 \texttt{EBMANIFEST4}，把 Unix meta 与 chunk 哈希从文本行迁入 body，加 CRC32 校验。\\
+\textbf{Wave B（ABI v16, Phase 3）}：在 v4 的 \texttt{meta\_flags} 位图上\textbf{追加} Win 位，header 升级为 \texttt{EBMANIFEST5}，inner magic \texttt{0xEB4F0002}。\\
+\textbf{Phase 16/19（ABI v33/v37）}：追加 \manifestflag{kMetaSparse}、\manifestflag{kMetaEfs}，完成 NTFS 稀疏与 EFS 密钥 blob 持久化。
+\end{evolbox}
+
+核心原则自始至终未变：\textbf{manifest 描述文件壳层与寻址；chunk 仓库存内容}。Windows 字段不改变 content-addressed 模型，只扩展「恢复时需要还原什么」。
+
+\section{版本选型：WriteManifestAuto 决策树}
+
+写入入口 \texttt{WriteManifestAuto} 是 manifest 演进的「总闸」。
+逻辑位于 \filepath{manifest.cc}：
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.55cm]
+  \node[wbox] (doc) {ManifestDocument};
+  \node[wbox, below=of doc] (chk5) {DocumentUsesV5?};
+  \node[wdata, below left=0.7cm and 0.3cm of chk5] (v5) {WriteManifestV5\\EBMANIFEST5};
+  \node[wdata, below right=0.7cm and 0.3cm of chk5] (v4) {WriteManifestV4\\EBMANIFEST4};
+  \node[wbox, below=1.6cm of chk5] (text) {prefer\_binary=false?};
+  \node[wdata, below=of text] (v3) {v3/v2 文本行};
+  \draw[warr] (doc) -- (chk5);
+  \draw[warr] (chk5) -- node[font=\tiny, left]{是} (v5);
+  \draw[warr] (chk5) -- node[font=\tiny, right]{否} (v4);
+\end{tikzpicture}
+\caption{二进制 manifest 自动选型（简化）}
+\end{figure}
+
+\begin{lstlisting}[caption={DocumentUsesV5 触发条件 (manifest.cc)}]
+bool DocumentUsesV5(const ManifestDocument& doc) {
+  for (const auto& f : doc.files) {
+    if (f.has_win_meta() || f.has_sparse_meta() || f.has_efs_meta())
+      return true;
+  }
+  return false;
+}
+\end{lstlisting}
+
+\begin{designbox}[为何「按需升级」而非全局 v5]
+纯 Linux 备份仓库从未出现 ACL/ADS 时仍写 v4，避免无意义 magic 变更。
+\textbf{首次}出现 Win/sparse/efs 字段的 commit 自动切 v5——旧 reader 通过 inner magic 区分；新 reader 对 v4 向后兼容。
+\end{designbox}
+
+\section{逻辑模型：ManifestFileEntry 扩展字段}
+
+结构定义 \filepath{include/ebbackup/engine/manifest.h}。
+Win 字段与 Unix 字段\textbf{共存于同一 struct}，扫描/恢复层通过 predicate 判断是否参与序列化：
+
+\begin{lstlisting}[caption={ManifestFileEntry Windows 扩展字段}]
+struct ManifestFileEntry {
+  std::string relative_path;
+  uint64_t size{0};
+  FileType file_type{FileType::kRegular};
+  std::vector<std::string> chunk_hashes_hex;
+  // Unix: mode, uid, gid, mtime_unix, atime_unix, symlink_target, device_*
+
+  std::string security_descriptor_b64;
+  uint64_t inode_id{0};
+  uint32_t reparse_tag{0};
+  std::string reparse_target;
+  std::string stream_name;
+
+  bool sparse{false};
+  std::vector<std::pair<uint64_t,uint64_t>> sparse_runs;
+  std::vector<uint64_t> sparse_chunk_offsets;
+
+  bool efs_encrypted{false};
+  std::string efs_key_blob_b64;
+
+  bool has_win_meta() const {
+    return !security_descriptor_b64.empty() || inode_id != 0 ||
+           reparse_tag != 0 || !reparse_target.empty() || !stream_name.empty();
+  }
+  bool needs_chunking() const {
+    return file_type == FileType::kRegular && !efs_encrypted;
+  }
+};
+\end{lstlisting}
+
+\texttt{needs\_chunking()} 是 EFS Tier A 与 Tier B 的分水岭：Tier A 只记 \texttt{efs\_encrypted=true}，\textbf{不}产生 content chunk；Tier B 导出密钥 blob 后仍可能跳过明文（取决于 backup 策略）。
+
+Superblock 侧用 \texttt{kBackupFeatureWinMeta = 0x400} 标记仓库曾写入 Win 元数据，便于 GUI/运维识别能力位。
+
+\section{Meta flags：条件序列化的位图设计}
+
+v5 \textbf{不}为每个文件固定写入全部 Win 字段。
+\texttt{BuildV5MetaFlags} 在 v4 flags 之上按需 OR 位：
+
+\begin{lstlisting}[caption={BuildV5MetaFlags (manifest.cc)}]
+uint32_t BuildV5MetaFlags(const ManifestFileEntry& f) {
+  uint32_t flags = BuildV4MetaFlags(f);
+  if (!f.security_descriptor_b64.empty()) flags |= kMetaWinSd;
+  if (f.inode_id != 0) flags |= kMetaInode;
+  if (f.reparse_tag != 0) flags |= kMetaReparse;
+  if (!f.stream_name.empty()) flags |= kMetaStream;
+  if (!f.reparse_target.empty()) flags |= kMetaReparseTarget;
+  if (f.has_sparse_meta()) flags |= kMetaSparse;
+  if (f.has_efs_meta()) flags |= kMetaEfs;
+  return flags;
+}
+\end{lstlisting}
+
+\begin{longtable}{@{}lrp{7.2cm}@{}}
+\caption{Manifest v5 meta flags 完整表} \\
+\toprule
+Flag & 值 & body 后续字段（little-endian） \\
+\midrule
+\manifestflag{kMetaMode} & 0x01 & \texttt{u32 mode} \\
+\manifestflag{kMetaUidGid} & 0x02 & \texttt{u32 uid, u32 gid} \\
+\manifestflag{kMetaTimes} & 0x04 & \texttt{u64 mtime, u64 atime} \\
+\manifestflag{kMetaSymlink} & 0x08 & \texttt{u32 len + UTF-8 target} \\
+\manifestflag{kMetaDevice} & 0x10 & \texttt{u32 major, u32 minor} \\
+\manifestflag{kMetaWinSd} & 0x20 & \texttt{u32 sd\_len + SD base64 ASCII} \\
+\manifestflag{kMetaInode} & 0x40 & \texttt{u64 inode\_id} \\
+\manifestflag{kMetaReparse} & 0x80 & \texttt{u32 reparse\_tag} \\
+\manifestflag{kMetaStream} & 0x100 & \texttt{u32 stream\_len + UTF-8} \\
+\manifestflag{kMetaReparseTarget} & 0x200 & \texttt{u32 target\_len + UTF-8} \\
+\manifestflag{kMetaSparse} & 0x400 & run 表 + chunk offset 表 \\
+\manifestflag{kMetaEfs} & 0x800 & \texttt{u8 flag + u32 blob\_len + blob} \\
+\bottomrule
+\end{longtable}
+
+空 SD \textbf{不占} \manifestflag{kMetaWinSd}——避免「有 flag 无 payload」的歧义。
+\texttt{reparse\_tag} 与 \texttt{reparse\_target} \textbf{分两个 flag}：tag 可单独存在（未知类型 junction），target 仅在解析成功时写入。
+
+\section{单文件 record 二进制布局}
+
+每条 manifest 文件 entry 在 body 内按固定前缀 + 可变 meta 块拼接：
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=0.35cm,
+  blk/.style={rectangle, draw=WinBlue!70, minimum width=11cm, minimum height=0.55cm,
+    font=\scriptsize, align=left, inner sep=4pt}
+]
+  \node[blk, fill=blue!6] (hdr) {path\_len · path UTF-8 · size u64 · file\_type u8 · chunk\_count u32 · meta\_flags u32};
+  \node[blk, fill=green!6, below=of hdr] (chunks) {chunk\_hash[32B] × N（SHA-256 raw bytes）};
+  \node[blk, fill=yellow!8, below=of chunks] (v4) {按 meta\_flags 顺序：mode → uid/gid → times → symlink → device};
+  \node[blk, fill=orange!8, below=of v4] (v5) {按 meta\_flags 顺序：WinSd → Inode → Reparse → Stream → Target → Sparse → Efs};
+  \node[blk, fill=gray!10, below=of v5] (crc) {body CRC32 u32（整段 body 校验）};
+  \draw[warr] (hdr.south) -- (chunks.north);
+  \draw[warr] (chunks.south) -- (v4.north);
+  \draw[warr] (v4.south) -- (v5.north);
+  \draw[warr] (v5.south) -- (crc.north);
+\end{tikzpicture}
+\caption{Manifest v5 单文件 record 逻辑结构}
+\end{figure}
+
+\begin{phasebox}[Walkthrough：带 ACL 的常规文件]
+假设 \texttt{meta\_flags = 0x24}（\texttt{kMetaWinSd | kMetaInode}），chunk 数 = 2：\\
+1) 写入 path、size、type、chunk 哈希 2 条；\\
+2) \texttt{u32 sd\_len} + SD base64 字符串（Owner/Group/DACL 的 opaque bytes）；\\
+3) \texttt{u64 inode\_id}（NTFS MFT 索引，供硬链 dedup）；\\
+4) 无 reparse/stream/sparse/efs 块；\\
+5) body 末尾 CRC32。
+\end{phasebox}
+
+\section{WriteWinMetaFields 与 ReadWinMetaFields 对称性}
+
+序列化与反序列化\textbf{严格同序}，便于 \texttt{SkipWinMetaFields} 向前兼容未知 flag 位（预留高位）。
+
+\begin{lstlisting}[caption={WriteWinMetaFields 完整顺序 (manifest.cc)}]
+void WriteWinMetaFields(std::vector<uint8_t>& body, uint32_t meta_flags,
+                        const ManifestFileEntry& f) {
+  if (meta_flags & kMetaWinSd) {
+    WriteU32(body, f.security_descriptor_b64.size());
+    body.insert(body.end(), f.security_descriptor_b64.begin(),
+                f.security_descriptor_b64.end());
+  }
+  if (meta_flags & kMetaInode) WriteU64(body, f.inode_id);
+  if (meta_flags & kMetaReparse) WriteU32(body, f.reparse_tag);
+  if (meta_flags & kMetaStream) {
+    WriteU32(body, f.stream_name.size());
+    body.insert(body.end(), f.stream_name.begin(), f.stream_name.end());
+  }
+  if (meta_flags & kMetaReparseTarget) {
+    WriteU32(body, f.reparse_target.size());
+    body.insert(body.end(), f.reparse_target.begin(), f.reparse_target.end());
+  }
+  if (meta_flags & kMetaSparse) { /* run 表 + offset 表 */ }
+  if (meta_flags & kMetaEfs) {
+    body.push_back(f.efs_encrypted ? 1 : 0);
+    WriteU32(body, f.efs_key_blob_b64.size());
+    body.insert(body.end(), f.efs_key_blob_b64.begin(),
+                f.efs_key_blob_b64.end());
+  }
+}
+\end{lstlisting}
+
+\begin{lstlisting}[caption={ReadWinMetaFields 对称读取 (manifest.cc)}]
+bool ReadWinMetaFields(const uint8_t*& p, const uint8_t* end,
+                       uint32_t meta_flags, ManifestFileEntry* entry) {
+  if (meta_flags & kMetaWinSd) {
+    uint32_t sd_len = 0;
+    if (!ReadU32(p, end, &sd_len) || p + sd_len > end) return false;
+    entry->security_descriptor_b64.assign(reinterpret_cast<const char*>(p), sd_len);
+    p += sd_len;
+  }
+  if (meta_flags & kMetaInode) {
+    if (!ReadU64(p, end, &entry->inode_id)) return false;
+  }
+  // reparse, stream, target, sparse, efs — 顺序与 Write 相同
+  return true;
+}
+\end{lstlisting}
+
+\section{文本 fallback：调试与迁移}
+
+二进制 body 之外，\texttt{AppendMetaLines} 为 v2/v3 \textbf{文本 manifest} 输出等价行，便于 \texttt{grep} 与迁移工具：
+
+\begin{lstlisting}[caption={文本 winmeta/sparse/efs 行 (manifest.cc)}]
+if (f.has_win_meta()) {
+  body << "winmeta\t" << f.security_descriptor_b64.size() << "\t"
+       << f.inode_id << "\t" << f.reparse_tag << "\t"
+       << f.reparse_target.size() << "\t" << f.stream_name.size() << "\n";
+  // ... 各字段正文行 ...
+}
+if (f.has_sparse_meta()) { body << "sparse\t" << ...; }
+if (f.has_efs_meta()) { body << "efs\t" << ...; }
+\end{lstlisting}
+
+生产路径默认 \texttt{prefer\_binary=true}；文本路径保留是为早期仓库与手工排障。
+
+\section{WinMetaExtension：扫描态与 manifest 态的桥梁}
+
+运行时扫描使用 \texttt{ScanEntry}，commit 前映射到 \texttt{ManifestFileEntry}。
+中间 DTO \texttt{WinMetaExtension}（\filepath{win\_meta.h}）与 manifest Win 五元组 \textbf{1:1}：
+
+\begin{lstlisting}[caption={CopyWinMetaToManifest (win\_meta.cc)}]
+void CopyWinMetaToManifest(const WinMetaExtension& win, ManifestFileEntry* entry) {
+  entry->security_descriptor_b64 = win.security_descriptor_b64;
+  entry->inode_id = win.inode_id;
+  entry->reparse_tag = win.reparse_tag;
+  entry->reparse_target = win.reparse_target;
+  entry->stream_name = win.stream_name;
+}
+\end{lstlisting}
+
+稀疏与 EFS 字段\textbf{不}经 \texttt{WinMetaExtension}，由 \texttt{ScanEntry} 直接写入 manifest——这是 Phase 16/19 追加能力时的刻意选择，避免再扩一层 DTO。
+
+\section{演进时间线（与 GAP 对照）}
+
+\begin{longtable}{@{}lllp{5.5cm}@{}}
+\caption{Manifest v5 相关演进} \\
+\toprule
+阶段 & ABI & GAP & 新增持久化 \\
+\midrule
+Wave 1 & — & — & EBMANIFEST4, Unix meta 二进制 \\
+Wave B & v16 & GAP-WIN-01~04 & Win 五元组 + inode \\
+Phase 16 & v33 & GAP-WIN-05 & sparse runs + chunk offsets \\
+Phase 19 & v37 & GAP-WIN-06 & EFS flag + key blob \\
+\bottomrule
+\end{longtable}
+
+\begin{warnbox}[与内容 chunk 的关系]
+Win 元数据描述\textbf{文件壳层}（ACL、联接点、稀疏布局、EFS 标记）；\textbf{内容}仍走 chunk 链。
+稀疏文件仅对 \texttt{sparse\_runs} 区间读盘并 chunk；EFS Tier A 可能零 chunk。
+\end{warnbox}
+
+\section{兼容性策略小结}
+
+\begin{itemize}
+  \item \textbf{读}：\texttt{ReadManifestAuto} 根据 header/inner magic 选解析器；v4 entry 无 Win 块；v5 在 v4 块之后追加 \texttt{ReadWinMetaFields}。
+  \item \textbf{写}：无 Win 字段 → v4；有任一 Win/sparse/efs → v5 header。
+  \item \textbf{测试}：\filepath{manifest\_v5\_test.cc} roundtrip 全 flag 组合；\filepath{manifest\_v4\_test.cc} 确保旧仓库可读。
+\end{itemize}
+
+\section{源码索引}
+
+\begin{longtable}{@{}lp{9cm}@{}}
+\toprule
+文件 & 职责 \\
+\midrule
+\filepath{src/engine/manifest.cc} & flags 构建、Write/Read/Skip WinMeta、WriteManifestAuto \\
+\filepath{include/ebbackup/engine/manifest.h} & \texttt{ManifestFileEntry}、feature 常量 \\
+\filepath{include/ebbackup/winmeta/win\_meta.h} & \texttt{WinMetaExtension}、ACL/Reparse 策略 enum \\
+\filepath{src/engine/backup\_engine.cc} & ScanEntry → manifest commit、v5 触发 \\
+\filepath{tests/engine/manifest\_v5\_test.cc} & 二进制 roundtrip \\
+\bottomrule
+\end{longtable}

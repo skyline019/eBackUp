@@ -1,0 +1,165 @@
+% 06 — Reparse / Junction：从零到不展开 + 可选重建
+
+\section{起点：把 junction 当普通目录递归}
+
+Windows **directory junction**（\winapi{IO\_REPARSE\_TAG\_MOUNT\_POINT}）在资源管理器中「看起来像文件夹」，实际是 reparse point。
+若 walk 跟随进入 \texttt{D:/}，一次备份 \texttt{C:/project/link} 可能扫进整盘外置硬盘——\textbf{灾难性} scope 膨胀。
+
+\begin{evolbox}[GAP-WIN-03 双轨策略]
+\textbf{扫描层}：发现 reparse 目录 → 记 \texttt{reparse\_junction} issue，\textbf{不递归}，但采集 \texttt{reparse\_tag/target}。\\
+\textbf{VSS 层}：\texttt{ProbeJunctionVolumes} 有限深度探测 target 卷，纳入 snapshot set（专册 09）。\\
+\textbf{恢复层}：\texttt{ReparseRestorePolicy} — \texttt{kSkip} 或 \texttt{kRecreate}。
+\end{evolbox}
+
+\section{Reparse Point 类型}
+
+ebbackup 重点支持 \winapi{IO\_REPARSE\_TAG\_MOUNT\_POINT}（目录联接）。
+符号链接（\winapi{IO\_REPARSE\_TAG\_SYMLINK}）在 scan 层按 symlink 类型处理；junction 是\textbf{目录} + reparse 的组合。
+
+持久化字段：
+\begin{itemize}[nosep]
+  \item \texttt{reparse\_tag} → \manifestflag{kMetaReparse}；
+  \item \texttt{reparse\_target}（UTF-8，规范化后）→ \manifestflag{kMetaReparseTarget}。
+\end{itemize}
+
+\section{采集：FSCTL\_GET\_REPARSE\_POINT}
+
+\texttt{CaptureReparseTarget}（\filepath{win\_meta.cc}）在 \texttt{CaptureWinMetaFromPath} 内调用：
+
+\begin{lstlisting}[caption={CaptureReparseTarget (win\_meta.cc)}]
+DeviceIoControl(h, FSCTL_GET_REPARSE_POINT, nullptr, 0,
+                buf.data(), buf.size(), &ret, nullptr);
+
+const auto* rdb = reinterpret_cast<const EbReparseDataBuffer*>(buf.data());
+if (rdb->ReparseTag == IO_REPARSE_TAG_MOUNT_POINT) {
+  const WCHAR* sub_name = ...;  // SubstituteName from PathBuffer
+  std::wstring substitute(sub_name, sub_chars);
+  *out_utf8 = WideToUtf8(NormalizeSubstituteName(std::move(substitute)));
+}
+\end{lstlisting}
+
+\subsection{Substitute 名规范化}
+
+Windows 存储的 substitute 常带 \texttt{\textbackslash??\textbackslash} 或 \texttt{\textbackslash DosDevices\textbackslash} 前缀：
+
+\begin{lstlisting}[caption={NormalizeSubstituteName (win\_meta.cc)}]
+if (wpath.rfind(L"\\??\\", 0) == 0) wpath = wpath.substr(4);
+else if (wpath.rfind(L"\\DosDevices\\", 0) == 0) wpath = wpath.substr(12);
+\end{lstlisting}
+
+manifest 存\textbf{规范化后} UTF-8，恢复时再结合 restore 根目录重算绝对路径。
+
+\section{扫描策略：不跟随联接}
+
+\begin{lstlisting}[caption={Walk 层 junction 截断 (scan\_entry.cc)}]
+if (IsReparseDirectory(entry.path())) {
+  RecordIssue(added.absolute_path, "reparse_junction", &out->issues);
+  winmeta::CaptureWinMetaFromPath(added.absolute_path, &added);
+  continue;  // 不 push 子目录到 walk stack
+}
+\end{lstlisting}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.9cm]
+  \node[wbox] (scan) {ScanDirectory DFS};
+  \node[wdata, below left=of scan] (junction) {junction 目录};
+  \node[wdata, below right=of scan] (normal) {普通子目录};
+  \node[wbox, below=1.2cm of junction] (meta) {tag + target → manifest};
+  \node[wdata, below=1.2cm of normal] (recurse) {继续递归};
+  \draw[warr] (scan) -- (junction);
+  \draw[warr] (scan) -- (normal);
+  \draw[warr] (junction) -- (meta);
+  \draw[warr] (normal) -- (recurse);
+\end{tikzpicture}
+\caption{Junction：采集元数据但不 recurse}
+\end{figure}
+
+避免的问题：
+\begin{itemize}[nosep]
+  \item 意外备份整盘；
+  \item 与 VSS 多卷闭包逻辑冲突；
+  \item 循环 junction 导致 scan 深度爆炸。
+\end{itemize}
+
+\section{恢复：ReparseRestorePolicy}
+
+\begin{longtable}{@{}llp{7cm}@{}}
+\toprule
+模式 & CLI & 行为 \\
+\midrule
+\texttt{kSkip} & 默认 & 创建普通空目录或跳过 reparse 属性 \\
+\texttt{kRecreate} & \texttt{reparse=recreate} & \texttt{RecreateReparsePoint} \\
+\bottomrule
+\end{longtable}
+
+\texttt{restore\_engine.cc} 对 \texttt{file\_type==kDirectory \&\& reparse\_tag!=0} 优先分支：
+
+\begin{lstlisting}[caption={RecreateReparsePoint 双路径 (win\_meta.cc)}]
+// 1) 优先 cmd mklink /J（用户熟悉、权限清晰）
+std::system("cmd /c mklink /J \"link\" \"target\"");
+
+// 2) fallback: 手工 REPARSE_DATA_BUFFER + FSCTL_SET_REPARSE_POINT
+DeviceIoControl(h, FSCTL_SET_REPARSE_POINT, &rdb, ...);
+\end{lstlisting}
+
+\section{目标路径重映射}
+
+恢复时 \texttt{reparse\_target} 可能是：
+
+\begin{itemize}[nosep]
+  \item \textbf{绝对}：\texttt{D:/data} — 结合 restore 映射规则替换盘符；
+  \item \textbf{相对}：相对 junction 父目录解析为 \texttt{GetFullPathNameW}。
+\end{itemize}
+
+开发机 \texttt{C:} → 恢复机 \texttt{D:} 场景：避免 hardcode 源机器盘符。
+
+\section{VSS 多卷闭包（交叉引用）}
+
+\texttt{vss\_volume\_closure.cc} 的 \texttt{ProbeJunctionVolumes}：
+
+\begin{lstlisting}[caption={ProbeJunctionVolumes（概念）}]
+// BFS 源树，深度 junction_probe_depth（默认 2）
+// IO_REPARSE_TAG_MOUNT_POINT → 解析 target → ResolveVolumeForPath
+// 跨卷 volume_key 加入 ComputeVolumeClosure 结果
+\end{lstlisting}
+
+\textbf{扫描不展开} $\neq$ \textbf{VSS 不包含目标卷}：快照可含 D:，但 manifest 只含用户指定的 C: 树 + junction 元数据。
+
+\section{REPARSE\_DATA\_BUFFER 结构}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  cell/.style={rectangle, draw, minimum width=2.2cm, minimum height=0.45cm, font=\tiny, align=center}
+]
+  \node[cell, fill=blue!10] (tag) {ReparseTag};
+  \node[cell, fill=green!10, right=0.1cm of tag] (len) {DataLength};
+  \node[cell, fill=yellow!10, right=0.1cm of len] (sub) {SubstituteName};
+  \node[cell, fill=orange!10, right=0.1cm of sub] (print) {PrintName};
+  \node[below=0.4cm of tag, font=\scriptsize, text width=10cm, align=center] {
+    ebbackup 持久化 Substitute 解析结果；PrintName 仅用于 UI，恢复以 Substitute 为准
+  };
+\end{tikzpicture}
+\caption{Junction reparse data 概念字段}
+\end{figure}
+
+自研 \texttt{EbReparseDataBuffer} 布局与 WDK 文档对齐，避免 SDK 版本差异。
+
+\section{Restore 排序}
+
+\texttt{FileTypeOrder} 保证\textbf{目录}（含 reparse 目录）在文件之前创建——\texttt{RecreateReparsePoint} 需要父目录存在。
+
+\section{测试}
+
+\begin{itemize}[nosep]
+  \item \filepath{win\_reparse\_scan\_test.cc} — scan 不进入 target；
+  \item \filepath{win\_meta\_test.cc} — tag/target roundtrip；
+  \item \filepath{vss\_volume\_closure\_test.cc} — junction 卷发现。
+\end{itemize}
+
+\section{明确不做的 reparse 类型}
+
+\begin{warnbox}[非 MOUNT\_POINT]
+OneDrive/cloud filter（\winapi{IO\_REPARSE\_TAG\_CLOUD} 等）、DFS 专用 tag：当前仅采集 tag，\texttt{kRecreate} 可能失败并记 issue。
+\end{warnbox}

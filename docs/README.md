@@ -11,6 +11,7 @@
 | 文档 | 说明 |
 |------|------|
 | [engineering/kernel-manual/](engineering/kernel-manual/) | **LaTeX 工程技术手册**（v1.4，Phase 16--19 扩写，XeLaTeX） |
+| [engineering/windows-native/](engineering/windows-native/) | **Windows 原生元数据专册**（9 册独立 PDF：Manifest/ACL/ADS/VSS/EFS 等） |
 | [engineering/ecosystem-evolution/](engineering/ecosystem-evolution/) | **LaTeX 生态理念与本土化发展实录**（压力驱动时间线、剪枝、流程反思；**第 12 章 L1–L7 实测数据**） |
 | [engineering/defense-presentation/](engineering/defense-presentation/) | **答辩演讲稿**（Beamer 幻灯片 + 逐字稿双 PDF；课程 8–10 min / 技术 15–20 min） |
 | [WAVE_ARCHIVE.md](WAVE_ARCHIVE.md) | **Wave 1–U 深化归档**（性能 Wave + 能力 Wave A–U、ABI v14–v30） |

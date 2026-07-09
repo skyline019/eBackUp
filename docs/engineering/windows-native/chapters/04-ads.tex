@@ -1,0 +1,142 @@
+% 04 — ADS 备用数据流：从零到独立 manifest 行
+
+\section{起点：只备份主 \$DATA 流}
+
+NTFS 允许同一文件名挂载多个 **named stream**。
+浏览器下载标记 \texttt{Zone.Identifier}、Office 元数据、防病毒标记等常存在 ADS 中——\textbf{不在}主文件字节流里。
+
+早期扫描只读 \texttt{path} 的默认数据流 → 恢复后 \texttt{Unblock-File} 失效、安全策略丢失。
+\textbf{GAP-WIN-02} 要求：枚举 ADS、独立 chunk、manifest 可区分 stream。
+
+\section{NTFS ADS 语义}
+
+API 路径形式：\texttt{C\textbackslash dir\textbackslash file.txt:StreamName}。
+默认未命名流在 \winapi{FindFirstStreamW} 中显示为 \texttt{::\$DATA}——实现中\textbf{跳过}，避免与 base entry 重复。
+
+\begin{designbox}[主数据流与 ADS 分离]
+Base \texttt{ScanEntry} 表示 \texttt{file.txt}（主 \$DATA）；\\
+每个命名 stream 追加新 \texttt{ScanEntry}，\texttt{stream\_name} 非空，\manifestflag{kMetaStream} 置位。
+\end{designbox}
+
+\section{第一版：FindFirstStreamW 枚举}
+
+实现于 \filepath{scan\_entry.cc} 匿名命名空间 \texttt{AppendAlternateStreams}：
+
+\begin{lstlisting}[caption={AppendAlternateStreams (scan\_entry.cc)}]
+HANDLE h = FindFirstStreamW(wide.c_str(), FindStreamInfoStandard, &data, 0);
+if (h == INVALID_HANDLE_VALUE) return Status::Ok();
+
+do {
+  const std::string stream = WideToUtf8StreamName(data.cStreamName);
+  if (stream.empty()) continue;  // skip default unnamed stream
+
+  ScanEntry ads = base;
+  ads.stream_name = stream;
+  ads.relative_path = base.relative_path + ":" + stream;
+  ads.absolute_path = base.absolute_path + ":" + stream;
+  ads.size = (uint64_t(data.StreamSize.HighPart) << 32) | data.StreamSize.LowPart;
+  ads.type = FileType::kRegular;
+
+  const Status cap = winmeta::CaptureWinMetaFromPath(ads.absolute_path, &ads);
+  if (!cap.ok()) { RecordIssue(..., "unreadable", ...); continue; }
+  out->push_back(std::move(ads));
+} while (FindNextStreamW(h, &data));
+\end{lstlisting}
+
+\section{Stream 名规范化：WideToUtf8StreamName}
+
+Windows 返回的 \texttt{cStreamName} 形如 \texttt{:Zone.Identifier:\$DATA}。
+规范化步骤（\filepath{scan\_entry.cc}）：
+
+\begin{enumerate}[nosep]
+  \item 若等于 \texttt{::\$DATA} → 空串（跳过）；
+  \item 去掉 leading \texttt{:}；
+  \item 去掉 trailing \texttt{:\$DATA}；
+  \item UTF-8 编码写入 \texttt{stream\_name}。
+\end{enumerate}
+
+\section{Enrich 循环与 ADS 追加时机}
+
+仅在 \texttt{enable\_sparse \&\& kRegular \&\& stream\_name.empty()} 分支内调用 \texttt{AppendAlternateStreams}——即\textbf{主数据流 regular 文件}。
+ADS 条目本身不再递归枚举「stream 的 stream」（NTFS  practically 不支持无限嵌套）。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  row/.style={rectangle, draw=WinBlue!60, minimum width=4cm, minimum height=0.5cm,
+    font=\scriptsize, align=center}
+]
+  \node[row, fill=blue!8] (main) {doc/report.pdf（主 DATA）};
+  \node[row, fill=green!8, below=0.25cm of main] (ads1) {doc/report.pdf:Zone.Identifier};
+  \node[row, fill=green!8, below=0.25cm of ads1] (ads2) {doc/report.pdf:custom.meta};
+  \node[right=1.8cm of ads1, font=\scriptsize, align=left] {
+    $\rightarrow$ 3 条 ManifestFileEntry\\[2pt]
+    $\rightarrow$ 3 组 chunk\_hashes\\[2pt]
+    $\rightarrow$ 各自 security\_descriptor\_b64
+  };
+\end{tikzpicture}
+\caption{单主文件多 ADS 的 manifest 展开}
+\end{figure}
+
+\section{Manifest 表示}
+
+\begin{longtable}{@{}llp{7cm}@{}}
+\toprule
+字段 & 示例 & 说明 \\
+\midrule
+\texttt{relative\_path} & \texttt{doc/report.pdf:Zone.Identifier} & 冒号分隔，与 Win32 路径一致 \\
+\texttt{stream\_name} & \texttt{Zone.Identifier} & \manifestflag{kMetaStream} 二进制块 \\
+\texttt{inode\_id} & 与主文件相同或独立 & stream 有独立 file record 时不同 \\
+chunk 链 & 独立 SHA-256 链 & content-addressed，与主文件无关 \\
+\bottomrule
+\end{longtable}
+
+\section{备份 IO：与主文件相同的 chunk 管线}
+
+BackupEngine 不区分 ADS/主文件：每条 \texttt{ScanEntry} 独立 \texttt{ChunkFile}。
+Hardlink dedup 键 \texttt{\{inode\_id, stream\_name\}} 保证 ADS 不与主 \$DATA 错误合并（专册 05）。
+
+\section{恢复 IO：CreateFileW 打开 alternate stream}
+
+\texttt{restore\_engine.cc} 解析 \texttt{dest\_rel} 中的 \texttt{:}：
+
+\begin{lstlisting}[caption={ADS 恢复路径拆分（概念）}]
+// relative_path = "folder/file.txt:Zone.Identifier"
+// write_path 宽字符含冒号 → CreateFileW 打开 named stream
+OpenPathForRestoreWriteWin32(write_path, &win_handle);
+for each chunk: AppendPathBytesWin32(win_handle, payload);
+\end{lstlisting}
+
+恢复顺序：先写主文件（若无 hardlink  alias），再写各 ADS；ACL 按 entry 独立 apply。
+
+\section{与稀疏 / EFS 的交互}
+
+\begin{itemize}[nosep]
+  \item \textbf{稀疏}：仅对 \texttt{stream\_name.empty()} 的主文件做 \texttt{QuerySparseRuns}；ADS 按普通小文件 chunk。
+  \item \textbf{EFS}：若主文件 \texttt{FILE\_ATTRIBUTE\_ENCRYPTED}，ADS 通常也加密；Tier A 跳过内容，manifest 仍可有 stream 行（size=0 + issue）。
+\end{itemize}
+
+\section{VSS 下的一致性}
+
+Shadow 路径上 \texttt{FindFirstStreamW} 与 live 卷行为一致——ADS 枚举的是\textbf{快照时间点}的 stream 集合，避免 backup 过程中浏览器追加 \texttt{Zone.Identifier} 导致不一致。
+
+\section{测试}
+
+\filepath{tests/scan/ads\_backup\_restore\_test.cc}：
+
+\begin{enumerate}[nosep]
+  \item 创建带 \texttt{Zone.Identifier} 的测试文件；
+  \item backup → 验证 manifest 两条 entry + \manifestflag{kMetaStream}；
+  \item restore → 字节级比对 ADS 内容。
+\end{enumerate}
+
+\section{边界情况}
+
+\begin{warnbox}[路径冒号与 cross-platform]
+Manifest 内 \texttt{:} 为 ADS 分隔符；restore 目标在非 NTFS 卷可能失败——属平台限制，记 \texttt{restore\_issues}。
+\end{warnbox}
+
+\begin{itemize}[nosep]
+  \item 空 stream（0 字节）仍写 manifest 行，chunk 链可为空。
+  \item \texttt{CaptureWinMetaFromPath} 对 \texttt{path:stream} 失败 → \texttt{unreadable}，不 abort 整库。
+\end{itemize}

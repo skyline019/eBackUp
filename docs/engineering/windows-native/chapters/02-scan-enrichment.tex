@@ -1,0 +1,205 @@
+% 02 — 扫描 Enrichment：从零到 WinMeta 管线
+
+\section{起点：Walk 只认路径与 size 不够}
+
+最早的 \texttt{ScanDirectory} 只做三件事：递归目录、记录相对路径、读 \texttt{size} 与 \texttt{FILE\_ATTRIBUTE} 推断 \texttt{FileType}。
+在 Linux 上这已足够驱动 chunk 化；在 Windows 上备份 \texttt{C:/data} 后恢复，用户立刻发现：
+
+\begin{itemize}[nosep]
+  \item 权限变成继承自目标文件夹的默认 ACL；
+  \item \texttt{Zone.Identifier} 等 ADS 消失；
+  \item 硬链接变成两份独立文件，仓库体积翻倍；
+  \item junction 被当作普通目录递归，可能扫进整盘 D:；
+  \item 稀疏 SQL 库按逻辑 size 读盘，备份膨胀且 dedup 失效。
+\end{itemize}
+
+\begin{evolbox}[Enrichment 层的诞生（Wave C/D $\rightarrow$ Wave E）]
+\textbf{Wave C/D}：引入 \texttt{ScanResult.issues}，单路径失败不 abort 整库。\\
+\textbf{Wave B/E}：新增 \texttt{EnrichScanEntriesWinMeta}，在 walk 完成后\textbf{批量}补 Win 字段。\\
+\textbf{Phase 16/19}：同一 enrich 循环内挂接 sparse 检测与 EFS 属性位。
+\end{evolbox}
+
+设计约束：enrichment \textbf{不}改变 walk 的 DFS 顺序；它在 \texttt{ScanDirectory} 返回前作为\textbf{后处理}运行，便于单测 mock 与 VSS 路径映射解耦。
+
+\section{总览：从目录树到 Manifest 条目}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.7cm]
+  \node[wbox] (scan) {ScanFiles\\深度优先 walk};
+  \node[wbox, below=of scan] (enrich) {EnrichScanEntriesWinMeta};
+  \node[wdata, below left=0.9cm and 0.2cm of enrich] (cap) {CaptureWinMetaFromPath};
+  \node[wdata, below=of enrich] (sparse) {IsSparse + QuerySparseRuns};
+  \node[wdata, below right=0.9cm and 0.2cm of enrich] (ads) {AppendAlternateStreams};
+  \node[wbox, below=1.4cm of enrich] (pipe) {BackupEngine Pipeline\\chunk / dedup};
+  \node[wdata, below=of pipe] (manifest) {ManifestFileEntry → v5};
+  \draw[warr] (scan) -- (enrich);
+  \draw[warr] (enrich) -- (cap);
+  \draw[warr] (enrich) -- (sparse);
+  \draw[warr] (enrich) -- (ads);
+  \draw[warr] (enrich) -- (pipe);
+  \draw[warr] (pipe) -- (manifest);
+\end{tikzpicture}
+\caption{Windows 扫描 enrichment 在备份主路径上的位置}
+\end{figure}
+
+Walk 阶段已处理 junction\textbf{不展开}（见 §\ref{sec:junction-scan}）；enrichment 阶段对\textbf{已有} \texttt{ScanEntry} 补 metadata，并可能\textbf{追加} ADS 新 entry。
+
+\section{EnrichScanEntriesWinMeta 控制流}
+
+入口 \filepath{scan\_entry.cc}，仅 \texttt{\_WIN32} 编译。
+关键设计：\texttt{base\_count = entries->size()} 固定循环上界——ADS 追加的新 entry \textbf{不会}在本轮再次触发 \texttt{AppendAlternateStreams}（避免 \texttt{file:stream:stream} 无限膨胀）。
+
+\begin{lstlisting}[caption={Enrich 主循环 (scan\_entry.cc)}]
+Status EnrichScanEntriesWinMeta(std::vector<ScanEntry>* entries,
+                                std::vector<BackupPathIssue>* issues,
+                                bool enable_sparse) {
+  const size_t base_count = entries->size();
+  for (size_t i = 0; i < base_count; ++i) {
+    ScanEntry& e = (*entries)[i];
+    const Status cap = winmeta::CaptureWinMetaFromPath(e.absolute_path, &e);
+    if (!cap.ok()) {
+      RecordIssue(e.absolute_path, "unreadable", issues);
+      continue;
+    }
+    if (enable_sparse && e.type == FileType::kRegular && e.stream_name.empty()) {
+      if (winmeta::IsSparseFilePath(e.absolute_path)) {
+        e.sparse = true;
+        uint64_t logical = 0;
+        winmeta::QuerySparseRuns(e.absolute_path, &logical, &e.sparse_runs);
+        if (logical > 0) e.size = logical;
+      }
+      const DWORD attrs = GetFileAttributesW(Utf8ToWide(e.absolute_path).c_str());
+      if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_ENCRYPTED))
+        e.efs_encrypted = true;
+      AppendAlternateStreams(e, entries, issues);
+    }
+  }
+  return Status::Ok();
+}
+\end{lstlisting}
+
+\begin{designbox}[尽力一致（best-effort）语义]
+\texttt{CaptureWinMetaFromPath} 失败\textbf{不 abort} 整库：记入 \texttt{scan\_issues.unreadable}，Pipeline 对该路径 skip chunk。
+与「静默跳过」的商业备份不同，ebbackup 在 JSON 报告中\textbf{显式列出}不可读路径，便于审计。
+\end{designbox}
+
+\section{CaptureWinMetaFromPath：Win32 API 调用链}
+
+这是 Win 元数据采集的\textbf{唯一}入口（ADS 子路径、junction 目录、VSS shadow 路径均复用）。
+
+\begin{longtable}{@{}lp{9cm}@{}}
+\caption{采集步骤与 API} \\
+\toprule
+步骤 & API / 行为 \\
+\midrule
+1. 打开句柄 & \winapi{CreateFileW} + \winapi{FILE\_FLAG\_BACKUP\_SEMANTICS}（目录可读属性）+ \winapi{FILE\_FLAG\_OPEN\_REPARSE\_POINT}（不跟随 junction） \\
+2. inode & \winapi{GetFileInformationByHandle} → \texttt{nFileIndexHigh/Low} 合成 \texttt{inode\_id} \\
+3. reparse & \winapi{GetFileInformationByHandleEx(FileAttributeTagInfo)}；若 \winapi{FILE\_ATTRIBUTE\_REPARSE\_POINT} 则 \winapi{FSCTL\_GET\_REPARSE\_POINT} \\
+4. ACL & \winapi{GetFileSecurityW}（OWNER|GROUP|DACL）→ 自研 Base64 \\
+\bottomrule
+\end{longtable}
+
+\begin{lstlisting}[caption={CaptureWinMetaFromPath 核心 (win\_meta.cc)}]
+HANDLE h = CreateFileW(wide.c_str(), FILE_READ_ATTRIBUTES,
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    nullptr, OPEN_EXISTING,
+    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+
+BY_HANDLE_FILE_INFORMATION info{};
+if (GetFileInformationByHandle(h, &info)) {
+  entry->inode_id =
+      (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+}
+
+FILE_ATTRIBUTE_TAG_INFO tag_info{};
+if (GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag_info, ...)) {
+  if (tag_info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+    entry->reparse_tag = tag_info.ReparseTag;
+    CaptureReparseTarget(h, entry->reparse_tag, &entry->reparse_target);
+    CloseHandle(h);
+    return ReadSecurityDescriptorB64(wide, &entry->security_descriptor_b64);
+  }
+}
+CloseHandle(h);
+return ReadSecurityDescriptorB64(wide, &entry->security_descriptor_b64);
+\end{lstlisting}
+
+\begin{apibox}[为何 FILE\_FLAG\_OPEN\_REPARSE\_POINT]
+不带此 flag 时，\winapi{CreateFileW} 对 junction \textbf{跟随}到目标卷，inode/ACL 会变成目标目录的属性，与「备份联接点本身」语义不符。
+\end{apibox}
+
+\section{联接点目录：扫描不展开}\label{sec:junction-scan}
+
+Walk 栈遇到 reparse 目录时\textbf{不 push 子路径}，只采集 tag/target 并记 issue：
+
+\begin{lstlisting}[caption={Junction 扫描分支 (scan\_entry.cc)}]
+if (IsReparseDirectory(entry.path())) {
+  RecordIssue(added.absolute_path, "reparse_junction", &out->issues);
+  const Status cap = winmeta::CaptureWinMetaFromPath(added.absolute_path, &added);
+  if (!cap.ok()) RecordIssue(added.absolute_path, "unreadable", &out->issues);
+  continue;  // 不展开 junction 子树
+}
+\end{lstlisting}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.8cm]
+  \node[wdata] (root) {C:/backup\_root};
+  \node[wdata, below left=of root] (junction) {links/D\_drive\\reparse 目录};
+  \node[wdata, below right=of root] (normal) {data/file.txt};
+  \node[wbox, below=1.2cm of junction] (target) {D:/...（不递归）};
+  \draw[warr] (root) -- (junction);
+  \draw[warr] (root) -- (normal);
+  \draw[warr, dashed, gray] (junction) -- node[font=\tiny, right]{禁止} (target);
+\end{tikzpicture}
+\caption{Junction 在 walk 层被「截断」；target 仅存 manifest}
+\end{figure}
+
+这与 VSS 多卷闭包\textbf{不矛盾}：闭包在快照层把 D: 纳入 snapshot set；扫描层仍只备份用户指定的源树 + junction 元数据（专册 06、09）。
+
+\section{PopulateEntryFields 与相对路径}
+
+Windows 相对路径用 \texttt{RelativePathFromRootNoFollow}——\textbf{不跟随} symlink，与 junction 策略一致。
+\texttt{ScanEntry::ToManifestSkeleton} 在 chunk 前生成 manifest 骨架，Win 字段在 enrich 后由 BackupEngine 合并。
+
+\section{锁定文件与 sharing violation}
+
+\texttt{PopulateEntryFields} / 读 size 时若 \winapi{ERROR\_SHARING\_VIOLATION}，记 \texttt{locked} issue。
+启用 VSS 后，shadow 路径上同一文件往往可读——enrichment 仍在映射后路径执行（专册 09）。
+
+\section{与 VSS 读路径的配合}
+
+\begin{phasebox}[VSS 下的 enrichment 时序]
+1) \texttt{VssSession::Begin} 创建快照并建立 \texttt{mount\_prefix → shadow\_prefix} 映射；\\
+2) \texttt{ScanDirectory} 的 \texttt{walk\_root} 已是 shadow 设备路径；\\
+3) \texttt{EnrichScanEntriesWinMeta} 对 shadow 路径调用 \texttt{CaptureWinMetaFromPath}；\\
+4) ACL/inode/reparse 与\textbf{快照时间点}一致，而非 backup 进程启动后的 live 状态。
+\end{phasebox}
+
+\section{ScanEntry → Manifest 提交点}
+
+BackupEngine chunk 完成后：
+
+\begin{enumerate}[nosep]
+  \item 拷贝 \texttt{security\_descriptor\_b64}、\texttt{inode\_id}、\texttt{reparse\_*}、\texttt{stream\_name}；
+  \item 拷贝 \texttt{sparse\_*}、\texttt{efs\_*}（若 enrich 已设置）；
+  \item \texttt{DocumentUsesV5} 为真则 \texttt{WriteManifestV5}。
+\end{enumerate}
+
+Hardlink dedup 在 BackupEngine 内用 \texttt{(inode\_id, stream\_name)} 键（专册 05），与 enrich 采集的 inode 直接衔接。
+
+\section{测试与 issue 桶}
+
+\begin{longtable}{@{}llp{7cm}@{}}
+\toprule
+测试 & 验证点 \\
+\midrule
+\filepath{win\_meta\_test.cc} & ACL/inode/reparse 采集 roundtrip \\
+\filepath{ads\_backup\_restore\_test.cc} & ADS enrich + manifest + restore \\
+\filepath{win\_reparse\_scan\_test.cc} & junction 不展开、issue 桶 \\
+\filepath{scan\_errors\_test.cc} & permission\_denied / unreadable \\
+\bottomrule
+\end{longtable}
+
+报告 JSON：\texttt{scan\_issues.unreadable}、\texttt{reparse\_junction}、\texttt{locked}、\texttt{efs\_encrypted\_skipped}（Tier A）。

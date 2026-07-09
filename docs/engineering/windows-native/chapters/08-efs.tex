@@ -1,0 +1,168 @@
+% 08 — EFS：从零到 Tier A/B 与密钥 blob
+
+\section{起点：把 EFS 文件当普通文件读}
+
+**EFS**（Encrypting File System）在 NTFS 层加密——\winapi{ReadFile} 返回明文需调用者持有密钥，且 \winapi{FILE\_ATTRIBUTE\_ENCRYPTED} 标记文件。
+ naive 备份直接 \texttt{ReadFile} → 失败或读到无意义数据；更糟的是误以为已备份实际未保护密钥。
+
+\begin{evolbox}[GAP-WIN-06 / Phase 19 / ABI v36–v37]
+\textbf{Tier A（默认）}：检测 \texttt{efs\_encrypted}，\textbf{不} chunk 内容；manifest 标记 + issue。\\
+\textbf{Tier B}：\texttt{--efs-export-keys} → \winapi{ReadEncryptedFileRaw} 导出密钥 blob → manifest \manifestflag{kMetaEfs}。\\
+\textbf{恢复}：有 blob → \winapi{WriteEncryptedFileRaw}；无 blob → placeholder + issue。
+\end{evolbox}
+
+\section{EFS 与仓库级加密的分工}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.75cm]
+  \node[wbox] (efs) {EFS（NTFS 文件系统级）};
+  \node[wbox, right=2cm of efs] (repo) {ebbackup AES-GCM（chunk 级）};
+  \node[below=1cm of efs, font=\scriptsize, text width=4cm, align=center] {保护磁盘上\\EFS 密文结构};
+  \node[below=1cm of repo, font=\scriptsize, text width=4cm, align=center] {保护备份仓库\\chunk payload};
+  \node[below=2cm of $(efs)!0.5!(repo)$, font=\small] {二者\textbf{正交}：可同时启用};
+\end{tikzpicture}
+\caption{两层加密语义}
+\end{figure}
+
+\section{Tier A：检测与 skip}
+
+扫描 enrich（\filepath{scan\_entry.cc}）：
+
+\begin{lstlisting}[caption={EFS 检测 (scan\_entry.cc)}]
+const DWORD attrs = GetFileAttributesW(Utf8ToWide(e.absolute_path).c_str());
+if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_ENCRYPTED))
+  e.efs_encrypted = true;
+\end{lstlisting}
+
+\texttt{ManifestFileEntry::needs\_chunking()}：
+
+\begin{lstlisting}[caption={EFS 不 chunk (manifest.h)}]
+bool needs_chunking() const {
+  return file_type == FileType::kRegular && !efs_encrypted;
+}
+\end{lstlisting}
+
+Tier A 行为链：
+\begin{enumerate}[nosep]
+  \item BackupEngine skip 内容读盘；
+  \item manifest \texttt{efs\_encrypted=true}，无 \texttt{chunk\_hashes}（或空链）；
+  \item 报告 \texttt{efs\_skipped\_count}；issue \texttt{efs\_encrypted\_skipped}；
+  \item restore：空文件/placeholder + \texttt{efs\_encrypted\_skipped\_restore}。
+\end{enumerate}
+
+\begin{designbox}[为何默认 Tier A]
+EFS 密钥导出涉及用户证书、域策略、DPAPI；默认不导出避免无意泄露密钥 material 到仓库。
+\end{designbox}
+
+\section{Tier B：密钥 blob 导出/导入}
+
+启用 \texttt{EB\_BACKUP\_FLAG\_EFS\_EXPORT\_KEYS} 或 CLI \texttt{--efs-export-keys}。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.75cm]
+  \node[wbox] (read) {ReadEncryptedFileRaw};
+  \node[wdata, below=of read] (blob) {EFS key blob（非文件明文）};
+  \node[wdata, below=of blob] (b64) {efs\_key\_blob\_b64};
+  \node[wdata, below=of b64] (man) {manifest kMetaEfs};
+  \node[wbox, below=of man] (wrt) {WriteEncryptedFileRaw};
+  \draw[warr] (read) -- (blob) -- (b64) -- (man) -- (wrt);
+\end{tikzpicture}
+\caption{Tier B：备份/恢复的是密钥 material，不是业务明文}
+\end{figure}
+
+\begin{lstlisting}[caption={ExportEfsKeyBlob (efs\_key.cc)}]
+if ((attrs & FILE_ATTRIBUTE_ENCRYPTED) == 0)
+  return Status::InvalidArgument("not an EFS encrypted file");
+
+ReadEncryptedFileRaw(EfsExportCallback, &ctx, wide_path);
+if (ctx.raw.empty()) return Status::IoError("empty EFS key blob");
+
+*out_b64 = Base64Encode(ctx.raw.data(), ctx.raw.size());
+\end{lstlisting}
+
+Callback 聚合 \winapi{ReadEncryptedFileRaw} 分片输出到 \texttt{std::vector<uint8\_t>} 缓冲区。
+
+\begin{lstlisting}[caption={ImportEfsKeyBlob (efs\_key.cc)}]
+WriteEncryptedFileRaw(EfsImportCallback, &ctx, wide_path);
+// callback 从 ctx.raw 按 offset 喂回 blob
+\end{lstlisting}
+
+\section{Manifest kMetaEfs（ABI v37）}
+
+\begin{lstlisting}[caption={二进制布局 (manifest.cc)}]
+// meta_flags & kMetaEfs:
+u8  efs_encrypted;           // 1 = EFS 文件
+u32 blob_len;
+bytes efs_key_blob_b64[len]; // ASCII Base64
+\end{lstlisting}
+
+\texttt{has\_efs\_meta()}：\texttt{efs\_encrypted || !efs\_key\_blob\_b64.empty()} → 触发 v5 + \manifestflag{kMetaEfs}。
+
+文本 fallback：\texttt{efs\t1\t<blob\_len>} 行。
+
+\section{BackupEngine 分支}
+
+\begin{lstlisting}[caption={Backup EFS 决策（概念）}]
+if (entry.efs_encrypted) {
+  if (opts.efs_export_keys) {
+    ExportEfsKeyBlob(path, &entry.efs_key_blob_b64);
+    // 仍可能不 chunk 明文内容
+  } else {
+    RecordIssue(..., "efs_encrypted_skipped", ...);
+  }
+}
+\end{lstlisting}
+
+\section{恢复分支（restore\_engine.cc）}
+
+\begin{lstlisting}[caption={EFS 恢复决策 (restore\_engine.cc)}]
+if (file.efs_encrypted) {
+  if (!file.efs_key_blob_b64.empty()) {
+    const Status st = ImportEfsKeyBlob(write_path, file.efs_key_blob_b64);
+    issue = st.ok() ? "efs_restored" : "efs_key_import_failed";
+  } else {
+    CreatePlaceholderOrEmpty(write_path);
+    issue = "efs_encrypted_skipped_restore";
+  }
+  return ...;
+}
+\end{lstlisting}
+
+EFS 分支在 hardlink/sparse 之前——加密文件不参与 inode dedup 内容写。
+
+\section{环境依赖与 CI}
+
+\begin{warnbox}[EFS 非处处可用]
+EFS API 需本机 EFS 策略与用户 EFS 证书；Home SKU、未启用 EFS 时测试 \texttt{GTEST\_SKIP}。
+跨机器 restore 需目标机具备相应 recovery agent / 证书。
+\end{warnbox}
+
+\section{安全考量}
+
+\begin{itemize}
+  \item Tier B 将密钥 blob 存入仓库——\textbf{必须}配合仓库级 \texttt{EB\_BACKUP\_FLAG\_ENCRYPT} 与访问控制；
+  \item blob 不含业务明文，但仍属敏感 material；
+  \item GUI Phase 18+ 提供 recovery\_key 向导（与 EFS 独立，但同属密钥管理叙事）。
+\end{itemize}
+
+\section{测试}
+
+\filepath{tests/winmeta/efs\_backup\_restore\_test.cc}：
+
+\begin{itemize}[nosep]
+  \item Tier A：manifest 标记 + skip issue；
+  \item Tier B（EFS 可用环境）：export/import roundtrip。
+\end{itemize}
+
+\section{演进对照}
+
+\begin{longtable}{@{}llp{8cm}@{}}
+\toprule
+版本 & ABI & 能力 \\
+\midrule
+v0.10.2 & v36 & EFS 检测 + Tier A issue 报告 \\
+v0.10.3 & v37 & \manifestflag{kMetaEfs} 二进制持久化 + Tier B \\
+\bottomrule
+\end{longtable}

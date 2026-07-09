@@ -1,0 +1,19 @@
+% !TEX program = xelatex
+\documentclass[12pt,a4paper]{ctexart}
+\input{../preamble.tex}
+
+\title{01 — Manifest v5 与 Windows 元数据 on-disk 布局}
+\author{ebbackup · \filepath{engine\_cpp/src/engine/manifest.cc}}
+\date{2026-07-09 · ABI v37 · 独立于内核手册}
+
+\begin{document}
+\maketitle
+\begin{abstract}
+本文从「仅有 POSIX manifest 字段」的问题出发，按 Wave 1 $\rightarrow$ Wave B $\rightarrow$ Phase 16/19 的演进顺序，
+详述 \texttt{EBMANIFEST5} 的选型逻辑、\texttt{meta\_flags} 位图、单文件 record 二进制布局，
+以及 \texttt{WriteWinMetaFields}/\texttt{ReadWinMetaFields} 对称序列化。含 TikZ 结构图与 \filepath{manifest.cc} 源码摘录。
+\end{abstract}
+\tableofcontents
+\newpage
+\input{../chapters/01-manifest-v5.tex}
+\end{document}

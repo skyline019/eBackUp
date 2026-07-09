@@ -1,0 +1,16 @@
+% !TEX program = xelatex
+\documentclass[12pt,a4paper]{ctexart}
+\input{../preamble.tex}
+\title{03 — ACL 与安全描述符（SD）}
+\author{ebbackup · \filepath{win\_meta.cc}}
+\date{2026-07-09}
+\begin{document}
+\maketitle
+\begin{abstract}
+从 Unix \texttt{mode} 在 NTFS 上失效的问题出发，叙述 opaque \winapi{SECURITY\_DESCRIPTOR} Base64 透传设计与
+\texttt{AclRestorePolicy} 四策略（inherit/preserve/skip/best\_effort）的演进，含备份/恢复 TikZ 路径图与 \filepath{win\_meta.cc} 实现。
+\end{abstract}
+\tableofcontents
+\newpage
+\input{../chapters/03-acl-sd.tex}
+\end{document}
