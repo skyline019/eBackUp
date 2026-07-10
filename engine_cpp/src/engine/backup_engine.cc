@@ -1641,7 +1641,7 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
     return st;
   }
 
-  if (options.use_pipeline) {
+  if (effective.use_pipeline) {
     st = RunPipelineBackup(mode, effective);
   } else {
     st = ChunkPendingFiles(mode, effective);
@@ -1664,7 +1664,7 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
     return st;
   }
 
-  if (!options.use_pipeline) {
+  if (!effective.use_pipeline) {
     st = StorePendingChunks(effective);
     if (!st.ok()) {
       (void)PersistSuperBlock(BackupPhase::kAborted);

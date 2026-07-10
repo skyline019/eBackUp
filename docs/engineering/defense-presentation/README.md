@@ -8,6 +8,8 @@
 |------|------|
 | `build/slides.pdf` | Beamer 16:9 投屏幻灯片（含 `\note{}` 提要） |
 | `build/script.pdf` | 逐字演讲稿：Part I 课程 8–10 min + Part II 技术 15–20 min + Q&A |
+| [`DEFENSE_QA_ARCHIVE.md`](DEFENSE_QA_ARCHIVE.md) | **答辩技术细节 Q&A 模拟归档**（全领域深挖备答：Windows/VSS/CDC/Manifest/恢复/CI 等） |
+| [`PIPELINE_CDC_DEEP_DIVE.md`](PIPELINE_CDC_DEEP_DIVE.md) | **Pipeline 从零设计 + 性能跃升 + CDC 漂移** 答辩深挖专章 |
 
 ## 构建
 
@@ -43,6 +45,7 @@ make all
 
 - **课程答辩 / 3 分钟演示视频**：只讲 Part I，按 `\timing` 左侧「课程版」控制节奏。
 - **技术深度答辩**：Part I + Part II，按 `\timing` 右侧「技术版」。
+- **评委深挖 / 模拟答辩**：熟读 [`DEFENSE_QA_ARCHIVE.md`](DEFENSE_QA_ARCHIVE.md)（Part A–M + 30 分钟模拟脚本）。
 
 ## 与课程提交物对照
 

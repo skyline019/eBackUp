@@ -266,5 +266,62 @@ TEST(PipelineV4MultiFileTest, MixedSmallAndLargeFileTest) {
   EXPECT_EQ(pipe_doc.files.size(), seq_doc.files.size());
 }
 
+TEST(PipelineV4PhaseStatsTest, EbPackAutoPipelineMixedLargeSmallStats) {
+  const std::string source = test::TempDir("pipeline_v4_phase_mixed_source");
+  test::WriteFile(source + "/large1.bin",
+                  test::MakeSyntheticData(40 * 1024 * 1024, 61));
+  test::WriteFile(source + "/large2.bin",
+                  test::MakeSyntheticData(40 * 1024 * 1024, 62));
+  test::WriteFile(source + "/small.txt", std::string(4096, 's'));
+
+  const std::string repo = test::TempDir("pipeline_v4_phase_mixed_repo");
+  ASSERT_TRUE(test::InitDefaultRepo(repo).ok());
+
+  BackupOptions opts{};
+  BackupEngine engine(repo);
+  ASSERT_TRUE(engine.Open().ok());
+  ASSERT_TRUE(engine.RunBackup(source, BackupMode::kFull, opts).ok());
+
+  const PipelinePhaseStats& ps = engine.pipeline_phase_stats();
+  EXPECT_GT(ps.read_ns.load(), 0u);
+  EXPECT_GT(ps.chunk_ns.load(), 0u);
+  EXPECT_GT(ps.encode_ns.load(), 0u);
+  EXPECT_GT(ps.store_ns.load(), 0u);
+}
+
+TEST(PipelineV4ParallelLargeFilesTest, TwoLargeFilesMatchSequentialManifest) {
+  const std::string source = test::TempDir("pipeline_v4_parallel_large_source");
+  test::WriteFile(source + "/a.bin", test::MakeSyntheticData(48 * 1024 * 1024, 71));
+  test::WriteFile(source + "/b.bin", test::MakeSyntheticData(48 * 1024 * 1024, 72));
+
+  const std::string repo_seq = test::TempDir("pipeline_v4_parallel_large_seq");
+  const std::string repo_pipe = test::TempDir("pipeline_v4_parallel_large_pipe");
+  ASSERT_TRUE(test::InitDefaultRepo(repo_seq).ok());
+  ASSERT_TRUE(test::InitDefaultRepo(repo_pipe).ok());
+
+  BackupOptions seq_opts{};
+  seq_opts.disable_pipeline = true;
+
+  BackupOptions pipe_opts{};
+
+  {
+    BackupEngine engine(repo_seq);
+    ASSERT_TRUE(engine.Open().ok());
+    ASSERT_TRUE(engine.RunBackup(source, BackupMode::kFull, seq_opts).ok());
+  }
+  {
+    BackupEngine engine(repo_pipe);
+    ASSERT_TRUE(engine.Open().ok());
+    ASSERT_TRUE(engine.RunBackup(source, BackupMode::kFull, pipe_opts).ok());
+    ASSERT_TRUE(engine.Verify().ok());
+  }
+
+  ManifestDocument seq_doc;
+  ManifestDocument pipe_doc;
+  ASSERT_TRUE(ReadManifestAuto(repo_seq + "/manifest", &seq_doc).ok());
+  ASSERT_TRUE(ReadManifestAuto(repo_pipe + "/manifest", &pipe_doc).ok());
+  EXPECT_EQ(CollectChunkHashes(pipe_doc), CollectChunkHashes(seq_doc));
+}
+
 }  // namespace
 }  // namespace ebbackup

@@ -180,6 +180,7 @@ struct FileInput {
   size_t index{0};
   std::string path;
   std::string relative_path;
+  uint64_t file_size{0};
 };
 
 struct FileData {
@@ -1173,7 +1174,9 @@ void ReaderStage(BoundedQueue<FileInput>* in, BoundedQueue<FileData>* out,
     FileData data{};
     data.index = item.index;
     data.relative_path = item.relative_path;
-    if (shared->options.use_mmap) {
+    const bool use_mmap =
+        item.file_size >= kStreamFeedBytes || shared->options.use_mmap;
+    if (use_mmap) {
       MmapReader reader;
       const Status st = reader.Open(item.path);
       if (!st.ok()) {
@@ -1420,86 +1423,25 @@ Status RunBackupPipeline(const std::vector<std::string>& file_paths,
     return Status::Ok();
   }
 
-  std::vector<ScheduledFileInput> small_files;
-  std::vector<ScheduledFileInput> large_files;
-  small_files.reserve(schedule_in.size());
-  large_files.reserve(schedule_in.size());
-  for (const auto& sf : schedule_in) {
-    if (sf.file_size > kStreamFeedBytes) {
-      large_files.push_back(sf);
-    } else {
-      small_files.push_back(sf);
-    }
-  }
-
-  if (!large_files.empty()) {
-    BackupPipelineOptions large_opts = options;
-    large_opts.use_mmap = true;
-    for (const auto& sf : large_files) {
-      Status st;
-      if (mode == BackupMode::kFull) {
-        BackupPipelineOptions stream_opts = options;
-        stream_opts.use_mmap = true;
-        shared.options = stream_opts;
-        st = RunSingleFileStreamingChunkPipeline(
-            sf.path, sf.relative_path, sf.index, &shared);
-      } else {
-        const BackupPipelineOptions saved_opts = shared.options;
-        shared.options = large_opts;
-        st = RunSingleFileInlinePipeline(sf.path, sf.relative_path, sf.index,
-                                         &shared);
-        shared.options = saved_opts;
-      }
-      if (!st.ok()) {
-        chunk_store->SetPipelineDedupTrust(false);
-        return st;
-      }
-      const Status err = shared.CurrentError();
-      if (!err.ok()) {
-        chunk_store->SetPipelineDedupTrust(false);
-        return err;
-      }
-    }
-  }
-
-  if (small_files.empty()) {
-    chunk_store->SetPipelineDedupTrust(false);
-    const Status err = shared.CurrentError();
-    if (!err.ok()) return err;
-    result->manifest_files.erase(
-        std::remove_if(result->manifest_files.begin(),
-                       result->manifest_files.end(),
-                       [](const ManifestFileEntry& e) {
-                         return e.relative_path.empty();
-                       }),
-        result->manifest_files.end());
-    return Status::Ok();
-  }
-
-  schedule_in = std::move(small_files);
-  total_bytes = 0;
-  for (const auto& sf : schedule_in) {
-    total_bytes += sf.file_size;
-  }
-  const size_t small_file_count = schedule_in.size();
+  const size_t file_count = schedule_in.size();
 
   size_t pipeline_workers = ResolvePipelineWorkerCount(
-      options.worker_count, small_file_count, total_bytes);
-  if (options.worker_count == 0 && small_file_count <= 1 &&
+      options.worker_count, file_count, total_bytes);
+  if (options.worker_count == 0 && file_count <= 1 &&
       total_bytes < 64u * 1024u * 1024u) {
     pipeline_workers = 1;
   }
-  const size_t file_workers = small_file_count <= 1 ? 1 : pipeline_workers;
+  const size_t file_workers = file_count <= 1 ? 1 : pipeline_workers;
   const size_t compressor_workers = pipeline_workers;
   const size_t queue_depth = options.queue_depth;
   const size_t inter_stage_depth =
       std::max(queue_depth * 64, static_cast<size_t>(1024));
 
-  BackupPipelineOptions small_opts = options;
+  BackupPipelineOptions worker_opts = options;
   if (file_workers > 1 || options.worker_count > 1) {
-    small_opts.use_mmap = false;
+    worker_opts.use_mmap = false;
   }
-  shared.options = small_opts;
+  shared.options = worker_opts;
 
   shared.compressors_remaining.store(compressor_workers, std::memory_order_release);
   shared.chunkers_remaining.store(file_workers, std::memory_order_release);
@@ -1509,7 +1451,7 @@ Status RunBackupPipeline(const std::vector<std::string>& file_paths,
   const size_t store_shard_count =
       options.store_shard_count > 0 ? options.store_shard_count : 16;
   size_t store_workers = std::max<size_t>(2, store_shard_count / 2);
-  if (options.worker_count == 0 && small_file_count <= 1 &&
+  if (options.worker_count == 0 && file_count <= 1 &&
       total_bytes < 64u * 1024u * 1024u) {
     store_workers = 1;
   }
@@ -1548,6 +1490,7 @@ Status RunBackupPipeline(const std::vector<std::string>& file_paths,
       input.index = sf.index;
       input.path = sf.path;
       input.relative_path = sf.relative_path;
+      input.file_size = sf.file_size;
       if (!file_q->Push(std::move(input))) break;
     }
     file_q->Close();

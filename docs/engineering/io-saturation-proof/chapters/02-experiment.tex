@@ -1,0 +1,71 @@
+\section{实验拓扑与硬件}\label{sec:topology}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=1.1cm and 1.4cm]
+  \node[dev=NVMeColor] (nvme) {Disk 0\\UMIS NVMe 1TB\\C: / D: / E:};
+  \node[dev=USBColor, right=3.2cm of nvme] (usb) {Disk 1\\HGST 7200rpm\\USB (G:)};
+  \node[dev=SatGreen, below=1.0cm of nvme.south, xshift=-1.2cm] (src)
+    {源 \filepath{D:\textbackslash CUDA}\\$B=5128$\,MB};
+  \node[dev=NVMeColor, below=1.0cm of nvme.south, xshift=1.2cm] (erepo)
+    {Repo E:（对照）};
+  \node[dev=USBColor, below=1.0cm of usb] (grepo) {Repo G:（异盘）};
+
+  \draw[arr, NVMeColor] (src.north) -- ++(0,0.55) -| (nvme.south);
+  \draw[arr, NVMeColor] (erepo.north) -- ++(0,0.55) -| (nvme.south);
+  \draw[arr, USBColor] (grepo.north) -- (usb.south);
+  \draw[arr, dashed, SatOrange] (src.east) -- node[lab,above,sloped]{页缓存命中\\（热启动）} (grepo.west);
+\end{tikzpicture}
+\caption{实测拓扑：源固定在 NVMe 分区 D:；repo 分别在 NVMe（E:/D:/C:）或 USB HDD（G:）。}
+\label{fig:topology}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\caption{存储设备与分区映射（2026-07-10 实测机）}
+\label{tab:hardware}
+\small
+\begin{tabular}{@{}llllr@{}}
+\toprule
+盘符 & 卷标 & 物理盘 & 接口 & 可用空间 \\
+\midrule
+D: & Data & Disk 0 UMIS NVMe & PCIe & 269\,GB \\
+E: & 新加卷 & Disk 0 UMIS NVMe & PCIe & 105\,GB \\
+C: & Windows-SSD & Disk 0 UMIS NVMe & PCIe & 59\,GB \\
+G: & 新加卷 & Disk 1 HGST HTS725050A7E630 & USB HDD & 359\,GB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Workload 特征}\label{sec:workload}
+
+\begin{table}[htbp]
+\centering
+\caption{\filepath{D:\textbackslash CUDA} 数据集统计}
+\label{tab:workload}
+\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+指标 & 数值 \\
+\midrule
+文件总数 & 3534 \\
+目录数 & 1036 \\
+总字节 $B$ & 5\,128\,470\,863（约 4.78\,GiB） \\
+$>$32\,MB 文件数 & 18（合计约 4.34\,GB，占 85\%） \\
+$\leq$32\,MB 文件数 & 3516（合计约 0.44\,GB） \\
+最大单文件 & \filepath{nvrtc\_static.lib} $\approx$956\,MB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{引擎路径修正（实验前提）}\label{sec:pipeline-fix}
+
+修复前 CLI 未加 \texttt{--pipeline} 时，\texttt{RunBackup} 误用 \texttt{options.use\_pipeline}
+而非 \texttt{effective.use\_pipeline}，EbPack 仓库仍走串行 \filepath{ChunkPendingFiles}，
+18 个大文件逐个 \texttt{RunSingleFileStreamingChunkPipeline}，导致 $v_{\mathrm{sat}}\approx 95$\,\SIthroughput{}（54\,s）。
+修复后统一 Pipeline v4 并行调度，$v_{\mathrm{sat}}\approx 270$\,\SIthroughput{}（19\,s）。
+
+\begin{proofbox}[可重复性声明]
+本文 \cref{sec:nvme-e,sec:partition,sec:usb-g} 数据均取自 Pipeline 修复后的
+\filepath{build/engine\_cpp/Release/eb.exe}；每组 $N=10$ 次独立新建 repo。
+\end{proofbox}

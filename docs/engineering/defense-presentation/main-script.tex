@@ -181,4 +181,9 @@ Sprint 4 实现两条 CDC 路径：Phase B 在 stream feed 上做 seg1 bulk scan
   答：Sprint 5 候选是 Hybrid ChunkCuts+feed overlap；Stage 3.2 的 280 MB/s 需再 +109 MB/s，以数据而非口号推进。
 \end{enumerate}
 
+\section{技术细节深挖（完整归档）}
+\begin{say}
+评委若追问 Windows 元数据、VSS、Manifest v5、**Pipeline 从零 / CDC 漂移 / L5 跃升**、三路恢复、EFS Tier 等\textbf{实现级}问题，完整模拟题与标准答法见同目录 \filepath{DEFENSE\_QA\_ARCHIVE.md}（Part A--M）及 \filepath{PIPELINE\_CDC\_DEEP\_DIVE.md}（Pipeline/CDC 专章）。本文档附录仅保留课程向快问快答；深挖备答以该 Markdown 归档为准。
+\end{say}
+
 \end{document}

@@ -1,0 +1,81 @@
+% ebbackup E2E IO 稳态饱和证明专册 — 共享导言
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{fancyhdr}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable,skins}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage{tikz}
+\usetikzlibrary{positioning,fit,arrows.meta,calc,shapes.geometric,matrix,patterns}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!55!black,
+  urlcolor=teal!55!black,
+  pdftitle={ebbackup E2E IO 稳态饱和证明专册},
+  pdfauthor={ebbackup Project}
+}
+
+\definecolor{SatBlue}{RGB}{0,70,140}
+\definecolor{SatGreen}{RGB}{20,100,55}
+\definecolor{SatOrange}{RGB}{180,90,20}
+\definecolor{SatRed}{RGB}{160,40,40}
+\definecolor{NVMeColor}{RGB}{0,120,180}
+\definecolor{USBColor}{RGB}{180,90,20}
+
+\newtheorem{theorem}{定理}[section]
+\newtheorem{lemma}[theorem]{引理}
+\newtheorem{proposition}[theorem]{命题}
+\newtheorem{corollary}[theorem]{推论}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{定义}
+\newtheorem{assumption}[theorem]{假设}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{注记}
+
+\newtcolorbox{proofbox}[1][]{
+  colback=blue!3!white, colframe=SatBlue, fonttitle=\bfseries,
+  title={#1}, breakable, arc=2pt
+}
+
+\newtcolorbox{databox}[1][]{
+  colback=green!3!white, colframe=SatGreen, fonttitle=\bfseries,
+  title={#1}, breakable, arc=2pt
+}
+
+\newtcolorbox{warnbox}[1][]{
+  colback=orange!4!white, colframe=SatOrange, fonttitle=\bfseries,
+  title={#1}, breakable
+}
+
+\newcommand{\filepath}[1]{\texttt{\small #1}}
+\newcommand{\SIthroughput}[1]{#1\,\text{MB/s}}
+\newcommand{\bytesB}{B}
+\newcommand{\Tcommit}{T_{\mathrm{commit}}}
+\newcommand{\Tsat}{T_{\mathrm{sat}}}
+\newcommand{\vsat}{v_{\mathrm{sat}}}
+
+\newcommand{\seriestitle}{E2E IO 稳态饱和证明专册}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\seriestitle}
+\fancyhead[R]{\leftmark}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.35pt}
+\setlength{\headheight}{15pt}
+
+\tikzset{
+  dev/.style={rectangle, draw=#1!70, fill=#1!8, rounded corners=2pt,
+    minimum width=2.6cm, minimum height=0.75cm, font=\scriptsize, align=center},
+  arr/.style={-{Stealth[length=2mm]}, thick},
+  lab/.style={font=\footnotesize, align=center}
+}

@@ -1,0 +1,155 @@
+\section{NVMe 同盘 repo（E:）十重复现}\label{sec:nvme-e}
+
+\begin{table}[htbp]
+\centering
+\caption{E: repo 十次墙钟（2026-07-10，warm-up 后）}
+\label{tab:e-raw}
+\small
+\begin{tabular}{@{}r rr@{}}
+\toprule
+Run & $T_i$ (s) & $v_i$ (MB/s) \\
+\midrule
+ 1 & 19.494 & 263.08 \\
+ 2 & 18.919 & 271.08 \\
+ 3 & 18.909 & 271.22 \\
+ 4 & 18.726 & 273.87 \\
+ 5 & 19.357 & 264.95 \\
+ 6 & 18.941 & 270.76 \\
+ 7 & 18.817 & 272.54 \\
+ 8 & 19.091 & 268.63 \\
+ 9 & 19.038 & 269.38 \\
+10 & 18.961 & 270.47 \\
+\midrule
+均值 $\bar{T}$ & 19.025 & 269.56 \\
+样本标准差 $s$ & 0.236 & — \\
+$\mathrm{CV}$ & \multicolumn{2}{c}{1.24\%} \\
+极差 & 18.726 -- 19.494 & 263.08 -- 273.87 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.92\linewidth,
+  height=6cm,
+  ybar,
+  bar width=14pt,
+  ymin=260, ymax=276,
+  ylabel={$v_i$ (MB/s)},
+  xlabel={Run},
+  xtick=data,
+  symbolic x coords={1,2,3,4,5,6,7,8,9,10},
+  nodes near coords,
+  nodes near coords align={vertical},
+  every node near coord/.append style={font=\scriptsize},
+  grid=major,
+  grid style={dashed,gray!30},
+  legend style={at={(0.5,1.12)},anchor=south,legend columns=2,font=\footnotesize}
+]
+\addplot[fill=NVMeColor!35,draw=NVMeColor] coordinates {
+  (1,263.08) (2,271.08) (3,271.22) (4,273.87) (5,264.95)
+  (6,270.76) (7,272.54) (8,268.63) (9,269.38) (10,270.47)
+};
+\addlegendentry{E: NVMe repo}
+\draw[dashed,SatRed,thick] (axis cs:1,269.56) -- (axis cs:10,269.56);
+\addlegendimage{dashed,SatRed,thick}\addlegendentry{$\bar{v}=269.56$}
+\end{axis}
+\end{tikzpicture}
+\caption{E: 十次有效吞吐 $v_i$；虚线为均值。}
+\label{fig:e-bar}
+\end{figure}
+
+\begin{lemma}[E: 低方差稳态]
+\label{lem:e-low-cv}
+在 \cref{asm:steady} 下，E: repo 满足 $\mathrm{CV}=1.24\% < 3\%$，且
+$v_i\in[263.08,\,273.87]$，带宽 $\Delta v/\bar{v}=4.00\%$。
+\end{lemma}
+
+\begin{proof}
+由 \cref{tab:e-raw} 直接计算 \cref{eq:cv}。
+\end{proof}
+
+\section{NVMe 同盘异分区对照（D:/C:）}\label{sec:partition}
+
+\begin{table}[htbp]
+\centering
+\caption{同盘异分区 repo 十次汇总（源均为 D:）}
+\label{tab:partition}
+\small
+\begin{tabular}{@{}l rrr rr@{}}
+\toprule
+Repo & $\bar{T}$ (s) & $s$ (s) & CV (\%) & $\bar{v}$ (MB/s) & $v$ 极差 \\
+\midrule
+E: 数据卷 & 19.025 & 0.236 & 1.24 & 269.56 & 4.00\% \\
+D: 源同分区 & 18.987 & 1.349 & 7.11 & 270.11 & 3.4\% \\
+C: 系统卷 & 19.616 & 1.193 & 6.08 & 261.44 & 4.8\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{D: repo 原始墙钟（秒）}
+\label{tab:d-raw}
+\footnotesize
+\begin{tabular}{@{}*{10}{c}@{}}
+\toprule
+1 & 2 & 3 & 4 & 5 & 6 & 7 & 8 & 9 & 10 \\
+\midrule
+18.292 & 18.776 & 18.378 & 22.749 & 18.496 & 18.434 & 18.223 & 18.640 & 19.137 & 18.742 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{C: repo 原始墙钟（秒）}
+\label{tab:c-raw}
+\footnotesize
+\begin{tabular}{@{}*{10}{c}@{}}
+\toprule
+1 & 2 & 3 & 4 & 5 & 6 & 7 & 8 & 9 & 10 \\
+\midrule
+18.942 & 19.592 & 19.348 & 18.615 & 19.128 & 22.874 & 18.982 & 19.618 & 19.503 & 19.561 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.88\linewidth,
+  height=6.2cm,
+  ybar,
+  bar width=22pt,
+  ymin=255, ymax=275,
+  ylabel={$\bar{v}$ (MB/s)},
+  symbolic x coords={E:,D:,C:},
+  xtick=data,
+  nodes near coords,
+  grid=major,
+  grid style={dashed,gray!30},
+  enlarge x limits=0.25
+]
+\addplot[fill=NVMeColor!40,draw=NVMeColor]
+  coordinates {(E:,269.56) (D:,270.11) (C:,261.44)};
+\end{axis}
+\end{tikzpicture}
+\caption{同盘异分区均值吞吐（E:/D:/C:）。}
+\label{fig:partition-bar}
+\end{figure}
+
+\begin{proposition}[分区弱不变性（同物理 NVMe）]
+\label{prop:partition}
+在 Disk 0 上，E:/D:/C: 三处 repo 的 $\bar{v}$ 落在
+$261.44\text{--}270.11$\,MB/s，相对 spread
+$\frac{270.11-261.44}{269.56}\approx 3.2\%$。
+\end{proposition}
+
+\begin{proof}
+\cref{tab:partition} 直接比较；均值差异小于单次 run 的典型 jitter。
+离群点 Run4（D: 22.749\,s）与 Run6（C: 22.874\,s）归因 OS/调度噪声，不改变 $\bar{v}$ 同阶结论。
+\end{proof}

@@ -1,0 +1,47 @@
+\section{原始数据与计算脚本}\label{sec:appendix-raw}
+
+\subsection{常量}
+\begin{align*}
+  B &= 5\,128\,470\,863\ \text{bytes}, \\
+  B_{\mathrm{MB}} &= B/10^{6} = 5128.470863\ \text{MB}.
+\end{align*}
+
+\subsection{E: 十次 $T_i$（秒）}
+\[
+  \mathbf{T}^{\mathrm{E}} = (19.494,\,18.919,\,18.909,\,18.726,\,19.357,\,18.941,\,18.817,\,19.091,\,19.038,\,18.961).
+\]
+
+\subsection{G: 十次 $T_i$（秒）}
+\[
+  \mathbf{T}^{\mathrm{G}} = (138.650,\,141.969,\,148.785,\,149.008,\,160.359,\,174.982,\,182.882,\,177.572,\,151.877,\,155.055).
+\]
+
+\subsection{样本统计公式（可复制验证）}
+\begin{align}
+  \bar{T} &= \frac{1}{N}\sum_{i=1}^{N} T_i, \\
+  s &= \sqrt{\frac{1}{N-1}\sum_{i=1}^{N}(T_i-\bar{T})^2}, \\
+  \mathrm{CV} &= 100\,\frac{s}{\bar{T}}, \\
+  v_i &= \frac{B_{\mathrm{MB}}}{T_i}.
+\end{align}
+
+\subsection{95\% 置信区间（$N=10$，E: 组）}
+\[
+  \bar{T} \pm t_{0.975,\,9}\,\frac{s}{\sqrt{N}}
+  \;=\; 19.025 \pm 2.262\times\frac{0.236}{\sqrt{10}}
+  \;=\; 19.025 \pm 0.169\ \text{s}.
+\]
+
+\subsection{引擎与 profile 备注（E: 组单次）}
+\begin{verbatim}
+pipeline_profile: scan=357.8ms read=17354.6ms chunk=84599.4ms ...
+  pipe_sum=367176.3ms other=16772.4ms total=18693.8ms
+pipeline_profile_note: pipe_sum ... 19.6x wall clock
+stats: files=3534 chunks_written=25201 bytes=5128470863
+\end{verbatim}
+
+\section{相关源码索引}
+\begin{itemize}[nosep]
+  \item \filepath{engine\_cpp/src/engine/backup\_engine.cc} — \texttt{effective.use\_pipeline}
+  \item \filepath{engine\_cpp/src/pipeline/backup\_pipeline.cc} — Pipeline v4 统一并行
+  \item \filepath{engine\_cpp/include/ebbackup/pipeline/pipeline\_phase\_stats.h} — profile 输出
+\end{itemize}

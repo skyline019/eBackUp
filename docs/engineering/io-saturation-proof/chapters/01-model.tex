@@ -1,0 +1,89 @@
+\section{问题陈述与研究目标}\label{sec:problem}
+
+在真实 Windows 桌面路径上，用户对 \filepath{D:\textbackslash CUDA}（约 5.13\,GB、3534 文件）执行
+\textbf{新建仓库首次全量 backup} 时，观察到墙钟时间多次高度一致（修复前约 54\,s，Pipeline 修复后约 19\,s）。
+本专册目标为：
+\begin{enumerate}[nosep]
+  \item 建立 E2E backup 时间的\textbf{可检验数学模型}；
+  \item 用\textbf{全部实测数据}验证「稳态饱和 + 硬件瓶颈约束」；
+  \item 归纳可引用的\textbf{定理与推论}，区分 NVMe 同盘、异分区与 USB 异盘三种情形。
+\end{enumerate}
+
+\begin{warnbox}[与 micro-bench 的边界]
+L5（256\,MB 合成单文件，约 171\,\SIthroughput{}）衡量 \emph{Pipeline 算力上限}，\textbf{不得}直接等同于
+本专册 E2E 墙钟时间。E2E 含 scan、commit、fsync 及 IO 子系统争用（见 \cref{sec:decomposition}）。
+\end{warnbox}
+
+\section{符号与测量约定}\label{sec:notation}
+
+\begin{definition}[SI 吞吐]
+\label{def:si-throughput}
+数据量 $B$（字节）与墙钟时间 $T$（秒）定义有效 E2E 吞吐
+\begin{equation}
+  v \;=\; \frac{B}{10^{6}\,T}\quad\text{（MB/s，SI：}10^{6}\,\text{B/s}\text{)}.
+  \label{eq:throughput}
+\end{equation}
+\end{definition}
+
+\begin{definition}[变异系数]
+\label{def:cv}
+对 $N$ 次独立重复测量 $\{T_i\}_{i=1}^{N}$，令 $\bar{T}=\frac{1}{N}\sum T_i$，样本标准差
+$s=\sqrt{\frac{1}{N-1}\sum(T_i-\bar{T})^2}$，则
+\begin{equation}
+  \mathrm{CV} \;=\; \frac{s}{\bar{T}}\times 100\%.
+  \label{eq:cv}
+\end{equation}
+\end{definition}
+
+\begin{assumption}[固定 workload 稳态实验]
+\label{asm:steady}
+除非特别说明，实验满足：
+\begin{itemize}[nosep]
+  \item 源路径固定为 \filepath{D:\textbackslash CUDA}，$B=5\,128\,470\,863$ 字节；
+  \item 模式：\textbf{新建 repo + 首次全量}（无跨库 dedup）；
+  \item 压缩：\texttt{--compress-tier fast}；引擎：Release + Pipeline v4（\texttt{effective.use\_pipeline}）；
+  \item 每次 run 前 warm-up 1 次（不计入统计），使源数据进入 OS 页缓存；
+  \item 计时区间：\texttt{eb init} + \texttt{eb backup} 墙钟总和。
+\end{itemize}
+\end{assumption}
+
+\section{E2E 时间分解模型}\label{sec:decomposition}
+
+\begin{definition}[两阶段 E2E 模型]
+\label{def:two-phase}
+将一次 backup 墙钟时间分解为
+\begin{equation}
+  T \;=\; \Tcommit + \Tsat,
+  \qquad
+  \Tsat \;\approx\; \frac{B}{\vsat},
+  \label{eq:two-phase}
+\end{equation}
+其中 $\Tcommit$ 聚合 scan、manifest 写入、\texttt{Flush}、\texttt{fsync}、索引持久化等\textbf{弱依赖 $B$} 的开销；
+$\vsat$ 为在当前硬件与引擎路径下达饱和的\textbf{有效 IO+Pipeline 吞吐}。
+\end{definition}
+
+\begin{remark}
+Pipeline profile 中 \texttt{pipe\_sum} 为并行 worker 阶段时间\textbf{累加}，一般 $ \texttt{pipe\_sum} \gg T$；
+\textbf{仅} \texttt{total=} 字段适用于 \cref{eq:throughput}（见 \filepath{pipeline\_phase\_stats.h}）。
+\end{remark}
+
+\section{饱和瓶颈的 min--max 表述}\label{sec:minmax}
+
+将 backup 视为读路径容量 $v_{\mathrm{read}}$ 与写路径容量 $v_{\mathrm{write}}$ 的串联：
+\begin{equation}
+  \frac{1}{\vsat} \;\approx\; \frac{1}{v_{\mathrm{read}}} + \frac{1}{v_{\mathrm{write}}}
+  \;+\; \frac{1}{v_{\mathrm{cpu}}}\,,
+  \label{eq:harmonic}
+\end{equation}
+其中 $v_{\mathrm{cpu}}$ 为 CDC/digest/encode 不触 IO 时的算力等效吞吐。
+
+\begin{proposition}[瓶颈支配]
+\label{prop:bottleneck}
+若某一环节 $v_k \ll \min\{v_{\mathrm{read}}, v_{\mathrm{write}}, v_{\mathrm{cpu}}\}$，则
+$\vsat \approx v_k$，且 $T \approx \Tcommit + B/v_k$。
+\end{proposition}
+
+\begin{proof}[证明要点]
+由 \cref{eq:harmonic}，调和和中最大分母对应项支配 $\vsat^{-1}$。
+热缓存下 $v_{\mathrm{read}}$ 极大时，$\vsat$ 由 $\min(v_{\mathrm{write}}, v_{\mathrm{cpu}})$ 决定。
+\end{proof}

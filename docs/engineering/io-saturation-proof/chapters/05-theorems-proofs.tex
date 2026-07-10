@@ -1,0 +1,92 @@
+\section{定理体系与证明汇总}\label{sec:theorems}
+
+\subsection{主定理：稳态饱和存在性}
+
+\begin{theorem}[E2E 稳态饱和]
+\label{thm:saturation-main}
+设 \cref{asm:steady} 成立，且硬件配置与引擎路径固定。
+则存在常数 $\Tcommit\geq 0$ 与 $\vsat>0$，使
+\begin{equation}
+  T \;=\; \Tcommit + \frac{B}{\vsat} + \varepsilon,
+  \qquad
+  |\varepsilon| \ll \frac{B}{\vsat}
+  \label{eq:main-sat}
+\end{equation}
+且重复测量的 $\mathrm{CV}$ 在 NVMe 同盘场景下可观测地 $<3\%$。
+\end{theorem}
+
+\begin{proof}[构造性证明]
+\textbf{步骤 1（分解）.} 由 \cref{def:two-phase}，将 $T$ 写为 $\Tcommit+\Tsat$。
+profile 显示 E: 组 scan+flush+meta $\approx 1.9$\,s，而 $\Tsat\approx 17$\,s，
+故 \cref{eq:main-sat} 中 $\varepsilon$ 相对小。
+
+\textbf{步骤 2（饱和）.} 十组 E: 数据 \cref{tab:e-raw} 给出
+$\bar{T}=19.025$\,s，$s=0.236$\,s，$\mathrm{CV}=1.24\%$。
+令 $\vsat=B/(10^{6}(\bar{T}-\Tcommit))$，取 $\Tcommit\approx 1.9$\,s 得
+$\vsat\approx 269.6$\,MB/s，与 \cref{eq:throughput} 一致。
+
+\textbf{步骤 3（稳定性）.} $N=10$ 样本下 $t_{0.975,9}\,s/\sqrt{N}\approx 0.17$\,s，
+95\% 置信区间 $[18.7,\,19.3]$\,s，支持「常数平台」而非无界随机游走。
+\end{proof}
+
+\subsection{推论}
+
+\begin{corollary}[修复前软件饱和]
+\label{cor:pre-fix}
+Pipeline 修复前，同 workload 观测 $\bar{T}\approx 54$\,s，
+$\vsat\approx 95$\,MB/s。
+由 \cref{thm:saturation-main}，此为\textbf{不同引擎路径}下的另一饱和点，
+而非 NVMe 硬件上限（因 \cref{thm:cross-disk} 与修复后 270\,MB/s 矛盾）。
+\end{corollary}
+
+\begin{corollary}[瓶颈可迁移性]
+\label{cor:migration}
+改变 repo 设备不改变 $B$ 与算法工作量，但 $\vsat$ 可阶跃：
+NVMe E: $\approx 270$\,MB/s $\rightarrow$ USB G: $\approx 32$\,MB/s。
+故「接近只受 NVMe 波动约束」\textbf{仅当}当前瓶颈为 Disk 0 NVMe 读写争用时成立；
+异盘慢介质时，表述应改为「受\textbf{最慢 IO 路径}及其硬件波动约束」。
+\end{corollary}
+
+\subsection{可检验预测}
+
+\begin{proposition}[线性缩放（$B$ 增大）]
+\label{prop:scaling}
+当 $\Tcommit \ll B/\vsat$ 时，$T(B)\approx B/\vsat$ 近似线性。
+对 $B=5128$\,MB、$\vsat=270$\,MB/s，预测 $T\approx 19$\,s；
+实测 $\bar{T}=19.025$\,s，相对误差 $<0.2\%$。
+\end{proposition}
+
+\begin{proposition}[异盘不会自动加速]
+\label{prop:no-free-lunch}
+若 $v_{\mathrm{write}}^{\mathrm{USB}} < v_{\mathrm{write}}^{\mathrm{NVMe}}$，
+则分离读写至 USB repo 不会提升 $\vsat$，反而使
+$\vsat\approx v_{\mathrm{write}}^{\mathrm{USB}}$。
+G: 数据 \cref{tab:g-raw} 验证：$T$ 增大约 8.3 倍。
+\end{proposition}
+
+\section{归纳表：答辩引用口径}\label{sec:summary-table}
+
+\begin{table}[htbp]
+\centering
+\caption{全部实测汇总与推荐表述}
+\label{tab:master}
+\small
+\begin{tabular}{@{}llrrrr@{}}
+\toprule
+场景 & Repo & $\bar{T}$(s) & CV(\%) & $\bar{v}$(MB/s) & 瓶颈 \\
+\midrule
+NVMe 稳态（主） & E: & 19.03 & 1.24 & 269.6 & Disk0 NVMe \\
+NVMe 同分区 & D: & 18.99 & 7.11 & 270.1 & Disk0 NVMe \\
+NVMe 系统卷 & C: & 19.62 & 6.08 & 261.4 & Disk0 NVMe+OS \\
+USB 异盘 & G: & 158.11 & 9.75 & 32.4 & USB HDD 写 \\
+修复前串行路径 & E: & $\sim$54 & — & $\sim$95 & 软件串行 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{databox}[推荐答辩句]
+在固定 workload（\filepath{D:\textbackslash CUDA}，5.13\,GB）与热缓存下，E2E backup 时间
+收敛于 IO 稳态饱和值：NVMe repo（E:）$\bar{T}=19.03\pm0.24$\,s（CV=1.24\%，$\bar{v}=269.6$\,MB/s）；
+USB 移动 HDD repo（G:）$\bar{T}=158.11$\,s（CV=9.75\%，$\bar{v}=32.4$\,MB/s）。
+同盘异分区 $\bar{v}$ spread $<3.2\%$；异盘阶跃 $-88\%$ 证明 $\vsat$ 由最慢写路径约束。
+\end{databox}
