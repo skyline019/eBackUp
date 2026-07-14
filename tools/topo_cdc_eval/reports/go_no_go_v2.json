@@ -1,0 +1,73 @@
+{
+  "datasets": {
+    "synthetic": {
+      "hom": {
+        "variant": "hom",
+        "bytes": 4194304,
+        "chunks": 21,
+        "mean_chunk": 199728.7619047619,
+        "avg_target": 262144,
+        "mean_ratio": 0.7619047619047619,
+        "probes": 2842628,
+        "probes_per_byte": 0.6777353286743164,
+        "p_primary": 0.0002413259842652644,
+        "p_topo": 0.030010961687565167,
+        "p_joint": 7.035742981494589e-06,
+        "max_cut_ratio": 0.0,
+        "hash_cut_count": 20,
+        "max_cut_count": 0,
+        "reuse_1byte_pct": 33.333333333333336,
+        "reuse_1byte_unchanged": 7,
+        "reuse_1byte_total": 21,
+        "calib_permille": 31,
+        "topo_shift": 1,
+        "window_w": 64,
+        "seed": 305419896
+      },
+      "tri": {
+        "variant": "tri",
+        "bytes": 4194304,
+        "chunks": 26,
+        "mean_chunk": 161319.38461538462,
+        "avg_target": 262144,
+        "mean_ratio": 0.6153846153846154,
+        "probes": 2490393,
+        "probes_per_byte": 0.5937559604644775,
+        "topo_shift": 1,
+        "seed": 305419896
+      },
+      "decision": {
+        "hom_go": false,
+        "tri_go": false,
+        "hom_mean_ok": false,
+        "max_cut_ok": true,
+        "tri_mean_ok": false,
+        "tri_beats_hom_by_5pp": false,
+        "recommended_variant": "hom"
+      },
+      "three_way": {
+        "stream_reuse_1byte_pct": 41.1764705882353,
+        "topo_reuse_1byte_pct": 33.333333333333336,
+        "stream_chunks": 17,
+        "topo_chunks": 21,
+        "note": "G-TCDC v6 compare via ebbackup_topo_cdc_eval (C++)"
+      }
+    }
+  },
+  "summary": {
+    "phase1_recommendation": "recalibrate",
+    "synthetic_mean_ratio": 0.7619047619047619,
+    "synthetic_max_cut_ratio": 0.0,
+    "synthetic_calib_permille": 31,
+    "gear_table_entries": 256
+  },
+  "three_way_ab": {
+    "synthetic": {
+      "stream_reuse_1byte_pct": 41.1764705882353,
+      "topo_reuse_1byte_pct": 33.333333333333336,
+      "stream_chunks": 17,
+      "topo_chunks": 21,
+      "note": "G-TCDC v6 compare via ebbackup_topo_cdc_eval (C++)"
+    }
+  }
+}

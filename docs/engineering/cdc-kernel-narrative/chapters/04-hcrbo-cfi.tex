@@ -1,0 +1,145 @@
+\chapter{HCRBO/CFI 增量与 unchanged chunk 跳过}\label{ch:hcrbo}
+
+\section{全量 vs 增量：叙事对比}
+
+\begin{analogybox}[图书馆编目比喻]
+\textbf{全量 backup}：把一本书从头到尾重新切块、编号、入库。\\
+\textbf{增量 backup}：手上有\textbf{上一版编目卡}（CFI 锚点），新书送来时：
+\begin{enumerate}[nosep]
+  \item 翻到编目卡标注的页码，快速核对「这几页变没变」；
+  \item \textbf{没变}：直接复用旧编号（chunk hash），不重新复印、不重新装订；
+  \item \textbf{变了}：只对变了的章节重新 FastCDC 切块。
+\end{enumerate}
+\end{analogybox}
+
+\section{CFI 锚点结构}
+
+每次全量/增量分块可为文件构建 \texttt{CfiIndex}，记录 \texttt{ChunkAnchor}：
+\begin{itemize}[nosep]
+  \item \texttt{offset, length} — chunk 在文件中的区间；
+  \item \texttt{hash[32]} — 上次备份的 Content ID；
+  \item \texttt{rolling\_checksum} — 快速预检指纹（v0.1 batch skip）；
+  \item \texttt{strength} — Weak（FastCDC 内块）/ Strong（Rabin 边界块）。
+\end{itemize}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[x=0.008cm,y=0.55cm]
+  \draw[->] (0,0) -- (12000,0) node[right,font=\small] {文件偏移};
+  \foreach \x/\w/\col in {0/800/CoreGreen!40, 800/1200/CoreBlue!30, 2000/900/CoreGreen!40,
+                          2900/1100/CoreBlue!30, 4000/1500/CoreGreen!40, 5500/1000/CoreBlue!30,
+                          6500/1300/CoreGreen!40, 7800/900/CoreOrange!50, 8700/3300/CoreGreen!40} {
+    \fill[\col] (\x,0.4) rectangle (\x+\w,1.3);
+  }
+  \fill[CoreRed!60] (7800,0.4) rectangle (7900,1.3);
+  \node[font=\tiny] at (7850,1.8) {1 字节编辑};
+  \foreach \x in {0,800,2000,2900,4000,5500,6500,7800,8700} {
+    \draw[thick] (\x,0) -- (\x,1.5);
+  }
+\end{tikzpicture}%
+}
+\caption{增量场景：1-byte 编辑后，仅局部区域重切，其余锚点直接 reuse。\\
+{\footnotesize 绿色=reuse \quad 蓝色=重切（FastCDC） \quad 橙色=stale 窗口}}
+\label{fig:incremental-reuse}
+\end{figure}
+
+\section{ChunkIncremental 主循环}
+
+\texttt{EbHcrboChunker::ChunkIncremental}（\filepath{eb\_hcrbo.cc}）按\textbf{排序锚点}扫描文件：
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.6cm, scale=0.95, transform shape]
+  \node[block=CoreBlue] (start) {pos=0，sorted\_pos=0};
+  \node[decision, below=of start] (ahead) {anchor.offset $>$ pos?};
+  \node[block=CoreOrange, below left=1.1cm and 1.0cm of ahead] (gap) {ChunkRegion(pos$\rightarrow$anchor)：\\新区域 FastCDC};
+  \node[decision, below right=1.1cm and 1.0cm of ahead] (verify) {rolling + Bloom + SHA256};
+  \node[block=CoreGreen, below=of verify] (reuse) {输出 desc，\\reused\_from\_cfi=true};
+  \node[block=CoreRed, below left=0.9cm and 0.5cm of verify] (stale) {rolling 不匹配：\\扩展 stale 窗口};
+  \node[block=CorePurple, below right=0.9cm and 0.5cm of verify] (recut) {hash 不匹配：\\ChunkRegion 重切};
+  \draw[arr] (start) -- (ahead);
+  \draw[arr] (ahead) -- node[lab,left]{是} (gap);
+  \draw[arr] (ahead) -- node[lab,right]{对齐} (verify);
+  \draw[arr] (verify) -- node[lab,right]{匹配} (reuse);
+  \draw[arr] (verify) -- node[lab,left]{rolling$\neq$} (stale);
+  \draw[arr] (verify) -- node[lab,right]{hash$\neq$} (recut);
+\end{tikzpicture}
+\caption{增量分块决策流程（简化）。}
+\label{fig:hcrbo-loop}
+\end{figure}
+
+\section{三级验证：如何跳过 unchanged chunk}
+
+\subsection{第 1 级：Rolling Checksum 预检}
+
+若锚点带 \texttt{rolling\_checksum} $\neq 0$：
+\[
+\text{rc}_{\text{now}} = \texttt{CfiRollingVerifier::VerifyAnchor}(\text{data},\,offset,\,length)
+\]
+\begin{itemize}[nosep]
+  \item $\text{rc}_{\text{now}} = \text{rc}_{\text{hist}}$ $\Rightarrow$ 可能未变，进入第 2 级；
+  \item 不等 $\Rightarrow$ \textbf{rolling mismatch}，batch skip 向前扫描连续 stale 锚点，扩展重切窗口（避免逐锚点 SHA256）。
+\end{itemize}
+
+\subsection{第 2 级：CFI Bloom 负向预滤}
+
+rolling 匹配后，查 Bloom filter：
+\begin{itemize}[nosep]
+  \item \texttt{MightContain(hash)} = false $\Rightarrow$ \textbf{必定变更}，跳过 SHA256（\texttt{cfi\_bloom\_skip\_hits}++）；
+  \item true $\Rightarrow$ 进入第 3 级完整 hash。
+\end{itemize}
+
+\begin{analogybox}[Bloom = 快速黑名单]
+「这本书页码看起来一样，但 Bloom 说上次 hash 绝不可能在这」$\Rightarrow$ 直接判变更，不必算 SHA256。
+\end{analogybox}
+
+\subsection{第 3 级：SHA256 内容比对}
+
+\[
+\texttt{ContentHash}(\text{data}+offset,\,length) \stackrel{?}{=} \texttt{anchor.hash}
+\]
+匹配 $\Rightarrow$ 输出 \texttt{ChunkDescriptor}，设 \texttt{reused\_from\_cfi=true}，\textbf{不调用 FastCDC}。
+
+\section{Store 阶段：reuse 如何跳过 IO}
+
+分块阶段标记 \texttt{reused\_from\_cfi} 后，Pipeline Store 路径：
+\begin{enumerate}[nosep]
+  \item \texttt{Exists(hash)} 检查仓库是否已有该 Content ID；
+  \item 已存在 $\Rightarrow$ \texttt{skip\_store=true}，不写 EbPack；
+  \item manifest 仍记录该 hash（引用已有 chunk）。
+\end{enumerate}
+
+\begin{table}[htbp]
+\centering
+\caption{EbHcrboStats 关键计数器}
+\label{tab:hcrbo-stats}
+\small
+\begin{tabular}{@{}lp{9cm}@{}}
+\toprule
+字段 & 含义 \\
+\midrule
+\texttt{chunks\_reused\_from\_cfi} & rolling+hash 验证通过，直接 reuse \\
+\texttt{cfi\_rolling\_skip\_hits} & rolling 不匹配时 batch 跳过的锚点数 \\
+\texttt{cfi\_bloom\_skip\_hits} & Bloom 否定后省去 SHA256 的次数 \\
+\texttt{chunks\_cut\_fastcdc} & 变更区域内新 FastCDC 切出的块数 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{HCRBO 与 FastCDC 的关系}
+
+\begin{corebox}[分层不替代]
+HCRBO \textbf{不替换} FastCDC 算法；它在 FastCDC 之上提供\textbf{增量路由}：
+\begin{itemize}[nosep]
+  \item 未变区域 $\rightarrow$ reuse 旧 anchor（跳过 CDC+digest+encode+store）；
+  \item 变更区域 $\rightarrow$ 内嵌 \texttt{FastCdcSlice} 重新 \texttt{ChunkRegion}；
+  \item Rabin 强锚点（可选）用于区域边界稳定切分。
+\end{itemize}
+\textbf{Content ID 语义不变}：reuse 的 chunk 仍引用同一 SHA256。
+\end{corebox}
+
+\section{Bench 约束}
+
+L2 增量门禁：在 5\,MB 文件 offset 5\,MB 处做 \textbf{1-byte 编辑} 后，reuse $\geq 90\%$（immutable floor）。\\
+证明 CFI 路径在典型小编辑下\textbf{绝大多数 chunk 被跳过}。

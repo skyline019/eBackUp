@@ -1,0 +1,101 @@
+\chapter{两代对照：一图读懂}
+\label{ch:side-by-side}
+
+\section{总对照表}
+
+\begin{table}[htbp]
+\centering
+\caption{第一代 FastCDC Stream vs 第二代 2F-Gear}
+\small
+\begin{tabular}{@{}p{2.8cm}p{5.2cm}p{5.2cm}@{}}
+\toprule
+\textbf{项目} & \textbf{第一代} & \textbf{第二代 v6} \\
+\midrule
+指纹个数 & 1 个 $h$ & 2 个 $h_{\mathrm{gear}}, h_{\mathrm{norm}}$ \\
+查表 & gear[256] & beta + norm 各 256 \\
+路标 & 1 个 mask & mask\_lo + mask\_hi（bit 不重叠） \\
+切点条件 & $(h \& mask)==0$ & 左 OK AND 右 OK \\
+min/max & 有 & 相同 \\
+512KB 流式 & 有，resume 1 个 $h$ & 有，resume 2 个 $h$ \\
+默认仓库 & 是 & opt-in G-TCDC 仓 \\
+与第一代 dedup & 互通 & \textbf{不互通} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{并排数据流}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[node distance=0.35cm]
+  \node[font=\bfseries, Gen1Blue] at (-3,2) {第一代};
+  \node[byte] (b1) at (0,2) {$b$};
+  \node[gen1, right=0.4cm of b1] (t1) {gear{[]}};
+  \node[gen1, right=0.4cm of t1] (h1) {$h$};
+  \node[gen1, right=0.4cm of h1] (m1) {$\&M$};
+  \node[CutRed, right=0.3cm of m1, font=\Large] {?};
+
+  \node[font=\bfseries, Gen2Teal] at (-3,0) {第二代};
+  \node[byte] (b2) at (0,0) {$b$};
+  \node[gen1, right=0.4cm of b2] (tb) {beta{[]}};
+  \node[gen2, right=0.4cm of tb] (tn) {norm{[]}};
+  \node[gen1, right=0.4cm of tn] (hg) {$h_g$};
+  \node[gen2, right=0.4cm of hg] (hn) {$h_n$};
+  \node[gen1, right=0.4cm of hn, minimum width=1.1cm] (ml) {$M_{lo}$};
+  \node[gen2, right=0.4cm of ml, minimum width=1.1cm] (mh) {$M_{hi}$};
+  \node[CutRed, right=0.3cm of mh, font=\Large] {?};
+\end{tikzpicture}%
+}
+\caption{第二代 = 第一代「复制一份并行管道」，再在出口做 AND。}
+\end{figure}
+
+\section{什么时候用哪一代？}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.6cm]
+  \node[tipnode, minimum width=8cm] (q) {%
+    \textbf{问：我该用第二代吗？}\\[0.3em]
+    • 普通 FastCDC 备份 → \textbf{第一代}（默认）\\%
+    • 新建 G-TCDC 仓库且设 \texttt{EBBACKUP\_CDC\_ALGO=gtcdc} → \textbf{第二代}\\%
+    • 已有 FastCDC 仓 → \textbf{不能}就地改第二代，需新仓全量重备};
+\end{tikzpicture}
+\end{figure}
+
+\section{学习路径回顾}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[node distance=0.25cm]
+  \foreach \i/\lab in {0/为什么切,1/Gear表,2/滚动,3/Mask,4/minmax,5/流式,6/第一代走完} {
+    \node[gen1, minimum width=2.2cm] (a\i) at (\i*2.4,0) {\lab};
+  }
+  \foreach \i in {0,...,5} {
+    \draw[arr] (a\i) -- (a\the\numexpr\i+1\relax);
+  }
+  \foreach \i/\lab in {0/为什么两个h,1/双钥匙,2/bit拆分,3/resume,4/第二代走完} {
+    \node[gen2, minimum width=2.2cm] (b\i) at (\i*2.4,-1.5) {\lab};
+  }
+  \foreach \i in {0,...,3} {
+    \draw[arr] (b\i) -- (b\the\numexpr\i+1\relax);
+  }
+  \draw[arr, dashed] (a6) -- node[right,font=\scriptsize]{对照} (b0);
+\end{tikzpicture}%
+}
+\caption{建议按 Part II 再 Part III 顺序阅读。}
+\end{figure}
+
+\section{模拟示例：两代切点并排}
+
+\begin{simbox}[同一文件，切点不同]
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & \textbf{第一代} & \textbf{第二代} \\
+\midrule
+Chunk 1 切点 & $i=3$ & $i=4$ \\
+原因 & 仅看 $h_g\&3$ & $i=3$ 时右指纹 FAIL \\
+\bottomrule
+\end{tabular}
+\end{simbox}

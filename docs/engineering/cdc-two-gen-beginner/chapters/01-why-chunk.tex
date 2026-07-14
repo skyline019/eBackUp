@@ -1,0 +1,110 @@
+\chapter{为什么要把文件切成很多块？}
+\label{ch:why-chunk}
+
+\begin{analogybox}[切香肠]
+想象一根很长的香肠（你的文件）。备份软件不能每次都把整根香肠原样复制一份——太浪费磁盘。  
+更好的办法：按\textbf{内容}切成一段段，给每段贴标签（哈希）。下次备份时，\textbf{没变的那几段直接复用}，只传新段。
+\end{analogybox}
+
+\section{固定长度切 vs 内容定义切}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.22cm,y=0.7cm]
+  \node[note, anchor=west] at (0,2.2) {\textbf{固定切}（每 4 格一刀，不管内容）};
+  \foreach \i in {0,...,19} {
+    \node[byte] at (\i,1) {\i};
+  }
+  \foreach \x in {4,8,12,16} {
+    \draw[cutline] (\x,-0.2) -- (\x,1.8);
+  }
+  \node[note, anchor=west] at (0,-0.8) {\textbf{内容切}（CDC：在「内容长什么样」决定的位置切）};
+  \foreach \i in {0,...,19} {
+    \node[byte] at (\i,-2) {\i};
+  }
+  \draw[cutline] (3,-2.8) -- (3,-1.2);
+  \draw[cutline] (11,-2.8) -- (11,-1.2);
+  \draw[cutline] (17,-2.8) -- (17,-1.2);
+\end{tikzpicture}
+\caption{固定切：插入 1 个字节，后面所有边界都可能错位。内容切：边界跟着内容走，增量备份更省。}
+\label{fig:fixed-vs-cdc}
+\end{figure}
+
+\begin{stepbox}[Step 1 — 记住这一句话]
+\keyterm{CDC（Content-Defined Chunking）}= 切点由\textbf{文件里的字节}算出来，而不是「每 N 字节必切」。
+\end{stepbox}
+
+\section{插入一个字会怎样？}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.6cm]
+  \node[gen1, minimum width=3.5cm] (old) {原文件\\chunk A | B | C};
+  \node[gen1, minimum width=3.5cm, right=1.2cm of old] (fix) {固定切\\A' B' C' 全变};
+  \node[gen2, minimum width=3.5cm, right=1.2cm of fix] (cdc) {CDC\\只有 B 变，A C 复用};
+  \draw[arr] (old) -- (fix);
+  \draw[arr] (fix) -- (cdc);
+\end{tikzpicture}
+\caption{这就是 CDC 的价值：小改动 → 大部分 chunk 哈希不变 → dedup 命中。}
+\end{figure}
+
+\section{dedup 长什么样？}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.5cm]
+  \node[gen1, minimum width=2.2cm] (c1) {chunk A\\hash=aaa};
+  \node[gen1, minimum width=2.2cm, right=0.4cm of c1] (c2) {chunk B\\hash=bbb};
+  \node[gen1, minimum width=2.2cm, right=0.4cm of c2] (c3) {chunk C\\hash=ccc};
+
+  \node[gen2, minimum width=2.2cm, below=1cm of c1] (c1b) {chunk A'\\hash=aaa};
+  \node[gen1, minimum width=2.2cm, right=0.4cm of c1b] (c2b) {chunk B'\\hash=ddd};
+  \node[gen1, minimum width=2.2cm, right=0.4cm of c2b] (c3b) {chunk C'\\hash=ccc};
+
+  \node[below=0.35cm of c1, font=\scriptsize] {第一次备份};
+  \node[below=0.35cm of c1b, font=\scriptsize] {第二次备份（中间改了一点）};
+
+  \draw[arr, draw=TipGreen] (c1) -- node[left, font=\tiny, xshift=-2pt] {复用} (c1b);
+  \draw[arr, draw=TipGreen] (c3) -- node[right, font=\tiny, xshift=2pt] {复用} (c3b);
+  \draw[arr, CutRed] (c2) -- node[font=\tiny, above] {新存} (c2b);
+\end{tikzpicture}
+\caption{哈希相同 → 仓库里已有 → 不再存一份（dedup 命中）。}
+\end{figure}
+
+\section{本手册的两代算法在干什么}
+
+两代算法\textbf{都是 CDC}，区别只是：  
+\textbf{「用什么规则找到切点」}不同。  
+切点规则不同 → chunk 边界不同 → 不能和另一种算法的备份混用 dedup（除非全量重备）。
+
+\section{模拟示例：插入 1 字节}
+
+\begin{simbox}[玩具文件 4 字节 \texttt{ABCD} → 插入 \texttt{X} 变 \texttt{AXBCD}]
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{切法} & \textbf{原 chunk 哈希} & \textbf{改后} \\
+\midrule
+固定 2 字节切 & A|B|CD 共 3 段 & A|X|B|CD 共 4 段 → \textbf{全变} \\
+CDC（内容切） & [AB][CD] & [A][XBC][D] → 仅中间段变 \\
+\bottomrule
+\end{tabular}
+
+\vspace{0.4em}
+只有中间段内容变化 → 首尾 chunk 哈希不变 → dedup 仍命中。
+\end{simbox}
+
+\begin{table}[htbp]
+\centering
+\caption{两代算法：相同目标，不同切点规则}
+\small
+\begin{tabular}{@{}p{2.5cm}p{5.5cm}p{5.5cm}@{}}
+\toprule
+\textbf{} & \textbf{相同} & \textbf{不同} \\
+\midrule
+目标 & 内容定义切、dedup、流式 & — \\
+护栏 & min / max / avg & — \\
+切点规则 & — & 1 指纹+1 mask vs 2 指纹+2 mask \\
+仓库 & — & FastCDC 仓 vs G-TCDC 仓 \\
+\bottomrule
+\end{tabular}
+\end{table}

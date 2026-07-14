@@ -26,6 +26,7 @@
 | `EBBACKUP_DIGEST_THREADS` | `max(4, hw/2)` | `DigestPool` 线程数；bench 设为 4 |
 | `EBBACKUP_CDC_FAST_SLICE` | off | `1` 启用 Phase A 整文件 `FastCdcSlice` 路由（v0.9.4） |
 | `EBBACKUP_CDC_HYBRID` | on (default) | `0` 禁用；默认启用 Sprint 5 Hybrid CDC（stream-feed 引擎；`hybrid_stream_ratio_min` ≥ 0.95） |
+| `EBBACKUP_CDC_ALGO` | FastCDC（默认） | `gtcdc` 启用 G-TCDC v1（Rabin + 块 leapfrog + SIMD）；与 FastCDC **切点不互通**；需 AVX2；incremental 暂不支持 |
 | `EBBACKUP_FORCE_STREAM_CDC` | off | `1` 强制 stream-feed CDC，禁用 fast slice |
 | `EBBACKUP_AUDIT_KEY` | — | 设置后启用审计相关路径（开发/测试） |
 

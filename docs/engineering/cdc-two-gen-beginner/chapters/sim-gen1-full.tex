@@ -1,0 +1,126 @@
+% 第一代完整逐步模拟 — 由第 9 章 \input
+
+\section{模拟设定（全书统一）}
+
+\begin{simbox}[玩具文件与参数]
+\SimPara
+
+\vspace{0.5em}
+\textbf{12 字节文件：}\par
+\SimFileTab
+
+\vspace{0.5em}
+\textbf{本例用到的 gear 表（节选）：}\par
+\SimGearTab
+
+{\footnotesize 注：数值专为教学设计，与 ebbackup 生产表不同，但算法步骤完全一致。}
+\end{simbox}
+
+\section{Chunk 1：从 pos=0 到第一次切点}
+
+\subsection{Step A — 算 scan 区间}
+
+\begin{simbox}[护栏模拟]
+\begin{align*}
+\texttt{pos} &= 0 \\
+\texttt{scan\_start} &= 0 + \texttt{min} = 2 \\
+\texttt{cut\_limit} &= \min(0+8,\ 12) = 8
+\end{align*}
+主循环 $i \in \{2,3,4,5,6,7\}$。
+\end{simbox}
+
+\subsection{Step B — 暖机（InitWindowHash）}
+
+窗口 $w=2$，在 \texttt{scan\_start=2} 前窗口里是字节 \texttt{0x10, 0x20}：
+
+\begin{simbox}[暖机算 $h$]
+\begin{enumerate}[nosep]
+  \item 读 \texttt{0x10}：$h = \mathrm{gear[0x10]} = 16$
+  \item 读 \texttt{0x20}：$h = (16 \ll 1) + \mathrm{gear[0x20]} - \mathrm{gear[0x10]}
+        = 32 + 2 - 16 = \mathbf{18}$
+\end{enumerate}
+暖机结束，进入 for 循环时 $h=18$。
+\end{simbox}
+
+\subsection{Step C — 逐字节 probe}
+
+\begin{table}[htbp]
+\centering
+\caption{Chunk 1 逐步模拟（mask=3，看 $h \bmod 4$）}
+\small
+\begin{tabular}{@{}cccccp{3.8cm}@{}}
+\toprule
+\textbf{$i$} & \textbf{当前 $h$} & \textbf{$h\&3$} & \textbf{切？} & \textbf{读字节} & \textbf{滚动后 $h$} \\
+\midrule
+2 & 18 & 2 & 否 & \texttt{0x30} &
+$(18\!\ll\!1)+0-16=20$ \\
+3 & 20 & \textcolor{CutRed}{\textbf{0}} & \textcolor{CutRed}{\textbf{是}} & — & — \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.65cm,y=0.6cm]
+  \foreach \i/\lab in {0/10,1/20,2/30,3/40,4/50,5/60,6/70,7/80,8/90,9/A0,10/B0,11/C0} {
+    \node[byte, minimum width=0.6cm] at (\i,0) {\lab};
+    \node[font=\tiny, below] at (\i,-0.45) {\i};
+  }
+  \fill[Gen1Blue!15] (0,-0.35) rectangle (2.65,0.65);
+  \node[font=\scriptsize, Gen1Blue] at (1.3,0.95) {chunk 1（3 字节）};
+  \draw[cutline] (3.35,-0.55) -- (3.35,0.75);
+  \node[font=\scriptsize, CutRed, below] at (3.35,-0.75) {切点 $i=3$};
+\end{tikzpicture}
+\caption{Chunk 1 = 字节 0..2（切点 3 是下一块起点）。}
+\end{figure}
+
+\section{Chunk 2：从 pos=3 继续}
+
+\subsection{Step D — 新区间与暖机}
+
+\begin{simbox}[Chunk 2 起点]
+\texttt{pos=3},\ \texttt{scan\_start=5},\ \texttt{cut\_limit=11}。\\
+暖机窗口：字节 \texttt{0x40, 0x50} →
+$h = 64$；$(64 \ll 1)+5-64 = \mathbf{69}$。
+\end{simbox}
+
+\subsection{Step E — 继续 probe}
+
+\begin{table}[htbp]
+\centering
+\caption{Chunk 2 逐步模拟}
+\small
+\begin{tabular}{@{}cccccp{3.5cm}@{}}
+\toprule
+\textbf{$i$} & \textbf{$h$} & \textbf{$h\&3$} & \textbf{切？} & \textbf{读字节} & \textbf{滚动后 $h$} \\
+\midrule
+5 & 69 & 1 & 否 & \texttt{0x60} & $(69\!\ll\!1)+13-5=146$ \\
+6 & 146 & 2 & 否 & \texttt{0x70} & $(146\!\ll\!1)+9-5=296$ \\
+7 & 296 & \textcolor{CutRed}{\textbf{0}} & \textcolor{CutRed}{\textbf{是}} & — & — \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Chunk 3 预览与 max-cut 演示}
+
+若 Chunk 2 之后一直不命中，走到 \texttt{cut\_limit} 会 \textbf{max 强制切}。
+本文件在 $i=7$ 已切，Chunk 3 从位置 7 开始，留给读者自练（习题见附录）。
+
+\begin{simbox}[自练：Chunk 3 从 pos=7 开始]
+\texttt{scan\_start=9}，暖机 $h=31$。\\
+$i=9$：$31\&3=3$ 不切；滚动后 $h=48$。\\
+$i=10$：$48\&3=0$ → \textbf{切点 = 10}，Chunk 3 长度 3。
+\end{simbox}
+
+\section{模拟小结}
+
+\begin{genonebox}[第一代 9 步模拟链]
+\begin{enumerate}[nosep]
+  \item 定 pos / scan\_start / cut\_limit
+  \item 暖机得初始 $h$
+  \item 每个 $i$：先查 $(h \& mask)==0?$
+  \item 未切：读 \texttt{文件[i]}，按 gear 表滚动
+  \item 命中：切点 = $i$，输出 chunk
+  \item 下一块：pos $\leftarrow$ 切点，重复
+\end{enumerate}
+\end{genonebox}

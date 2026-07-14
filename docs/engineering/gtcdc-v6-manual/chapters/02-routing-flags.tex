@@ -1,0 +1,80 @@
+\chapter{仓库标识、路由与 Superblock 字段}
+\label{ch:routing}
+
+\section{Feature flags 与内核枚举}
+
+\begin{lstlisting}[caption={内核路由（\filepath{chunk\_profile.h}）},label={lst:kernel-for-repo}]
+inline GtCdcKernel GtCdcKernelForRepo(const BackupSuperBlock& sb) {
+  if (RepoUsesGtCdcTwoFGear(sb)) return GtCdcKernel::kTwoFGear;
+  if (RepoUsesGtCdcAnGear(sb)) return GtCdcKernel::kAnGear;
+  if (RepoUsesGtCdcNative(sb)) return GtCdcKernel::kNative;
+  if (RepoUsesGtCdcGear(sb)) return GtCdcKernel::kGear;
+  return GtCdcKernel::kRabin;
+}
+\end{lstlisting}
+
+新仓库 \texttt{InitRepoEx} 在 \texttt{EBBACKUP\_CDC\_ALGO=gtcdc} 时写入：
+\begin{itemize}[nosep]
+  \item \texttt{backup\_features |= 0x1000 | 0x10000}
+  \item \texttt{gtcdc\_table\_seed}：非零随机（\texttt{GenerateGtCdcSeed}）
+  \item \texttt{gtcdc\_nc\_level = 2}：norm 通道 bit 分配参数（v6 语义，见 \cref{ch:build2fmasks}）
+\end{itemize}
+
+\section{运行时 gate}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.9cm]
+  \node[flowstep] (env) {EBBACKUP\_CDC\_ALGO};
+  \node[flowdec, below=of env] (chk) {= gtcdc?};
+  \node[flowstep, below left=1.0cm and 0.8cm of chk] (fast) {FastCDC / Stream};
+  \node[flowstep, below right=1.0cm and 0.8cm of chk] (gt) {G-TCDC 路径};
+  \node[flowdec, below=1.0cm of gt] (repo) {RepoUsesGtCdc?};
+  \node[flowstep, below left=1.0cm and 0.6cm of repo] (err) {InvalidArgument};
+  \node[flowdec, below right=1.0cm and 0.6cm of repo] (kern) {GtCdcKernelForRepo};
+  \node[flowstep, below=1.0cm of kern, fill=V6Accent!15] (v6) {kTwoFGear → 2F 热路径};
+  \draw[arrow] (env) -- (chk);
+  \draw[arrow] (chk) -| node[above left,font=\scriptsize]{否} (fast);
+  \draw[arrow] (chk) -| node[above right,font=\scriptsize]{是} (gt);
+  \draw[arrow] (gt) -- (repo);
+  \draw[arrow] (repo) -| node[above left,font=\scriptsize]{否} (err);
+  \draw[arrow] (repo) -| node[above right,font=\scriptsize]{是} (kern);
+  \draw[arrow] (kern) -- (v6);
+\end{tikzpicture}
+\caption{备份入口 CDC 路由（简化）；nofallback 禁止 Hybrid/FastSlice 混入。}
+\label{fig:cdc-routing}
+\end{figure}
+
+\section{RunBackup superblock 恢复（关键 bugfix）}
+
+增量/二次 \texttt{RunBackup} 会重建 \texttt{sb\_.ext.backup\_features}。必须显式恢复 \texttt{prev\_twofgear}，否则 v6 仓退化为 Rabin，导致 \texttt{gtcdc\_probes=0}、bench 指标失效：
+
+\begin{lstlisting}[caption={\filepath{backup\_engine.cc} 中 v6 特征恢复（节选）},label={lst:backup-restore-2f}]
+const bool prev_twofgear = RepoUsesGtCdcTwoFGear(sb_);
+// ...
+if (prev_twofgear) {
+  sb_.ext.backup_features |= kBackupFeatureGtCdc;
+  sb_.ext.backup_features |= kBackupFeatureGtCdcTwoFGear;
+  // 保留 gtcdc_table_seed / gtcdc_nc_level
+}
+\end{lstlisting}
+
+\begin{warnbox}[常见集成陷阱]
+在 \texttt{InitDefaultRepo} 前若 shell 残留 \texttt{EBBACKUP\_CDC\_ALGO=gtcdc}，\texttt{InitV05Repo} 会把\textbf{对照组 stream 仓}也标记为 G-TCDC。bench 脚本必须在 init 前清空 env（\filepath{gt\_cdc\_v6\_eval.cc} 已修复）。
+\end{warnbox}
+
+\section{Superblock 扩展字段（v6 语义）}
+
+\begin{longtable}{@{}p{3.5cm}p{10.5cm}@{}}
+\toprule
+\textbf{字段} & \textbf{v6 用途} \\
+\midrule
+\endhead
+\texttt{gtcdc\_table\_seed} &
+  \texttt{norm\_table} 的 keyed 种子为 \texttt{seed \^{} 0x9E3779B9}；\texttt{beta\_table} 仍用标准 Gear 表（与 FastCDC 同族）。 \\
+\texttt{gtcdc\_nc\_level} &
+  传入 \texttt{Build2FMasks(avg, nc\_level, ...)}，限制 \texttt{hi\_bits} 上限，避免 norm 域过宽。默认 \texttt{2}。 \\
+\texttt{gtcdc\_reserved[3]} & 保留；不得用于就地升级 v5$\rightarrow$v6。 \\
+\bottomrule
+\caption{BackupSuperBlockExtension G-TCDC 字段}
+\end{longtable}

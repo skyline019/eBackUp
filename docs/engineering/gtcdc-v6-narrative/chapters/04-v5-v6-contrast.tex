@@ -1,0 +1,54 @@
+\chapter{v5 AN-Gear 与 v6 2F-Gear 对照}
+\label{ch:v5-v6}
+
+\section{扫描循环对比}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.35cm]
+  \begin{scope}
+    \node[v5block, minimum width=4.2cm] (v5t) {v5 AN-Gear};
+    \node[v5block, minimum width=3.8cm, below=0.4cm of v5t] (v5a) {读字节 $b$};
+    \node[v5block, minimum width=3.8cm, below=0.35cm of v5a] (v5b) {更新单 $h$};
+    \node[v5block, minimum width=3.8cm, below=0.35cm of v5b] (v5c) {$d = pos - start$};
+    \node[v5block, minimum width=3.8cm, below=0.35cm of v5c] (v5d) {$M = SelectPhase(d)$};
+    \node[v5block, minimum width=3.8cm, below=0.35cm of v5d] (v5e) {$h' = MixSeedHash$};
+    \node[v5block, minimum width=3.8cm, below=0.35cm of v5e] (v5f) {mask 命中?};
+    \draw[arr] (v5t) -- (v5a) -- (v5b) -- (v5c) -- (v5d) -- (v5e) -- (v5f);
+    \node[lab, below=0.2cm of v5f] {6 步/probe};
+  \end{scope}
+  \begin{scope}[xshift=7.5cm]
+    \node[v6block, minimum width=4.2cm] (v6t) {v6 2F-Gear};
+    \node[v6block, minimum width=3.8cm, below=0.4cm of v6t] (v6a) {读字节 $b$};
+    \node[v6block, minimum width=3.8cm, below=0.35cm of v6a] (v6b) {更新 $h_g, h_n$};
+    \node[v6block, minimum width=3.8cm, below=0.35cm of v6b] (v6c) {固定 $M_{lo}, M_{hi}$};
+    \node[v6block, minimum width=3.8cm, below=0.35cm of v6c] (v6e) {双域 AND 判定};
+    \node[v6block, minimum width=3.8cm, below=0.35cm of v6e] (v6f) {命中?};
+    \draw[arr] (v6t) -- (v6a) -- (v6b) -- (v6c) -- (v6e) -- (v6f);
+    \node[lab, below=0.2cm of v6f] {4 步/probe};
+  \end{scope}
+\end{tikzpicture}
+\caption{v6 去掉 per-byte 相位与 seed-mix，扫描体贴近 FastCDC。}
+\label{fig:v5-v6-loop}
+\end{figure}
+
+\section{三阶段 mask（v5 独有）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.018cm,y=0.55cm]
+  \draw[->,thick] (0,0) -- (1100,0);
+  \fill[CoreGreen!25] (0,0.4) rectangle (256,1.3);
+  \node[font=\scriptsize] at (128,0.85) {严格 $M(2\cdot avg)$};
+  \fill[CoreBlue!20] (256,0.4) rectangle (1024,1.3);
+  \node[font=\scriptsize] at (640,0.85) {目标 $M(avg)$};
+  \fill[CoreOrange!25] (1024,0.4) rectangle (1100,1.3);
+  \node[font=\scriptsize] at (1062,0.85) {宽松};
+\end{tikzpicture}
+\caption{v5 随 chunk 内距离 $d$ 切换锁的松紧；v6 全程固定 $M_{lo},M_{hi}$。}
+\label{fig:v5-phase}
+\end{figure}
+
+\section{何时仍读 v5}
+
+冻结仓 \texttt{0x8000} 继续服务；\textbf{禁止}就地升级。新功能与 bench SLA 仅针对 v6 \texttt{0x10000}。

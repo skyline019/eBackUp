@@ -1,0 +1,93 @@
+\chapter{第一代总览：一个指纹，一个路标}
+\label{ch:gen1-big}
+
+\begin{genonebox}[第一代 FastCDC Stream 一句话]
+从当前位置开始，\textbf{每读一个新字节}就更新一次指纹 $h$；  
+当 $h$ 的\textbf{某些二进制位全是 0}（像中了「路标」），就在这儿切一刀。
+\end{genonebox}
+
+\section{用「高速公路出口」理解}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.95]
+  \draw[thick, Gen1Blue!60] (-5,0) -- (5,0);
+  \node[font=\small] at (0,-0.6) {文件字节流（单向开过去）};
+  \foreach \x in {-4,-2,0,2,4} {
+    \draw[Gen1Blue, thick] (\x,0.1) -- (\x,0.5);
+  }
+  \node[gen1, minimum width=1.8cm] at (-4,1.2) {读字节};
+  \node[gen1, minimum width=1.8cm] at (-2,1.2) {更新 $h$};
+  \node[gen1, minimum width=1.8cm] at (0,1.2) {查路标};
+  \node[gen1, minimum width=1.8cm] at (2,1.2) {命中？};
+  \node[gen2, minimum width=1.8cm] at (4,1.2) {切！};
+  \draw[arr] (-4,0.5) -- (-4,0.9);
+  \draw[arr] (-2,0.5) -- (-2,0.9);
+  \draw[arr] (0,0.5) -- (0,0.9);
+  \draw[arr] (2,0.5) -- (2,0.9);
+  \draw[arr, CutRed] (4,0.5) -- (4,0.9);
+\end{tikzpicture}
+\caption{循环四步：读 → 滚指纹 → 看路标 → 切或不切。}
+\label{fig:gen1-loop}
+\end{figure}
+
+\section{第一代用到的四样东西}
+
+\begin{table}[htbp]
+\centering
+\caption{第一代核心组件（先记名字，后面逐章揉碎）}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{名字} & \textbf{干什么} \\
+\midrule
+Gear 表 & 256 个「魔法数」，每个字节查一次 \\
+滚动窗口 & 最近 $w$ 个字节（通常 64）决定指纹 \\
+Mask（路标） & 一个位模式：$(h \ \& \ \text{mask}) == 0$ 就切 \\
+min / max & 切太早、切太晚的护栏 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{伪代码（整章只有这一处，别怕）}
+
+\begin{codebox}[第一代切一块 chunk 的骨架]
+\begin{lstlisting}
+pos = chunk_start
+scan_start = pos + min_size
+cut_limit  = min(pos + max_size, file_end)
+
+h = 预热(文件, scan_start, 窗口 w)   // 先「暖机」
+for i from scan_start to cut_limit-1:
+    if (h & mask) == 0:               // 路标命中
+        cut_at = i
+        break
+    b = 文件[i]
+    h = 滚动更新(h, b, 窗口 w)        // 下一章细讲
+if 没找到:
+    cut_at = cut_limit                // max 强制切
+\end{lstlisting}
+\end{codebox}
+
+\begin{stepbox}[Step 3 — 第一代核心]
+只有一个指纹 \keyterm{$h$}，只有一个路标 \keyterm{mask}。  
+后面第二代只是把「一个变两个」，护栏和循环结构\textbf{不变}。
+
+\end{stepbox}
+
+\section{模拟示例：伪代码第一轮}
+
+对统一玩具文件，第一轮循环状态：
+
+\begin{simbox}[骨架代码代入数值]
+\begin{lstlisting}
+pos = 0
+scan_start = 0 + 2 = 2
+cut_limit  = min(0 + 8, 12) = 8
+h = 暖机(...) = 18          // 见第 5 章
+// i = 2:
+if ((18 & 3) == 0)  // 18&3=2 != 0 -> 不切
+h = 滚动(18, 文件[2]=0x30) = 20
+// i = 3:
+if ((20 & 3) == 0)  // 命中 -> cut_at = 3
+\end{lstlisting}
+\end{simbox}

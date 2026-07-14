@@ -1,0 +1,153 @@
+\chapter{流式 CDC 与防漂移}\label{ch:streaming}
+
+\section{为何需要两条 CDC 路径？}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.4cm]
+  \node[block=CoreBlue, minimum width=4.2cm] (golden) {FastCdcSlice\\整文件 Golden};
+  \node[block=CoreOrange, minimum width=4.2cm, right=1.8cm of golden] (stream) {FastCdcStreamFeed\\32MB 增量生产};
+  \draw[arr, CoreGreen, ultra thick] (stream) -- node[lab,above]{切点 bit-identical} (golden);
+  \node[below=0.6cm of golden, font=\footnotesize, align=center] {参考答案\\parity 标准};
+  \node[below=0.6cm of stream, font=\footnotesize, align=center] {feed overlap\\encode 并行};
+\end{tikzpicture}
+\caption{Slice = 真理；Stream = 限时答题，答案必须一致。}
+\label{fig:two-paths}
+\end{figure}
+
+\section{Streaming 工厂流水线}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1.8cm,y=0.55cm]
+  \node[font=\footnotesize] at (0,4) {主线程};
+  \node[font=\footnotesize] at (0,2.5) {Encode$\times$2};
+  \node[font=\footnotesize] at (0,1) {Store$\times$1};
+  \foreach \x/\lab in {1/feed1,2/feed2,3/feed3,4/feed4} {
+    \draw[fill=CoreBlue!20, draw=CoreBlue] (\x,3.6) rectangle ++(0.7,0.7);
+    \node[font=\tiny] at (\x+0.35,3.95) {CDC};
+    \node[font=\tiny, below] at (\x+0.35,3.5) {\lab};
+  }
+  \foreach \x in {1.5,2.5,3.5} {
+    \draw[fill=CoreOrange!25, draw=CoreOrange] (\x,2.1) rectangle ++(0.7,0.7);
+    \node[font=\tiny] at (\x+0.35,2.45) {enc};
+  }
+  \foreach \x in {2,3} {
+    \draw[fill=CoreGreen!25, draw=CoreGreen] (\x,0.6) rectangle ++(0.7,0.7);
+    \node[font=\tiny] at (\x+0.35,0.95) {store};
+  }
+  \draw[arr] (1.35,3.6) -- (1.85,2.8);
+  \draw[arr] (2.35,3.6) -- (2.35,2.8);
+  \draw[arr] (2.85,2.1) -- (2.35,1.3);
+  \node[lab, anchor=west] at (4.5,3) {扫 feed $n$ 时\\压缩 feed $n{-}1$};
+\end{tikzpicture}
+\caption{StreamingChunkCpuPipeline：feed 级 overlap（\texttt{RunSingleFileStreamingChunkPipeline}）。}
+\label{fig:stream-overlap}
+\end{figure}
+
+\section{StreamSegmentView 与 Carry Tail}
+
+\subsection{虚拟连续缓冲区}
+
+每次 \texttt{FastCdcStreamFeed} 构造：
+\begin{align*}
+  \text{seg0} &= \texttt{state->carry} \quad \text{（上一 feed 尾巴）} \\
+  \text{seg1} &= \text{本 feed 新读 32\,MB}
+\end{align*}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[x=0.012cm,y=0.6cm]
+  \fill[CoreOrange!35] (0,0) rectangle (180,1.2);
+  \node[font=\scriptsize] at (90,0.6) {carry（seg0）};
+  \fill[CoreBlue!25] (180,0) rectangle (3200,1.2);
+  \node[font=\scriptsize] at (1690,0.6) {新 feed 32MB（seg1）};
+  \draw[->,thick] (0,-0.8) -- (3200,-0.8) node[right,font=\small] {逻辑字节流};
+  \node[font=\tiny, align=center] at (90,-1.6) {物理独立\\逻辑连续};
+\end{tikzpicture}%
+}
+\caption{\texttt{StreamSegmentView}：两段内存「假装一条链」。}
+\label{fig:segment-view}
+\end{figure}
+
+\subsection{defer min\_size 语义}
+
+非最后 feed 时：
+\begin{itemize}[nosep]
+  \item 若 $\texttt{carry}+\texttt{新数据} \leq \texttt{min\_size}$：\textbf{defer}，不切、不更新；
+  \item 否则 $\texttt{proc\_len} = \text{总长} - \texttt{min\_size}$，扫完后 tail 写入 carry（\texttt{SetCarryTail}）。
+\end{itemize}
+
+\begin{analogybox}[翻书书签]
+读 32 页为一 feed；页末若句子没读完，把\textbf{半句话}折进书签（carry），下一 feed 从书签接着读。Gear 滚动状态\textbf{不重置}，否则边界 cut 会漂移。
+\end{analogybox}
+
+\section{两类漂移}
+
+\begin{table}[htbp]
+\centering
+\caption{漂移类型与后果}
+\label{tab:drift-types}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+类型 & 根因 & 后果 \\
+\midrule
+Cut 漂移 & virtual 边界简化 / carry 断档 & Content ID 变，dedup 失效 \\
+Gear 漂移 & feed 边界未 carry 状态 & 边界附近 cut 偏移 \\
+Digest 漂移 & 相对 offset 算 hash & 切点对但 hash 错 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Phase B Handoff（Sprint 4 核心修复）}
+
+\begin{warnbox}[错误做法 $\Rightarrow$ Cut 漂移]
+在已进入 contiguous 主段（seg1）后仍用 \texttt{ScanGearCutVirtual}，或使用\\
+\texttt{boundary\_limit = view.len0 + w} 类简化边界 $\Rightarrow$ 与 \texttt{FastCdcSlice} unified loop 决策不一致。
+\end{warnbox}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.65cm]
+  \node[block=CoreOrange] (carry) {carry 段：ScanGearCutVirtual\\跨 seg0+seg1};
+  \node[decision, below=of carry] (q) {pos $\geq$ len0?};
+  \node[block=CoreGreen, below left=1.0cm and 0.8cm of q] (virt) {继续 virtual 扫描};
+  \node[block=CoreBlue, below right=1.0cm and 0.8cm of q] (hand) {Handoff：seg1-only\\ScanGearCut（与 Slice 同逻辑）};
+  \draw[arr] (carry) -- (q);
+  \draw[arr] (q) -- node[lab,left]{否} (virt);
+  \draw[arr] (q) -- node[lab,right]{是} (hand);
+\end{tikzpicture}
+\caption{\texttt{ChunkCarryPrefixVirtual}（\filepath{fast\_cdc\_streaming.cc:205--240}）。}
+\label{fig:handoff}
+\end{figure}
+
+\section{digest\_base：file-absolute 坐标}
+
+v0.9.3 起 \texttt{FastCdcStreamState::digest\_base} = 文件 mmap 基址：
+\[
+\text{hash} = \texttt{ContentHash}(\texttt{digest\_base} + \texttt{logical\_base} + \texttt{offset},\,\texttt{length})
+\]
+
+\begin{analogybox}[全书页码 vs 本页行号]
+切点讨论可用 feed 内相对坐标；但\textbf{指纹必须按全书绝对页码}算。carry 跨界 chunk 优先走 \texttt{DigestPool::HashRegions} 批处理。
+\end{analogybox}
+
+\section{负向实验教训}
+
+\begin{table}[htbp]
+\centering
+\caption{失败路径与处置}
+\label{tab:negative}
+\small
+\begin{tabular}{@{}llr@{}}
+\toprule
+实验 & 问题 & 处置 \\
+\midrule
+Phase 3C carry 拆 gear 并行 & parity 失败 & 回退 \\
+Phase A FastSlice 整文件 cuts & L5 $\sim$105 MB/s（$-39\%$） & 默认关闭 \\
+简化 virtual boundary & cut 漂移 & 禁止，改 handoff \\
+\bottomrule
+\end{tabular}
+\end{table}

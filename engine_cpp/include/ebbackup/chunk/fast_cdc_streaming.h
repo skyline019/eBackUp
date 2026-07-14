@@ -14,6 +14,7 @@ struct FastCdcStreamProfile {
   uint64_t carry_copy_ns{0};
   uint64_t cdc_scan_ns{0};
   uint64_t digest_ns{0};
+  uint64_t cdc_scan_probes{0};
 };
 
 struct FastCdcStreamState {
@@ -32,6 +33,7 @@ inline void ResetFastCdcStreamProfile(FastCdcStreamProfile* profile) {
   profile->carry_copy_ns = 0;
   profile->cdc_scan_ns = 0;
   profile->digest_ns = 0;
+  profile->cdc_scan_probes = 0;
 }
 
 void AccumulateFastCdcStreamProfile(const FastCdcStreamProfile& src,

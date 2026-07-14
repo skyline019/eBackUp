@@ -1,0 +1,78 @@
+\chapter{v6 在备份流水线中的位置}
+\label{ch:journey}
+
+\begin{analogybox}[一句话]
+v6 不是新的压缩算法，而是\textbf{新的「切香肠刀法」}：同一台 LZ4 压缩机，不同的 chunk 边界；刀法要够快，切出来的块还要能 dedup。
+\end{analogybox}
+
+\section{从文件到 chunk 的旅程}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[node distance=0.45cm]
+  \node[streamblock, minimum width=2.0cm] (file) {源文件\\D:\textbackslash CUDA};
+  \node[v6block, minimum width=2.2cm, right=0.55cm of file] (cdc) {2F-Gear\\切点};
+  \node[block=CoreGreen, minimum width=2.0cm, right=0.55cm of cdc] (hash) {ContentHash};
+  \node[block=CorePurple, minimum width=2.0cm, right=0.55cm of hash] (enc) {LZ4/Auto\\压缩};
+  \node[block=CoreBlue, minimum width=2.0cm, right=0.55cm of enc] (store) {ChunkStore\\EbPack};
+  \draw[arr] (file) -- (cdc);
+  \draw[arr] (cdc) -- (hash);
+  \draw[arr] (hash) -- (enc);
+  \draw[arr] (enc) -- (store);
+  \node[lab, below=0.5cm of cdc] {本章焦点};
+  \node[lab, below=0.5cm of enc] {与 Stream 相同};
+\end{tikzpicture}%
+}
+\caption{v6 仅替换 CDC 阶段；压缩率对比必须在相同 encode 路径下解读。}
+\label{fig:pipeline-journey}
+\end{figure}
+
+\section{三代 G-TCDC 的「扫描复杂度」}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  ybar,
+  width=12cm,
+  height=6.5cm,
+  bar width=18pt,
+  ymin=0, ymax=4.5,
+  ylabel={相对 probe 成本（示意）},
+  symbolic x coords={Rabin v2, Gear v3, AN v5, {2F v6}, FastCDC Stream},
+  xtick=data,
+  x tick label style={rotate=25, anchor=east, font=\small},
+  legend style={at={(0.5,-0.22)}, anchor=north, legend columns=2, font=\small},
+  nodes near coords, nodes near coords style={font=\tiny},
+  enlarge x limits=0.12
+]
+\addplot[fill=CoreRed!60] coordinates {
+  (Rabin v2, 4.0)
+  (Gear v3, 1.0)
+  (AN v5, 3.2)
+  ({2F v6}, 1.15)
+  (FastCDC Stream, 1.0)
+};
+\end{axis}
+\end{tikzpicture}
+\caption{AN v5 因每字节 \texttt{SelectPhaseMask+MixSeedHash} 显著贵于 v6；v6 设计目标即贴近 Stream（实测 per-probe ratio $\approx$1.0--1.2）。}
+\label{fig:probe-cost-bar}
+\end{figure}
+
+\section{设计约束三角}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=1.05]
+  \node[v6block, minimum width=3.2cm] (perf) at (0,2.8) {性能 $\approx$ Stream};
+  \node[v6block, minimum width=3.2cm] (dedup) at (-3.2,-1.2) {独立切点\\opt-in dedup};
+  \node[v6block, minimum width=3.2cm] (comp) at (3.2,-1.2) {压缩率\\不劣化};
+  \draw[arr] (perf) -- (dedup);
+  \draw[arr] (dedup) -- (comp);
+  \draw[arr] (comp) -- (perf);
+  \node[v6block, minimum width=4cm] at (0,0.3) {v6 2F-Gear\\双域 AND};
+\end{tikzpicture}
+\caption{v6 在三角中心用 $O(1)$/probe 双指纹达成三目标；v5 偏 dedup 质量牺牲 perf。}
+\label{fig:triangle}
+\end{figure}

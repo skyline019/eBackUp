@@ -1,0 +1,400 @@
+\chapter{FastCDC 与 Gear Mask 数学推导}\label{ch:fastcdc}
+
+\section{FastCdcConfig：三条护栏}
+
+\begin{definition}[FastCDC 参数]
+\texttt{FastCdcConfig}（\filepath{fast\_cdc.h}）定义：
+\begin{align*}
+  \texttt{min\_size} &\text{ — 最短 chunk（默认 64\,KB）} \\
+  \texttt{avg\_size} &\text{ — 目标平均 chunk（默认 256\,KB）} \\
+  \texttt{max\_size} &\text{ — 硬上限（默认 1\,MB）} \\
+  \texttt{window\_size} &\text{ — Gear 窗口宽度 $w$（默认 64）}
+\end{align*}
+\end{definition}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.015cm,y=0.5cm]
+  \draw[->] (0,0) -- (1050,0) node[right,font=\small] {字节};
+  \fill[CoreBlue!15] (0,0.3) rectangle (64,1.2);
+  \node[font=\scriptsize] at (32,0.75) {min：不可切};
+  \fill[CoreGreen!20] (64,0.3) rectangle (1024,1.2);
+  \node[font=\scriptsize] at (544,0.75) {扫描区：找 Gear 路标};
+  \draw[CoreRed, ultra thick] (1024,0) -- (1024,1.5) node[above,font=\scriptsize] {max 强制切};
+  \draw[decorate, decoration={brace, amplitude=5pt}] (0,-0.3) -- (64,-0.3)
+    node[midway,below=6pt,font=\footnotesize] {$w$ 窗口预热};
+\end{tikzpicture}
+\caption{单个 chunk 内的扫描区间：$[\texttt{pos}+\texttt{min},\,\texttt{pos}+\texttt{max}]$。}
+\label{fig:scan-window}
+\end{figure}
+
+\section{ChunkProfile 三档}
+
+\begin{table}[htbp]
+\centering
+\caption{按文件大小自动选档（\filepath{chunk\_profile.cc}）}
+\label{tab:profile}
+\small
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+Profile & 条件 & min & avg & max \\
+\midrule
+\texttt{kSmall} & $\leq$256\,KB & 4\,KB & 16\,KB & 64\,KB \\
+\texttt{kDefault} & 256\,KB--64\,MB & 64\,KB & 256\,KB & 1\,MB \\
+\texttt{kLarge} & $\geq$64\,MB & 256\,KB & 1\,MB & 4\,MB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%====================================================================
+\section{FastCDC 完整算法：从字节流到切点}\label{sec:fastcdc-full}
+
+\begin{analogybox}[高速公路收费站比喻（完整版）]
+把文件看成一条\textbf{单行道}，备份引擎是「设收费站」的规划员：
+\begin{enumerate}[nosep]
+  \item \textbf{选档位}：根据文件大小选 ChunkProfile（决定 min/avg/max）；
+  \item \textbf{算 mask}：由 \texttt{avg\_size} 导出「路标样式」——hash 末几位必须为 0；
+  \item \textbf{预热窗口}：每个候选切点前，先读满 $w=64$ 字节的 Gear 指纹；
+  \item \textbf{滚动扫描}：每前进 1 字节更新 $h$，检查 $(h \mathbin{\&} \texttt{mask}) = 0$；
+  \item \textbf{命中即切}：第一个满足条件的字节位置 = 本 chunk 终点；
+  \item \textbf{护栏兜底}：扫过 \texttt{max} 仍未命中 $\Rightarrow$ 强制切；不足 \texttt{min} $\Rightarrow$ 与下一段合并。
+\end{enumerate}
+\textbf{关键}：切点由\textbf{内容}（字节序列决定的 $h$）触发，而非固定偏移。
+\end{analogybox}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.55cm, scale=0.95, transform shape]
+  \node[block=CoreBlue, minimum width=2.4cm] (data) {字节流\\data[i]};
+  \node[block=CoreOrange, right=0.6cm of data, minimum width=2.2cm] (gear) {查 gear 表\\256 项预计算};
+  \node[block=CoreGreen, right=0.6cm of gear, minimum width=2.4cm] (roll) {滚动更新 $h$\\式\eqref{eq:gear-roll}};
+  \node[block=CorePurple, right=0.6cm of roll, minimum width=2.4cm] (mask) {检测\\$(h \mathbin{\&} M)=0$};
+  \node[block=CoreRed, right=0.6cm of mask, minimum width=2.0cm] (cut) {切点};
+  \draw[arr] (data) -- (gear);
+  \draw[arr] (gear) -- (roll);
+  \draw[arr] (roll) -- (mask);
+  \draw[arr] (mask) -- node[lab,above]{命中} (cut);
+  \node[lab, below=0.35cm of gear] {每字节一次};
+  \node[lab, below=0.35cm of mask] {$M$=mask};
+\end{tikzpicture}
+\caption{FastCDC 单字节扫描数据通路；$M$ 由 \texttt{avg\_size} 唯一确定。}
+\label{fig:fastcdc-pipeline}
+\end{figure}
+
+\subsection{ScanGearCut 在区间里做什么？}
+
+对当前 chunk 起点 \texttt{pos}，令
+\[
+  \texttt{scan\_start} = \texttt{pos} + \texttt{min\_size},\qquad
+  \texttt{cut\_limit} = \min(\texttt{pos}+\texttt{max\_size},\,\texttt{EOF}).
+\]
+在 $[\texttt{scan\_start},\,\texttt{cut\_limit})$ 上逐字节推进，\textbf{返回第一个}使 $(h \mathbin{\&} \texttt{mask})=0$ 的位置。
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[x=0.018cm,y=0.55cm]
+  \draw[->,thick] (0,0) -- (1100,0);
+  \fill[CoreBlue!18] (0,0.5) rectangle (64,1.4);
+  \node[font=\scriptsize] at (32,0.95) {禁切区 min};
+  \fill[CoreGreen!22] (64,0.5) rectangle (900,1.4);
+  \node[font=\scriptsize] at (482,0.95) {扫描：逐字节检查 $h\mathbin{\&}M$};
+  \fill[CoreRed!35] (380,0.5) rectangle (385,1.4);
+  \node[font=\tiny,CoreRed] at (382.5,1.85) {命中!};
+  \draw[CoreRed, ultra thick] (385,0) -- (385,1.7);
+  \draw[CoreOrange, dashed, thick] (1024,0) -- (1024,1.7)
+    node[above,font=\scriptsize] {max 强制};
+  \draw[decorate,decoration={brace,amplitude=4pt}] (64,-0.2) -- (385,-0.2)
+    node[midway,below=5pt,font=\footnotesize] {本 chunk 长度 $\approx$382KB};
+\end{tikzpicture}%
+}
+\caption{一次扫描：min 之后首次 mask 命中处落刀；若 900 前无命中则切在 max。}
+\label{fig:scan-timeline}
+\end{figure}
+
+\section{Gear Hash：滚动指纹}
+
+\subsection{Gear 表初始化}
+
+对每个字节值 $i\in[0,255]$，预计算 32-bit 表项 $\text{gear}[i]$（\filepath{fast\_cdc\_simd.cc}）：
+\[
+\text{gear}[i] \leftarrow \text{16 轮 LFSR 变换}(i)
+\]
+表在 chunker 生命周期内\textbf{不变}。
+
+\subsection{Rolling Hash 更新}
+
+在位置 $\text{pos}$ 维护窗口 $[\text{pos}-w,\,\text{pos}-1]$ 的 hash $h$：
+\begin{equation}
+  h \;\leftarrow\; (h \ll 1) + \text{gear}[\text{data}[\text{pos}]] - \text{gear}[\text{data}[\text{pos}-w]]
+  \label{eq:gear-roll}
+\end{equation}
+
+\begin{analogybox}[64 字节检票机]
+想象检票机只记住\textbf{最近 64 人}的指纹编号之和。每前进 1 字节：减去「最左边离开窗口的人」，加上「新进来的人」。切点 = 指纹末几位恰好全 0（路标命中）。
+\end{analogybox}
+
+\section{Mask 到底是什么？——完整形象化定义}\label{sec:mask-visual}
+
+\subsection{一句话定义}
+
+\begin{corebox}[Mask 的本质]
+\texttt{mask} 是一个\textbf{低位全 1} 的 32-bit 掩码。\\
+切点条件 $(h \mathbin{\&} \texttt{mask}) = 0$ 等价于：\\
+\textbf{「$h$ 的二进制表示中，受 mask 覆盖的最低 $\texttt{bits}$ 位必须全部为 0」}。
+\end{corebox}
+
+\begin{analogybox}[彩票末位规则]
+把 32-bit 的 $h$ 想成一张\textbf{8 位彩票号}（只看末几位）：
+\begin{itemize}[nosep]
+  \item \texttt{avg\_size} 决定「要匹配末几位」——\texttt{bits} 越大，要求匹配的 0 越多，中奖越难；
+  \item 中奖（$(h \mathbin{\&} M)=0$）$\Rightarrow$ 在此设收费站；
+  \item 平均每隔 $\approx 2^{\texttt{bits}}$ 字节中奖一次。
+\end{itemize}
+\end{analogybox}
+
+\subsection{bits 如何从 avg\_size「数」出来？}
+
+\texttt{BuildMask} 并不做除法，而是用\textbf{右移计数}求 $\lfloor\log_2(\texttt{avg\_size})\rfloor$：
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.5cm]
+  \node[block=CoreBlue, minimum width=3.2cm] (in) {输入 avg\_size\\例：262144};
+  \node[block=CoreOrange, right=0.7cm of in, minimum width=3.0cm] (loop) {while $v>1$:\\$v\gg 1$, bits++};
+  \node[block=CoreGreen, right=0.7cm of loop, minimum width=2.8cm] (bits) {bits = 18};
+  \node[block=CorePurple, right=0.7cm of bits, minimum width=3.0cm] (mask) {mask = $(1\ll 18)-1$\\= 0x3FFFF};
+  \draw[arr] (in) -- (loop);
+  \draw[arr] (loop) -- (bits);
+  \draw[arr] (bits) -- (mask);
+\end{tikzpicture}
+\caption{\texttt{BuildMask} 数据流：avg $\rightarrow$ bits $\rightarrow$ 低位掩码。}
+\label{fig:buildmask-flow}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\caption{avg\_size 右移过程（262144 = $2^{18}$）}
+\label{tab:shift-demo}
+\footnotesize
+\begin{tabular}{@{}rrrrl@{}}
+\toprule
+步骤 & $v$（移位前） & 操作 & bits & 说明 \\
+\midrule
+0 & 262144 & — & 0 & $2^{18}$，尚 $>1$ \\
+1 & 131072 & $v\gg 1$ & 1 & \\
+$\vdots$ & $\vdots$ & $\vdots$ & $\vdots$ & 共 18 次右移 \\
+18 & 1 & $v\gg 1$ & 18 & 下次 $v=0$ 退出 \\
+\midrule
+\multicolumn{5}{l}{$\Rightarrow$ \texttt{mask} = $(1 \ll 18) - 1$ = \textbf{0x0003FFFF}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{边界}：\texttt{bits} 钳制在 $[1,31]$，防止移位溢出 32-bit。
+
+\subsection{Mask 的位图案（图解）}
+
+以默认档 \texttt{avg=256KB}（\texttt{bits=18}）为例：
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.42cm,y=0.7cm]
+  % 32 bit positions, show last 20 for clarity
+  \foreach \i in {0,...,19} {
+    \pgfmathtruncatemacro{\bitnum}{31-\i}
+    \node[font=\tiny] at (\i,1.5) {\bitnum};
+  }
+  % hash h bits (example)
+  \foreach \i/\b in {0/1,1/0,2/1,3/1,4/0,5/0,6/0,7/0,8/0,9/0,10/0,11/0,12/1,13/0,14/1,15/0,16/0,17/0,18/0,19/1} {
+    \node[draw, minimum width=0.38cm, minimum height=0.55cm, fill=CoreBlue!15] at (\i,0.6) {\tiny \b};
+  }
+  % mask region - bits 0-17 (positions 31 down to 14) - let me use simpler: low 18 bits
+  \draw[CoreRed, ultra thick, rounded corners=2pt] (-0.3,-0.05) rectangle (17.7,1.25);
+  \node[font=\scriptsize, CoreRed] at (8.5,-0.65) {mask 覆盖：低 18 位（必须全 0 才命中）};
+  \node[font=\scriptsize] at (8.5,2.1) {$h$ 的位（示例）};
+  % AND result
+  \node[font=\scriptsize] at (22,0.6) {$\mathbin{\&}$};
+  \node[font=\scriptsize] at (24,0.6) {mask};
+  \node[font=\scriptsize] at (27,0.6) {$= 0$ ?};
+  \node[font=\scriptsize, CoreGreen] at (27,-0.55) {是 $\Rightarrow$ 切};
+\end{tikzpicture}
+\caption{命中判定：仅考察 $h$ 的\textbf{低 \texttt{bits} 位}是否全零；高位不参与判定。}
+\label{fig:mask-bits}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\caption{三档 Profile 的 mask 对照（核心表）}
+\label{tab:mask-table}
+\small
+\begin{tabular}{@{}lrrrrl@{}}
+\toprule
+Profile & avg (B) & bits & mask (hex) & 低 bits 图案 & 期望间距 \\
+\midrule
+Small & 16\,384 & 14 & \texttt{0x3FFF} & \texttt{14个1} & $\sim$16\,KB \\
+Default & 262\,144 & 18 & \texttt{0x3FFFF} & \texttt{18个1} & $\sim$256\,KB \\
+Large & 1\,048\,576 & 20 & \texttt{0xFFFFF} & \texttt{20个1} & $\sim$1\,MB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{remark}[为何是 $(1 \ll \texttt{bits}) - 1$ 而不是别的？]
+FastCDC 经典做法：mask 的\textbf{连续低位全 1}，使 $h \mathbin{\&} \texttt{mask}$ 提取 $h$ 的最低 \texttt{bits} 位。\\
+要求这部分为 0 $\Leftrightarrow$ 以概率 $1/2^{\texttt{bits}}$ 随机命中 $\Leftrightarrow$ 期望步长 $2^{\texttt{bits}} \approx \texttt{avg}$。\\
+\textbf{mask 不直接等于 avg\_size}，而是由其\textbf{对数}推导——这是概率与实现效率的折中。
+\end{remark}
+
+\subsection{BuildMask 源码}
+
+\begin{corebox}[源码：\filepath{fast\_cdc\_simd.cc}]
+\begin{verbatim}
+uint32_t BuildMask(uint32_t avg_size) {
+  uint32_t bits = 0, v = avg_size;
+  while (v > 1) { v >>= 1; ++bits; }  // floor(log2(avg))
+  if (bits == 0) bits = 1;
+  if (bits > 31) bits = 31;
+  return (1u << bits) - 1u;           // 0b00...0111 (bits个1)
+}
+\end{verbatim}
+\end{corebox}
+
+\subsection{命中条件与概率推导}
+
+Cut 条件：
+\begin{equation}
+  (h \;\&\; \texttt{mask}) = 0
+  \label{eq:hit}
+\end{equation}
+
+设 $h$ 在有效位上近似均匀（Gear 表 + 滚动混合的设计目标），则低 $\texttt{bits}$ 位\textbf{独立随机}为 0 的概率：
+\begin{equation}
+  P_{\text{hit}} \;=\; \frac{1}{2^{\texttt{bits}}}
+  \label{eq:phit}
+\end{equation}
+
+每字节推进后「重新掷骰」，直到命中或触及 \texttt{max}。扫描长度近似几何分布：
+\begin{equation}
+  E[\text{chunk 长度}] \;\approx\; \texttt{min\_size} + 2^{\texttt{bits}}
+  \;\approx\; \texttt{min\_size} + \texttt{avg\_size}
+  \label{eq:expected-len}
+\end{equation}
+当 $\texttt{min} \ll \texttt{avg}$ 时，$E[\text{长度}] \approx \texttt{avg}$（与实测 chunk 直方图一致）。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.85\linewidth,
+  height=5.5cm,
+  ybar,
+  bar width=22pt,
+  ymin=0, ymax=22,
+  ylabel={bits},
+  xlabel={Profile},
+  symbolic x coords={Small,Default,Large},
+  xtick=data,
+  nodes near coords,
+  grid=major,
+  grid style={dashed,gray!30},
+  legend style={at={(0.5,1.12)},anchor=south,font=\footnotesize}
+]
+\addplot[fill=CoreOrange!45,draw=CoreOrange] coordinates {(Small,14) (Default,18) (Large,20)};
+\addlegendentry{mask 宽度 (bits)}
+\addplot[fill=CoreBlue!35,draw=CoreBlue] coordinates {(Small,14) (Default,18) (Large,20)};
+\addlegendentry{$\log_2$(avg) 近似}
+\end{axis}
+\end{tikzpicture}
+\caption{avg 越大 $\Rightarrow$ bits 越多 $\Rightarrow$ 命中越稀 $\Rightarrow$ chunk 越大。}
+\label{fig:bits-bar}
+\end{figure}
+
+\begin{example}[Default：avg = 256\,KB]
+$\texttt{avg\_size} = 262144 = 2^{18}$ $\Rightarrow$ $\texttt{bits}=18$，$\texttt{mask}=\texttt{0x0003FFFF}$。\\
+判定：$h$ 的第 0--17 位必须全 0；$P_{\text{hit}}=1/262144$；期望间距 $\approx 256$\,KB。
+\end{example}
+
+\begin{example}[Large Profile：avg = 1\,MB]
+$\texttt{avg\_size} = 1048576 = 2^{20}$ $\Rightarrow$ $\texttt{bits}=20$，$\texttt{mask}=\texttt{0x000FFFFF}$。\\
+期望间距 $\approx 1$\,MB；适合 CUDA 类大文件，避免 chunk 数爆炸。
+\end{example}
+
+\subsection{迷你走查：4 字节玩具例子}
+
+\begin{warnbox}[仅为说明位运算；真实 $w=64$，此处省略窗口预热]
+设 $\texttt{bits}=3$，则 $\texttt{mask}=0\text{x}7=(0\text{b}111)$。某步滚动得 $h=0\text{x}38=(0\text{b}00111000)$：
+\[
+  h \mathbin{\&} \texttt{mask} = 0\text{b}00111000 \mathbin{\&} 0\text{b}00000111 = 0 \quad\checkmark\;\text{命中，在此切}
+\]
+若 $h=0\text{x}3A=(0\text{b}00111010)$：
+\[
+  h \mathbin{\&} \texttt{mask} = 0\text{b}00000010 \neq 0 \quad\Rightarrow\;\text{继续扫描下一字节}
+\]
+\end{warnbox}
+
+\subsection{min / max 如何约束 mask 的「随机游走」}
+
+\begin{itemize}[nosep]
+  \item \textbf{min}：即使 $h$ 在 min 之前已满足 $(h\mathbin{\&}M)=0$，也\textbf{不许切}——防止碎块；
+  \item \textbf{max}：在 $[\texttt{min},\texttt{max}]$ 内若始终未命中，\textbf{强制在 max 处切}——防止巨块；
+  \item 实际 chunk 长度 $\in [\texttt{min},\,\texttt{max}]$，均值由 mask 概率 + 护栏共同塑造。
+\end{itemize}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.88\linewidth,
+  height=5.8cm,
+  xlabel={chunk 长度 (KB)},
+  ylabel={相对频数（示意）},
+  xmin=0, xmax=1200,
+  ymin=0, ymax=1.2,
+  grid=major,
+  grid style={dashed,gray!30},
+  legend pos=north east,
+  font=\footnotesize
+]
+% schematic bell-ish between min and max
+\addplot[CoreGreen, thick, domain=64:1024, samples=80]
+  {exp(-((x-280)^2)/(2*80^2))};
+\draw[CoreRed, dashed, thick] (axis cs:64,0) -- (axis cs:64,1.1)
+  node[above,font=\tiny] {min};
+\draw[CoreRed, dashed, thick] (axis cs:1024,0) -- (axis cs:1024,1.1)
+  node[above,font=\tiny] {max};
+\node[font=\scriptsize] at (axis cs:280,0.95) {峰值 $\approx$ avg};
+\end{axis}
+\end{tikzpicture}
+\caption{chunk 长度分布示意：mask 决定峰位，min/max 截断两端。}
+\label{fig:chunk-dist}
+\end{figure}
+
+\section{ChunkCuts 主循环（Golden Reference）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.7cm]
+  \node[block=CoreBlue] (start) {pos = 0};
+  \node[block=CoreGreen, below=of start] (check) {remaining $\leq$ min?};
+  \node[block=CoreOrange, below left=1.0cm and 1.2cm of check] (tail) {输出尾块，结束};
+  \node[block=CorePurple, below right=1.0cm and 1.2cm of check] (scan) {ScanGearCut\\$[\text{pos}+\text{min},\,\text{pos}+\text{max}]$};
+  \node[block=CoreBlue, below=of scan] (emit) {记录 chunk，pos = cut};
+  \draw[arr] (start) -- (check);
+  \draw[arr] (check) -- node[lab,left]{是} (tail);
+  \draw[arr] (check) -- node[lab,right]{否} (scan);
+  \draw[arr] (scan) -- (emit);
+  \draw[arr] (emit.east) -- ++(1.2,0) |- (check.east);
+\end{tikzpicture}
+\caption{\texttt{FastCdcSlice::ChunkCuts} 逻辑流程（\filepath{fast\_cdc.cc}）。}
+\label{fig:chunk-cuts-loop}
+\end{figure}
+
+\section{两阶段 API：切点与 digest 分离}
+
+\begin{corebox}[设计意图]
+\begin{itemize}[nosep]
+  \item \texttt{ChunkCuts}：纯 CDC，输出 offsets/lengths；
+  \item \texttt{Chunk}：ChunkCuts + ContentHash $\rightarrow$ \texttt{ChunkDescriptor}。
+\end{itemize}
+分离使 parity 测试可\textbf{只对比切点}，不受 digest 线程调度干扰；流式路径可对「已闭合 chunk」增量 hash。
+\end{corebox}

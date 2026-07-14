@@ -38,7 +38,13 @@ struct BackupSuperBlockExtension {
   uint8_t merkle_root[32]{};
   uint8_t default_codec{0};
   uint32_t backup_features{0};
-  uint8_t ext_padding[3523]{};
+  uint32_t gtcdc_table_seed{0};
+  uint8_t gtcdc_nc_level{0};
+  uint8_t gtcdc_reserved[3]{};
+  uint32_t topo_table_seed{0};
+  uint8_t topo_variant{0};
+  uint8_t topo_reserved[3]{};
+  uint8_t ext_padding[3507]{};
 };
 #pragma pack(pop)
 

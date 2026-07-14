@@ -1,0 +1,98 @@
+\chapter{min 与 max：两道安全栏}
+\label{ch:gen1-guards}
+
+\section{为什么需要 min？}
+
+如果刚切完又立刻能切，chunk 会碎成很多小块 → 索引爆炸、备份变慢。  
+所以：\textbf{从 chunk 起点算起，至少走 min 字节，才允许找切点。}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.018cm,y=0.65cm]
+  \draw[->,thick] (0,0) -- (520,0) node[right,font=\scriptsize] {字节偏移};
+  \fill[CutRed!15] (0,0.35) rectangle (64,1.25);
+  \node[font=\scriptsize, CutRed!70!black] at (32,0.8) {禁切区 min};
+  \fill[Gen1Blue!20] (64,0.35) rectangle (400,1.25);
+  \node[font=\scriptsize] at (232,0.8) {允许扫描路标};
+  \draw[cutline] (280,0) -- (280,1.55);
+  \node[font=\scriptsize, CutRed, above=2pt] at (280,1.55) {命中，切！};
+  \node[font=\tiny, below=3pt] at (0,0) {pos};
+  \node[font=\tiny, below=3pt] at (64,0) {scan\_start};
+\end{tikzpicture}
+\caption{scan\_start = pos + min\_size。min 之前即使 mask 命中也不切。}
+\end{figure}
+
+\section{为什么需要 max？}
+
+有些数据让指纹「一直中不了奖」。不能无限等下去。  
+走到 max 还没命中 → \textbf{强制切}（max-cut）。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.018cm,y=0.65cm]
+  \draw[->,thick] (0,0) -- (520,0);
+  \fill[Gen1Blue!20] (64,0.35) rectangle (480,1.25);
+  \node[font=\scriptsize] at (272,0.8) {一直不命中...};
+  \draw[cutline, ultra thick] (480,0) -- (480,1.65);
+  \node[font=\scriptsize, CutRed, above=2pt] at (480,1.65) {max 强制切};
+  \node[font=\tiny, below=3pt] at (480,0) {cut\_limit};
+\end{tikzpicture}
+\caption{保证 chunk 不会无限长；max-cut 也是合法切点。}
+\end{figure}
+
+\section{min / avg / max 三角关系}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.6cm]
+  \node[zone=CutRed, minimum width=2.4cm] (min) {min\\最短};
+  \node[zone=Gen1Blue, minimum width=2.4cm, right=0.5cm of min] (avg) {avg\\期望平均};
+  \node[zone=CutRed, minimum width=2.4cm, right=0.5cm of avg] (max) {max\\最长};
+  \node[below=0.5cm of avg, font=\scriptsize, align=center, text width=8cm]
+    {avg 决定 mask 难度（路标多长）；min/max 是硬护栏};
+\end{tikzpicture}
+\caption{avg 管「平均」，min/max 管「极端情况」。}
+\end{figure}
+
+\section{三个数一起记}
+
+\begin{table}[htbp]
+\centering
+\caption{护栏与扫描区间}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{变量} & \textbf{含义} \\
+\midrule
+\texttt{pos} & 当前 chunk 起点 \\
+\texttt{scan\_start} & \texttt{pos + min}，从这里开始看路标 \\
+\texttt{cut\_limit} & \texttt{min(pos + max, 文件尾)}，扫到这里为止 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.35cm]
+  \node[gen1, minimum width=2.6cm] (p) {pos\\chunk 起点};
+  \node[gen1, minimum width=2.6cm, right=0.4cm of p] (s) {scan\_start\\= pos + min};
+  \node[gen1, minimum width=2.6cm, right=0.4cm of s] (c) {cut\_limit\\= pos + max};
+  \draw[arr] (p) -- node[above,font=\tiny]{至少 min} (s);
+  \draw[arr] (s) -- node[above,font=\tiny]{最多 max} (c);
+\end{tikzpicture}
+\caption{主循环只在 [scan\_start, cut\_limit) 区间内 probe。}
+\end{figure}
+
+\begin{warnbox}[两代共用]
+第二代 2F-Gear \textbf{完全沿用} 同一套 min / max / scan 区间；  
+变的只是「路标长什么样」（从 1 个变 2 个）。
+\end{warnbox}
+
+\section{模拟示例：Chunk 1 的区间}
+
+\begin{simbox}[pos=0 时三个变量]
+\begin{align*}
+\texttt{scan\_start} &= 0 + 2 = 2 &\Rightarrow& \text{字节 0,1 在禁切区} \\
+\texttt{cut\_limit} &= 8 &\Rightarrow& \text{最多扫到字节 7} \\
+\text{Chunk 1 切点} &= 3 &\Rightarrow& \text{chunk 长度} = 3
+\end{align*}
+\end{simbox}

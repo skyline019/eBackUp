@@ -1,0 +1,22 @@
+\chapter{G-TCDC v2：块指纹合成与 Vector8 扫描}
+\label{ch:gtcdc}
+
+G-TCDC 是 ebbackup 的 \textbf{opt-in} 分块算法（\texttt{EBBACKUP\_CDC\_ALGO=gtcdc}），与 FastCDC 切点语义\textbf{不互通}。
+
+\section{v2 块合成}
+
+$h_{k+B}=\alpha^B h_k + F(D)$，\texttt{ComposeBlockFast} 与逐字节 \texttt{RabinStep} 等价（\texttt{gt\_cdc\_compose\_test}）。
+
+\section{Vector8 与 profile}
+
+块内 8-lane 首命中；\texttt{blocks\_composed}、\texttt{vector8\_groups} 写入 \texttt{GtCdcStreamProfile}。
+
+\section{证明链}
+
+\begin{itemize}[nosep]
+  \item microbench：\texttt{ebbackup\_gtcdc\_bench}
+  \item L5 A/B：\texttt{bench\_check L5\_gtcdc\_ab}
+  \item 专册：\texttt{docs/engineering/gtcdc-proof/}
+\end{itemize}
+
+详见 \texttt{docs/technical/GT\_CDC\_SPEC.md}。

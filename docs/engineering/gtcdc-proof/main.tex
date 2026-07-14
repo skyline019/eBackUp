@@ -1,0 +1,33 @@
+% !TEX program = xelatex
+\documentclass[12pt,a4paper,openany]{ctexbook}
+
+\input{preamble.tex}
+
+\title{G-TCDC v2 深化创新与证明专册\\[0.25em]\large 块指纹合成 · Vector8 扫描 · L5 A/B 实测}
+\author{ebbackup Project\\\filepath{engine\_cpp/src/chunk/gt\_cdc\_*.cc}}
+\date{2026-07-11\\{\small 交叉索引：\filepath{GT\_CDC\_SPEC.md} · \filepath{cdc-kernel-narrative/07-gtcdc.tex}}}
+
+\begin{document}
+
+\frontmatter
+\maketitle
+\chapter*{摘要}
+\addcontentsline{toc}{chapter}{摘要}
+本专册证明 G-TCDC v2 在保持与 scalar golden \textbf{bit-identical} 切点的前提下，通过块指纹线性合成
+$h_{k+B}=\alpha^B h_k + F(D)$ 与 8-lane 首命中扫描降低 CDC scan 开销；并给出 256\,MB 合成 workload 上
+FastCDC stream 与 G-TCDC 的 L5 pipeline A/B 协议与 CI 门禁键定义。
+\tableofcontents
+
+\mainmatter
+\input{chapters/01-model.tex}
+\input{chapters/02-compose-proof.tex}
+\input{chapters/03-kernel-v2.tex}
+\input{chapters/04-experiment.tex}
+\input{chapters/05-data.tex}
+\input{chapters/06-conclusion.tex}
+
+\appendix
+\input{chapters/99-appendix.tex}
+
+\backmatter
+\end{document}

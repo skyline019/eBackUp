@@ -1,0 +1,27 @@
+\chapter{实测数据}
+\label{ch:data}
+
+本章数据来自 Windows Release AVX2 构建，v3 Gear 内核 + HCRBO-GT 增量（2026-07-11）。
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{@{}lrr@{}}
+\toprule
+指标 & 单次 L5/L6 & 说明 \\
+\midrule
+\texttt{stream\_256MBps} & 177.22 & FastCDC stream pipeline \\
+\texttt{gtcdc\_256MBps} & 175.34 & G-TCDC v3 Gear pipeline \\
+\texttt{gtcdc\_vs\_stream\_ratio} & 0.989 & 目标 $\ge 1.0$ \\
+\texttt{scan\_ns\_ratio} & 1.030 & 目标 $\le 1.0$ \\
+\midrule
+\texttt{stream\_incr\_MBps} & 103.98 & L6 增量 FastCDC \\
+\texttt{gtcdc\_incr\_MBps} & 100.15 & L6 增量 G-TCDC \\
+\texttt{incr\_gtcdc\_vs\_stream\_ratio} & 1.038 & 目标 $\ge 1.0$（\textbf{达标}） \\
+\bottomrule
+\end{tabular}
+\caption{v3 Gear 单次 bench\_check L5/L6（256MB synthetic）}
+\end{table}
+
+\textbf{v3 改动}：\texttt{kBackupFeatureGtCdcGear (0x2000)}、\texttt{GtCdcScanGear}、\texttt{ChunkCarryPrefixGearVirtual} 对齐 FastCDC streaming、\texttt{EbHcrboGtChunker} 增量路径。
+
+\textbf{双门禁}：全量 E2E 接近闭合（ratio 0.989）；增量 L6 已达标。十次 \texttt{run\_gtcdc\_proof.ps1} 均值通过后更新 \texttt{ci\_floor.json}。

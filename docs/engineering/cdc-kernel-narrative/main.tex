@@ -1,0 +1,41 @@
+% !TEX program = xelatex
+\documentclass[12pt,a4paper,openany]{ctexbook}
+
+\input{preamble.tex}
+
+\title{ebbackup CDC 内核叙事专册\\[0.25em]\large FastCDC · 流式防漂移 · HCRBO/CFI · Pipeline 路由}
+\author{ebbackup Project\\\filepath{engine\_cpp/} 分块子系统}
+\date{2026-07-10\\{\small 与 \filepath{kernel-manual/}、\filepath{CHUNK\_AND\_CDC.md} 交叉索引}}
+
+\begin{document}
+
+\frontmatter
+\maketitle
+\chapter*{摘要}
+\addcontentsline{toc}{chapter}{摘要}
+本专册以\textbf{形象化叙事 + 数学推导 + 源码锚点}完整呈现 ebbackup 备份内核的分块子系统：
+\begin{enumerate}[nosep]
+  \item \textbf{FastCDC}：内容定义分块、Gear rolling hash、mask 期望间距推导；
+  \item \textbf{流式 CDC}：32\,MB feed、carry tail、Phase B handoff 与 drift 防护；
+  \item \textbf{HCRBO/CFI}：增量备份如何跳过 unchanged chunk；
+  \item \textbf{Pipeline 路由}：Inline / Streaming / Hybrid / FastSlice / v4 五路径决策树。
+\end{enumerate}
+全文含 TikZ 流程图、时序图、对比表与不变量框，供答辩与 code review 使用。
+\tableofcontents
+\listoffigures
+\listoftables
+
+\mainmatter
+\input{chapters/01-narrative-overview.tex}
+\input{chapters/02-fastcdc-gear.tex}
+\input{chapters/03-streaming-drift.tex}
+\input{chapters/04-hcrbo-cfi.tex}
+\input{chapters/05-pipeline-routing.tex}
+\input{chapters/07-gtcdc.tex}
+\input{chapters/06-invariants-parity.tex}
+
+\appendix
+\input{chapters/99-appendix.tex}
+
+\backmatter
+\end{document}

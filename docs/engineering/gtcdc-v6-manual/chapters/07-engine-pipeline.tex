@@ -1,0 +1,53 @@
+\chapter{BackupEngine 与 Pipeline 接线}
+\label{ch:engine-pipeline}
+
+\section{Pipeline 内核选择}
+
+\texttt{BackupEngine::RunBackup} 在 pipeline 模式下设置：
+\begin{lstlisting}[caption={gtcdc\_kernel 注入 pipeline}]
+if (CdcGtCdcEnabled()) {
+  pipe_opts.gtcdc_kernel = GtCdcKernelForRepo(sb_);
+}
+\end{lstlisting}
+
+\texttt{StreamingChunkCpuPipeline} 根据 \texttt{gtcdc\_kernel} 分发至 \texttt{Process2FGearChunkCut}（v6）或 \texttt{ProcessAnGearChunkCut}（v5）等。
+
+\section{整文件 vs Streaming 路径}
+
+\begin{table}[htbp]
+\centering
+\caption{v6 备份路径选择（与 FastCDC 规则对齐）}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+场景 & CDC 实现 \\
+\midrule
+Pipeline 大文件 sequential read & Streaming + \texttt{Process2FGearChunkCut} \\
+Pipeline 小文件 / 内存映射 & \texttt{GtCdcSlice::ChunkCuts} \\
+增量 \texttt{kIncremental} 大文件 & \texttt{ChunkFileFullGtCdc}（非 streaming） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Phase Stats 与 profile}
+
+\texttt{EBBACKUP\_PIPELINE\_PROFILE=1} 时输出 \texttt{pipeline\_profile} 行；G-TCDC 额外细分：
+\begin{itemize}[nosep]
+  \item \texttt{stream\_cdc\_probes} / \texttt{gtcdc\_scan\_probes}
+  \item \texttt{stream\_cdc\_ns}（计入 scan 次门禁分母）
+\end{itemize}
+
+\section{环境变量合约（v6 相关）}
+
+\begin{longtable}{@{}p{4.5cm}p{9.5cm}@{}}
+\toprule
+\textbf{变量} & \textbf{语义} \\
+\midrule
+\endhead
+\texttt{EBBACKUP\_CDC\_ALGO=gtcdc} & 启用 G-TCDC；必须与 G-TCDC 仓库配对 \\
+\texttt{EBBACKUP\_CDC\_HYBRID=0} & bench 强制纯路径 \\
+\texttt{EBBACKUP\_CDC\_FAST\_SLICE=0} & 禁用 FastSlice \\
+\texttt{EBBACKUP\_PIPELINE\_PROFILE=1} & 启用 phase timing \\
+\bottomrule
+\caption{v6 bench 常用 env}
+\end{longtable}

@@ -17,6 +17,7 @@ struct PipelinePhaseStats {
   std::atomic<uint64_t> flush_ns{0};
   std::atomic<uint64_t> meta_ns{0};
   std::atomic<uint64_t> stream_cdc_ns{0};
+  std::atomic<uint64_t> stream_cdc_probes{0};
   std::atomic<uint64_t> stream_digest_ns{0};
   std::atomic<uint64_t> stream_carry_ns{0};
   std::atomic<uint64_t> hybrid_cuts_ns{0};
@@ -33,6 +34,7 @@ inline void ResetPipelinePhaseStats(PipelinePhaseStats* stats) {
   stats->flush_ns.store(0);
   stats->meta_ns.store(0);
   stats->stream_cdc_ns.store(0);
+  stats->stream_cdc_probes.store(0);
   stats->stream_digest_ns.store(0);
   stats->stream_carry_ns.store(0);
   stats->hybrid_cuts_ns.store(0);

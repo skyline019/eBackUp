@@ -1,0 +1,87 @@
+\chapter{Build2FMasks：把 avg 拆成两半}
+\label{ch:gen2-bitsplit}
+
+\section{32 位一行，从中切两段}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.22cm,y=0.75cm]
+  \foreach \i in {0,...,31} {
+    \ifnum\i<14
+      \fill[Gen1Blue!35] (\i,0) rectangle ++(0.92,1);
+    \else
+      \fill[Gen2Teal!35] (\i,0) rectangle ++(0.92,1);
+    \fi
+    \draw (\i,0) rectangle ++(0.92,1);
+  }
+  \draw[decorate, decoration={brace, amplitude=5pt}] (0,1.15) -- (14*0.92+0.92,1.15)
+    node[midway,above=6pt,font=\footnotesize] {$b_{lo}=14$ 位 $\rightarrow$ $h_{\mathrm{gear}}$};
+  \draw[decorate, decoration={brace, amplitude=5pt}] (14*0.92,1.15) -- (32*0.92,1.15)
+    node[midway,above=6pt,font=\footnotesize] {$b_{hi}=18$ 位 $\rightarrow$ $h_{\mathrm{norm}}$（移 14 位后）};
+  \node[note] at (16,-0.9) {示意：$\texttt{avg}=256KB$ 时 bit 预算大约 18，再拆成 lo+hi};
+\end{tikzpicture}
+\caption{非重叠：左半检查 gear，右半检查 norm（移位后）。}
+\label{fig:bit-split}
+\end{figure}
+
+\section{三步构造 mask（用人话）}
+
+\begin{stepbox}[Build2FMasks 在干什么]
+\begin{enumerate}
+  \item 数 $\texttt{avg\_size}$ 大约是 $2$ 的几次方 → 得到总 bit 数 $B$；
+  \item 把 $B$ 拆成 $b_{lo} + b_{hi}$（大致各一半；$b_{hi}$ 还受 \texttt{nc\_level} 限制）；
+  \item \texttt{mask\_lo = (1<<b\_lo)-1}（低位全是 1）；\\
+        \texttt{mask\_hi = (1<<b\_hi)-1}；\\
+        \texttt{norm\_shift = b\_lo}（右指纹先右移这么多再 \& mask\_hi）。
+\end{enumerate}
+\end{stepbox}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.45cm]
+  \node[gen1] (avg) {avg\_size};
+  \node[gen1, below=of avg] (B) {总 bit 数 $B$};
+  \node[gen1, below left=0.6cm and 0.3cm of B] (lo) {$b_{lo}$\\mask\_lo};
+  \node[gen2, below right=0.6cm and 0.3cm of B] (hi) {$b_{hi}$\\mask\_hi};
+  \node[gen2, below=1cm of hi] (sh) {norm\_shift = $b_{lo}$};
+  \draw[arr] (avg) -- (B);
+  \draw[arr] (B) -- (lo);
+  \draw[arr] (B) -- (hi);
+  \draw[arr] (hi) -- (sh);
+\end{tikzpicture}
+\caption{程序自动算，你只需配置 avg / nc\_level。}
+\end{figure}
+
+\section{检查过程动画（单字节位置）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.35cm]
+  \node[gen1, minimum width=3.8cm] (hg) {\shortstack{$h_{\mathrm{gear}}$\\{\footnotesize 与 mask\_lo 做 \&}}};
+  \node[gen2, minimum width=3.8cm, right=0.6cm of hg] (hn) {\shortstack{$h_{\mathrm{norm}} \gg \mathrm{shift}$\\{\footnotesize 与 mask\_hi 做 \&}}};
+  \node[below=0.5cm of hg, font=\scriptsize] {结果 == 0 ?};
+  \node[below=0.5cm of hn, font=\scriptsize] {结果 == 0 ?};
+  \node[gen2, below=1.2cm of hg, xshift=1.9cm, minimum width=2.5cm] (and) {AND → 切};
+  \draw[arr] (hg.south) -- ++(0,-0.3) -| (and.north);
+  \draw[arr] (hn.south) -- ++(0,-0.3) -| (and.north);
+\end{tikzpicture}
+\caption{每个 probe 位置都做这两次检查（外加两次滚动更新）。}
+\end{figure}
+
+\begin{warnbox}[修复前 vs 修复后]
+\textbf{修复前}：两个满 mask 打在相关指纹上 → 几乎不切。\\
+\textbf{修复后}：bit 预算拆分 → chunk 数量恢复正常，与第一代同量级 profile。
+\end{warnbox}
+
+\section{模拟示例：avg 很小时的 mask 拆分}
+
+\begin{simbox}[玩具 avg $\approx 4$ 字节 $\Rightarrow$ 总 bit 预算 $B=2$]
+\begin{align*}
+b_{lo} &= 1 \Rightarrow \texttt{mask\_lo} = 1 \ (\texttt{0b1}) \\
+b_{hi} &= 1 \Rightarrow \texttt{mask\_hi} = 1 \\
+\texttt{norm\_shift} &= 1
+\end{align*}
+左看 $h_g$ 最低 1 位；右看 $h_n$ 移 1 位后的最低 1 位 → 各约 $1/2$ 概率，合起来 $\approx 1/4$。
+\end{simbox}
+
+本手册主例子用 \texttt{mask=3}（$B=2$ 位）便于手算；生产环境 $B \approx 18$。

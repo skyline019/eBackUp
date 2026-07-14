@@ -17,6 +17,40 @@ cmake --build e:\recoveryProjects\build --config Release
 e:\recoveryProjects\build\engine_cpp\Release\ebbackup_tests.exe
 ```
 
+Standalone kernel build (from `engine_cpp/` only):
+
+```powershell
+cmake -S e:\recoveryProjects\engine_cpp -B e:\recoveryProjects\build\engine_cpp_standalone -DEBBACKUP_BUILD_TESTS=ON
+cmake --build e:\recoveryProjects\build\engine_cpp_standalone --config Release --target ebbackup_tests
+```
+
+## G-TCDC v6 2F-Gear (opt-in CDC)
+
+G-TCDC is a separate content-defined chunking family from FastCDC. Enable at runtime:
+
+```powershell
+$env:EBBACKUP_CDC_ALGO = "gtcdc"
+eb init ./repo
+eb backup ./repo ./source
+```
+
+New repos get superblock flags `0x1000|0x10000` (2F-Gear v6): dual rolling fingerprints on non-overlapping bit domains (`h_gear` + `h_norm`). **FastCDC repos cannot be switched in place**; v5 AN-Gear (`0x8000`), v4 Native (`0x4000`), and v3 Gear repos (`0x2000`) stay frozen on their kernel.
+
+| Requirement | Detail |
+|-------------|--------|
+| Runtime | `EBBACKUP_CDC_ALGO=gtcdc` required for backup/verify on G-TCDC repos |
+| Hardware | AVX2 required for release G-TCDC scan paths |
+| Spec | [`docs/technical/GT_CDC_SPEC.md`](../docs/technical/GT_CDC_SPEC.md) |
+| Proof script | `engine_cpp/bench/scripts/run_gtcdc_proof.ps1` |
+
+G-TCDC unit tests:
+
+```powershell
+ebbackup_tests.exe --gtest_filter="GtCdc2F*:GtCdcAn*:GtCdc*:EbHcrboGt*:GtCdcPipeline*"
+```
+
+Bench gates (v6 repos): primary `gtcdc_vs_stream_ratio`; secondary `scan_ns_per_probe_ratio` (normalized per scan probe; raw `scan_ns_ratio` is diagnostic only).
+
 ## Repository layout
 
 | Path | Purpose |

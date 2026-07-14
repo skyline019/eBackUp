@@ -1,0 +1,26 @@
+\chapter{第二代完整走一遍（同一玩具例子）}
+\label{ch:gen2-walkthrough}
+
+\noindent\textbf{本章目标：}用\textbf{同一份 12 字节文件}，逐步演示第二代为何与第一代切点不同。
+
+\input{chapters/sim-gen2-full.tex}
+
+\section{实测你大概能期待什么（历史数据，了解）}
+
+\begin{table}[htbp]
+\centering
+\caption{合成 vs 真实 CUDA（相对第一代 Stream）}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{场景} & \textbf{第二代表现} \\
+\midrule
+256MB 合成 E2E & 约 97--100\% 吞吐 \\
+2GB / multi / mixed & 约 97--104\% \\
+4.8GB CUDA 真实目录 & 约 102--117\% 吞吐 \\
+压缩率 & 约 99.9\% 相同 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent 数字随机器波动；重点是\textbf{同压缩管线下第二代没有明显变糟，有时更快}。

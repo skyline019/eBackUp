@@ -1,0 +1,51 @@
+% ============================================================
+% 全书统一玩具模拟（教学用，与生产 gear 表数值不同）
+% 在 preamble.tex 末尾 \input 一次
+% ============================================================
+
+\newcommand{\SimPara}{%
+  \begin{tabular}{@{}ll@{}}
+    文件长度 & 12 字节 \\
+    窗口 $w$ & 2 \\
+    min / max & 2 / 8 \\
+    第一代 mask & 3（看 $h$ 最低 2 位） \\
+    第二代 & mask\_lo=3,\ mask\_hi=3,\ norm\_shift=2 \\
+  \end{tabular}}
+
+\newcommand{\SimFileTab}{%
+\begin{tabular}{@{}ccccccccccccc@{}}
+\toprule
+位置 & 0 & 1 & 2 & 3 & 4 & 5 & 6 & 7 & 8 & 9 & 10 & 11 \\
+\midrule
+字节 & \texttt{10} & \texttt{20} & \texttt{30} & \texttt{40} & \texttt{50} &
+\texttt{60} & \texttt{70} & \texttt{80} & \texttt{90} & \texttt{A0} & \texttt{B0} & \texttt{C0} \\
+\bottomrule
+\end{tabular}}
+
+\newcommand{\SimGearTab}{%
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{字节} & \textbf{gear{[}b{]}} & \textbf{字节} & \textbf{gear{[}b{]}} \\
+\midrule
+\texttt{0x10} & 16 & \texttt{0x50} & 5 \\
+\texttt{0x20} & 2  & \texttt{0x60} & 13 \\
+\texttt{0x30} & 0  & \texttt{0x70} & 9 \\
+\texttt{0x40} & 66 & \texttt{0x80} & 20 \\
+\bottomrule
+\end{tabular}}
+
+\newcommand{\SimNormTab}{%
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{字节} & \textbf{norm{[}b{]}} & \textbf{字节} & \textbf{norm{[}b{]}} \\
+\midrule
+\texttt{0x10} & 1  & \texttt{0x50} & 8 \\
+\texttt{0x20} & 5  & \texttt{0x60} & 6 \\
+\texttt{0x30} & 5  & \texttt{0x70} & 10 \\
+\texttt{0x40} & 3  & \texttt{0x80} & 2 \\
+\bottomrule
+\end{tabular}}
+
+% 滚动公式（书中统一引用）
+\newcommand{\SimRollG}[1]{$(#1 \ll 1) + \mathrm{gear}[\text{新}] - \mathrm{gear}[\text{旧}]$}
+\newcommand{\SimRollN}[1]{$(#1 \ll 1) + \mathrm{norm}[\text{新}] - \mathrm{norm}[\text{旧}]$}

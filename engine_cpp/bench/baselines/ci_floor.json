@@ -10,6 +10,15 @@
   "backup_pipeline_2GBps_min": 112,
   "backup_pipeline_multi_MBps_min": 550,
   "backup_pipeline_mixed_MBps_min": 80,
+  "gtcdc_backup_pipeline_256MBps_min": 0,
+  "gtcdc_vs_stream_ratio_min": 0.97,
+  "gtcdc_scan_ns_ratio_max": 0,
+  "gtcdc_scan_ns_per_probe_ratio_max": 1.20,
+  "gtcdc_incr_vs_stream_ratio_min": 0.97,
+  "gtcdc_backup_pipeline_256MBps_min": 126,
+  "topo_vs_stream_ratio_min": 0.97,
+  "topo_scan_ns_per_probe_ratio_max": 1.25,
+  "topo_scan_ns_ratio_max": 0,
   "ampl_ratio_post_compact_max": 1.05,
   "content_auto_vs_lz4_max": 1.10
 }

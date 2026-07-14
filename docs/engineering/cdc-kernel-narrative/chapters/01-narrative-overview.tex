@@ -1,0 +1,74 @@
+\chapter{内核叙事总览}\label{ch:overview}
+
+\section{备份 Pipeline 在做什么？}
+
+\begin{analogybox}[工厂流水线比喻]
+一次 backup 像一条\textbf{内容加工厂}：
+\begin{itemize}[nosep]
+  \item \textbf{读}：把源文件搬进内存（mmap / ifstream）；
+  \item \textbf{切}：FastCDC 按内容找切点，切成 chunk；
+  \item \textbf{称}：对每个 chunk 算 SHA256（Content ID）；
+  \item \textbf{压}：LZ4/zstd 压缩；
+  \item \textbf{存}：写入 EbPack 仓库；
+  \item \textbf{记账}：manifest 记录「文件 $\rightarrow$ chunk hash 列表」。
+\end{itemize}
+\textbf{分块（CDC）}决定「切在哪」；切点错了，后面全部语义崩溃。
+\end{analogybox}
+
+\section{分层架构}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.55cm and 0.3cm]
+  \node[block=CoreBlue, minimum width=11cm] (orch) {L2 编排层：\texttt{BackupEngine} · FSM · manifest commit · \texttt{Flush}/fsync};
+  \node[block=CoreOrange, minimum width=11cm, below=of orch] (pipe) {L3 数据平面：\texttt{RunBackupPipeline} · StreamingChunkCpuPipeline · \texttt{FileScheduler}};
+  \node[block=CoreGreen, minimum width=11cm, below=of pipe] (chunk) {L4 分块层：\texttt{FastCdcSlice} · \texttt{FastCdcStreamFeed} · \texttt{EbHcrboChunker} · CFI};
+  \node[block=CorePurple, minimum width=11cm, below=of chunk] (store) {L5 存储层：\texttt{ChunkStore} · EbPack · 索引 · dedup};
+  \draw[arr] (orch) -- (pipe);
+  \draw[arr] (pipe) -- (chunk);
+  \draw[arr] (chunk) -- (store);
+\end{tikzpicture}
+\caption{ebbackup 备份内核分层；本专册聚焦 L3--L4 的分块与路由。}
+\label{fig:layers}
+\end{figure}
+
+\section{本专册叙事主线}
+
+\begin{enumerate}
+  \item \cref{ch:fastcdc} — \textbf{怎么切}：FastCDC 完整算法、Gear mask 位图案与概率推导；
+  \item \cref{ch:streaming} — \textbf{怎么流式切且不出错}：carry、handoff、防 drift；
+  \item \cref{ch:hcrbo} — \textbf{增量怎么少切}：CFI 锚点 reuse unchanged chunk；
+  \item \cref{ch:routing} — \textbf{谁走哪条路}：五路径路由决策树；
+  \item \cref{ch:parity} — \textbf{怎么保证永远对}：不变量 + parity 测试立法。
+\end{enumerate}
+
+\begin{invariantbox}[I-B1：Content ID 不可变]
+Content ID $= \texttt{SHA256}(\text{chunk 明文})$。\\
+\textbf{所有} pipeline 路径必须产生 \textbf{bit-identical cut points}；优化只能改吞吐，不能改切点。
+\end{invariantbox}
+
+\section{固定分块 vs 内容分块（直觉建立）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.9cm,y=0.7cm]
+  \draw[->] (0,0) -- (14,0) node[right,font=\small] {文件偏移};
+  % fixed
+  \foreach \x in {0,4,8,12} {
+    \draw[CoreRed, very thick] (\x,-0.3) -- (\x,0.3);
+  }
+  \node[lab,anchor=west] at (0,-1.2) {固定 256KB：插入 1 字节 $\Rightarrow$ 后续全部错位};
+  % cdc
+  \draw[CoreGreen, thick, decorate, decoration={brace, amplitude=4pt}] (0,1.5) -- (3.2,1.5)
+    node[midway,above=6pt,font=\scriptsize]{chunk A 不变};
+  \draw[CoreGreen, thick, decorate, decoration={brace, amplitude=4pt}] (3.2,1.5) -- (7.1,1.5)
+    node[midway,above=6pt,font=\scriptsize]{chunk B 变};
+  \foreach \x in {0,3.2,7.1,10.5,13.2} {
+    \draw[CoreGreen, very thick] (\x,1.2) -- (\x,1.8);
+  }
+  \fill[CoreOrange!40] (3.15,1.35) rectangle (3.25,1.65);
+  \node[lab] at (3.2,2.4) {$\leftarrow$ 1 字节编辑};
+\end{tikzpicture}
+\caption{固定分块（下）vs FastCDC 内容分块（上）：后者仅局部 chunk 变更。}
+\label{fig:fixed-vs-cdc}
+\end{figure}

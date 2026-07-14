@@ -1,0 +1,84 @@
+\chapter{双钥匙门：两个条件同时成立才切}
+\label{ch:gen2-two-hands}
+
+\begin{analogybox}[双钥匙门]
+第一代像 \textbf{单锁门}：一把钥匙转对了（$h$ 低位全 0）就开门（切 chunk）。  
+第二代像 \textbf{双锁门}：\textbf{左锁}和\textbf{右锁}必须同时打开——  
+两把钥匙来自\textbf{不同的指纹}，且检查的是\textbf{不同的 bit 区域}。
+\end{analogybox}
+
+\section{为什么不能检查「同一个 h 两次」？}
+
+早期错误做法（已修复）：对同一个 $h$ 用两个满宽 mask 做 AND。  
+那等于要「两套路标同时中奖」，概率是\textbf{乘起来}的 → 几乎永不切 → 全靠 max 硬切 → chunk 巨大。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.5cm]
+  \node[warnnode, minimum width=5cm] (bad) {错误：\\$(h \& M_1)==0$ AND $(h \& M_2)==0$\\$M_1,M_2$ 都占满 $\log_2 avg$ 位};
+  \node[twonode, minimum width=5cm, below=1cm of bad] (good)
+    {正确 v6：\\$(h_g \& M_{lo})==0$ AND $((h_n \gg s) \& M_{hi})==0$\\bit 区域\textbf{不重叠}};
+  \draw[arr, CutRed] (bad) -- node[right,font=\scriptsize]{修复} (good);
+\end{tikzpicture}
+\caption{第二代的核心工程洞察：bit 预算要「拆分」，不能「叠两次满 mask」。}
+\end{figure}
+
+\section{双钥匙图}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.95]
+  \node[draw, rounded corners, minimum width=3.2cm, minimum height=2cm,
+    fill=Gen2Teal!10] (door) at (0,0) {切点？};
+  \node[gen1, left=1.6cm of door] (k1) {左钥匙\\$h_{\mathrm{gear}}$\\$M_{lo}$};
+  \node[gen2, right=1.6cm of door] (k2) {右钥匙\\$h_{\mathrm{norm}}$\\$M_{hi}$};
+  \draw[arr] (k1) -- node[above,font=\tiny]{AND} (door);
+  \draw[arr] (k2) -- (door);
+  \node[note, below=1.2cm of door] {两把都 OK 才切};
+\end{tikzpicture}
+\caption{逻辑与：左 OK \& 右 OK。}
+\end{figure}
+
+\section{期望切点间距（直觉）}
+
+若 $M_{lo}$ 覆盖 $b_{lo}$ 位、$M_{hi}$ 覆盖 $b_{hi}$ 位，且彼此独立：
+
+\[
+P(\text{切}) \approx \frac{1}{2^{b_{lo}}} \times \frac{1}{2^{b_{hi}}}
+= \frac{1}{2^{b_{lo}+b_{hi}}}
+\approx \frac{1}{\texttt{avg\_size}}
+\]
+
+\begin{stepbox}[Step 7 — 和第一代对齐]
+第一代：一个 mask 长度 $\approx \log_2(\texttt{avg})$。  
+第二代：两个 mask \textbf{长度加起来} $\approx \log_2(\texttt{avg})$，但放在\textbf{不同指纹的不同 bit 上}。
+\end{stepbox}
+
+\section{norm 表为何不同？}
+
+第二代用仓库里的 \texttt{table\_seed} 生成 norm 表（与 beta 表不同），  
+这样不同 G-TCDC 仓库的切点域可以隔离；  
+查表方式仍是一行代码：\texttt{norm[b]}。
+
+\begin{codebox}[seed 搅拌（了解即可）]
+\begin{lstlisting}
+norm_seed = table_seed ^ 0x9E3779B9u;  // 黄金比例常数，让两表不一样
+InitKeyedGearTable(norm_table, norm_seed);
+\end{lstlisting}
+\end{codebox}
+
+\section{模拟示例：$i=3$ 左 OK 右 FAIL}
+
+\begin{simbox}[为何「同 h 检查两次」会出错，而双指纹不会]
+\begin{tabular}{@{}ccc@{}}
+\toprule
+\textbf{位置} & \textbf{左 $h_g\&3$} & \textbf{右 $(h_n\!\gg\!2)\&3$} \\
+\midrule
+$i=3$ & 0 \checkmark & 2 $\times$ \\
+$i=4$ & 0 \checkmark & 0 \checkmark \\
+\bottomrule
+\end{tabular}
+
+\vspace{0.4em}
+$i=3$：若只有左 OK → \textbf{不切}（第二代）；第一代 mask 只看 $h_g$ → 会切。
+\end{simbox}

@@ -1,0 +1,46 @@
+\chapter{文档范围与 v6 设计目标}
+\label{ch:scope}
+
+\section{问题陈述}
+
+FastCDC Stream 路径在 Release 中已是高度优化的 Gear 单 mask 扫描。G-TCDC 若要在\textbf{相同压缩管线}下替换 CDC 切点，必须同时满足：
+\begin{enumerate}[nosep]
+  \item \textbf{切点语义独立}：与 FastCDC dedup 不互通（opt-in 仓库）；
+  \item \textbf{扫描成本 $\approx$ Stream}：per-probe 开销不得显著高于单 mask；
+  \item \textbf{压缩率不劣化}：chunk 边界变化不应系统性降低 LZ4/Auto 压缩收益；
+  \item \textbf{流式 parity}：512\,KB 多 feed 与整文件 \texttt{GtCdcSlice::ChunkCuts} bit-identical。
+\end{enumerate}
+
+v5 AN-Gear 通过三阶段 \texttt{SelectPhaseMask} + \texttt{MixSeedHash} 提升边界质量，但 per-probe 成本过高（mask 随距离 $d$ 变化）。v6 2F-Gear 的取舍是：\textbf{去掉 per-byte 相位函数}，改用\textbf{双独立 Gear 指纹 + 非重叠 bit 域 AND}，在 $O(1)$/probe 下逼近目标平均块长。
+
+\section{v6 相对 v5 的核心差异}
+
+\begin{table}[htbp]
+\centering
+\caption{v5 AN-Gear vs v6 2F-Gear（实现层）}
+\label{tab:v5-v6-diff}
+\small
+\begin{tabular}{@{}p{3.2cm}p{5.2cm}p{5.2cm}@{}}
+\toprule
+\textbf{维度} & \textbf{v5 AN-Gear} & \textbf{v6 2F-Gear} \\
+\midrule
+指纹 & 单 $h$，\texttt{MixSeedHash(h,seed,pos)} & 双 $h_{\mathrm{gear}}, h_{\mathrm{norm}}$ \\
+Mask & 三阶段 \texttt{SelectPhaseMask(d)} & 固定 \texttt{mask\_lo}, \texttt{mask\_hi} \\
+切点条件 & $(h' \mathbin{\&} M(d)) = 0$ & $(h_g \mathbin{\&} M_{lo})=0 \land ((h_n \gg s)\mathbin{\&} M_{hi})=0$ \\
+表 & 单 \texttt{beta\_table} & \texttt{beta\_table} + \texttt{norm\_table} \\
+Resume & 单 \texttt{an\_gear\_h} & \texttt{tf\_gear\_h}, \texttt{tf\_norm\_h} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{期望 hit 率推导（概要）}
+
+设 $\texttt{avg\_size} = 2^B$，\texttt{Build2FMasks} 将 $B$ bit 预算拆为 $b_{lo} + b_{hi} = B$（见 \cref{ch:build2fmasks}）。在 hash 位近似均匀独立假设下：
+\[
+  P(\text{cut at probe}) \approx 2^{-b_{lo}} \cdot 2^{-b_{hi}} = 2^{-B} \approx \frac{1}{\texttt{avg\_size}}.
+\]
+这与 FastCDC 单 mask 的期望间距同阶；\textbf{关键实现约束}是 $M_{lo}$ 与 $(M_{hi} \ll s)$ 作用在\textbf{不相交} bit 域，避免 v6 早期「双 AND 用满宽 mask」导致 hit $\approx 0$、几乎全 max-cut 的缺陷。
+
+\begin{invariantbox}[I-GT6-1 切点确定性与 parity]
+对固定 \texttt{GtCdcConfig}（含 \texttt{table\_seed}、\texttt{nc\_level}）与输入字节序列，整文件 \texttt{ChunkCuts} 与 Streaming \texttt{Process2FGearChunkCut} 产出\textbf{相同} offsets/lengths。\texttt{GtCdc2FTest} / \texttt{GtCdcPipelineTest.V6IncrementalChain} 为 CI 守门。
+\end{invariantbox}

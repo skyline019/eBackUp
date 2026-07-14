@@ -1,0 +1,33 @@
+% !TEX program = xelatex
+\documentclass[12pt,a4paper,openany]{ctexbook}
+
+\input{preamble.tex}
+
+\title{G-TCDC v6 2F-Gear\\[0.2em]\large 形象化详细解析\\[0.15em]\normalsize 双指纹 · 非重叠路标 · 流式续扫 · 实测对照}
+\author{ebbackup Project}
+\date{2026-07-11}
+
+\begin{document}
+
+\frontmatter
+\maketitle
+\chapter*{导读}
+\addcontentsline{toc}{chapter}{导读}
+本专册用\textbf{大量图示}解释 v6 2F-Gear 为何能在「不切 fast\_cdc.cc」前提下逼近 Stream 性能。
+工程技术细节与 API 索引见 sibling \filepath{gtcdc-v6-manual/}；FastCDC/Streaming 基础见 \filepath{cdc-kernel-narrative/}。
+\tableofcontents
+\listoffigures
+
+\mainmatter
+\input{chapters/01-journey.tex}
+\input{chapters/02-two-keys-analogy.tex}
+\input{chapters/03-bit-split-visual.tex}
+\input{chapters/04-v5-v6-contrast.tex}
+\input{chapters/05-streaming-story.tex}
+\input{chapters/06-benchmark-gallery.tex}
+
+\appendix
+\input{chapters/99-appendix.tex}
+
+\backmatter
+\end{document}

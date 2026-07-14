@@ -1,0 +1,22 @@
+\chapter{合成等价性与确定性}
+\label{ch:compose}
+
+\begin{theorem}[ComposeBlockFast 等价性]
+对任意 $h_0$、字节序列 $D$、长度 $B$：
+\begin{equation}
+  \texttt{ComposeBlockFast}(h_0, F(D), \alpha^B)
+  = \texttt{ComposeBlock}(h_0, D, B)
+  = \texttt{RabinFeedRange}(h_0, D, B)
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+对 $B=1$，$F(d_0)=\beta(d_0)$，$\alpha^1 h_0 + \beta(d_0)=\alpha h_0+\beta(d_0)$，与 \texttt{RabinStep} 一致。
+归纳：设前 $B-1$ 字节成立，第 $B$ 字节追加等价于一次 \texttt{RabinStep}。
+CI 测试 \filepath{gt\_cdc\_compose\_test.cc} 对多组 $(h_0,B)$ 穷举验证。
+\end{proof}
+
+\begin{corollary}[确定性]
+固定 \texttt{GtCdcConfig} 与字节流 $T$，scalar \texttt{ScanRabinCutScalar} 与 v2 张量 \texttt{GtCdcScan}
+产出相同 \texttt{offsets[]/lengths[]}；\texttt{gt\_cdc\_parity\_test} 覆盖 full-file 与 256\,MB streaming feed。
+\end{corollary}

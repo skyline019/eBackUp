@@ -1,0 +1,129 @@
+\chapter{Gear 表：256 个魔法数}
+\label{ch:gen1-gear}
+
+\section{为什么需要「表」？}
+
+如果对每个字节现场做复杂运算，太慢。  
+FastCDC 的做法：\textbf{提前算好} 256 个数，存在数组里，字节值当\textbf{下标}去查。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.4cm]
+  \node[byte, minimum width=1.2cm] (b) {\shortstack{字节\\0x4A}};
+  \node[gen1, minimum width=4.5cm, right=0.8cm of b] (tbl) {gear{[256]} 表\\gear{[0]}=...\\gear{[1]}=...\\...\\gear{[74]}=0x8F3A...};
+  \node[gen1, minimum width=2cm, right=0.8cm of tbl] (out) {取出\\一个数};
+  \draw[arr] (b) -- node[above,font=\scriptsize]{下标=74} (tbl);
+  \draw[arr] (tbl) -- (out);
+\end{tikzpicture}
+\caption{字节不是「参与加减」的直接值，而是「查表索引」。}
+\end{figure}
+
+\section{表长什么样（示意）}
+
+Gear 表就是一张\textbf{256 行、1 列}的大字典：左边是「字节能取到的所有值」0--255，右边是对应的 32 位整数。
+
+\begin{figure}[htbp]
+\centering
+\raisebox{-0.5em}{\tikz[baseline=(n.base)]{
+  \node[font=\scriptsize, Gen1Blue, align=center] (n) {共\\256\\行};
+  \draw[arr, Gen1Blue] (0.55,0.15) -- (0.55,-2.35);
+}}
+\hspace{0.6em}
+\begin{tabular}{@{}r@{\hspace{1.2em}}l@{}}
+\toprule
+\textbf{下标（字节值）} & \textbf{gear{[}下标{]}（32 位整数）} \\
+\midrule
+0   & \cellcolor{ByteGray}\texttt{0xA3F2...} \\
+1   & \cellcolor{ByteGray}\texttt{0x7C91...} \\
+2   & \cellcolor{ByteGray}\texttt{0xE045...} \\
+3   & \cellcolor{ByteGray}\texttt{0x19B8...} \\
+$\vdots$ & \cellcolor{ByteGray}\textit{（中间 248 行省略）} \\
+255 & \cellcolor{ByteGray}\texttt{0xD7E3...} \\
+\bottomrule
+\end{tabular}
+\caption{真实程序启动时算一次，备份过程中只读。每一行对应一个字节值。}
+\end{figure}
+
+\section{一次查表走查（玩具例子）}
+
+假设文件某个位置的字节是 \texttt{0x4A}（十进制 74）：
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.45cm]
+  \node[byte, minimum width=1.4cm] (file) {\shortstack{文件{[i]}\\0x4A}};
+  \node[gen1, right=0.7cm of file, minimum width=2.2cm] (idx) {\shortstack{当作下标\\74}};
+  \node[gen1, right=0.7cm of idx, minimum width=3cm] (row) {\shortstack{gear{[74]}\\0x8F3A2B1C}};
+  \node[gen2, right=0.7cm of row, minimum width=2.2cm] (use) {\shortstack{参与\\滚动更新}};
+  \draw[arr] (file) -- (idx);
+  \draw[arr] (idx) -- (row);
+  \draw[arr] (row) -- (use);
+\end{tikzpicture}
+\caption{同一个字节 0x4A，永远查 gear{[74]}——与它在文件里出现的位置无关。}
+\end{figure}
+
+\begin{stepbox}[Step 3 — 查表三句话]
+\begin{enumerate}[nosep]
+  \item 读出 1 个字节（0--255）；
+  \item 用这个数当下标，去 gear 数组里取 1 个 32 位数；
+  \item 把这个数加进（或减出）滚动指纹 $h$。
+\end{enumerate}
+\end{stepbox}
+
+\begin{beginnerbox}[和代码的对应]
+\begin{lstlisting}
+uint32_t gear[256];   // 256 个元素
+uint8_t b = 文件[i];  // 某个字节，0~255
+uint32_t g = gear[b]; // 查表
+\end{lstlisting}
+第二代会多一张 \keytermii{norm\_table}，查法完全一样，只是表里的数不同（后面讲）。
+\end{beginnerbox}
+
+\section{Gear 表从哪来？}
+
+你不用手填。程序用固定规则（类似小型哈希）为 0..255 各生成一个看起来「随机」的 32 位数。  
+\textbf{同一代算法、同一张表} → 所有人切出相同边界（内容相同则切点相同）。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.5cm]
+  \node[gen1, minimum width=2.6cm] (seed) {固定 seed\\或内置规则};
+  \node[gen1, minimum width=2.8cm, right=0.6cm of seed] (gen) {InitGearTable\\循环 0..255};
+  \node[gen1, minimum width=2.8cm, right=0.6cm of gen] (tbl) {gear{[256]}\\只读数组};
+  \node[byte, minimum width=2.2cm, below=0.9cm of gen] (once) {\shortstack{程序启动\\算一次}};
+  \draw[arr] (seed) -- (gen);
+  \draw[arr] (gen) -- (tbl);
+  \draw[arr, dashed] (once) -- (gen);
+\end{tikzpicture}
+\caption{表在备份前生成；备份过程中不再改表，只反复查表。}
+\end{figure}
+
+\begin{warnbox}[小白易错点]
+Gear 表\textbf{不是}文件内容算出来的；是\textbf{算法内置/配置}的。  
+文件内容只决定「在哪个位置查哪一项、怎么滚动」。
+\end{warnbox}
+
+\section{模拟示例：滚动用到的查表}
+
+\begin{simbox}[$i=2$ 时滚动一次需要查两次表]
+读新字节 \texttt{0x30} → $\mathrm{gear[0x30]}=0$；\\
+丢旧字节 \texttt{0x10} → $\mathrm{gear[0x10]}=16$；\\
+代入：$h = (18 \ll 1) + 0 - 16 = 20$。
+\end{simbox}
+
+\section{和「直接加字节」有什么区别？}
+
+\begin{table}[htbp]
+\centering
+\caption{查表 vs 直接用字节值}
+\small
+\begin{tabular}{@{}p{3.2cm}p{5.2cm}p{5.2cm}@{}}
+\toprule
+\textbf{做法} & \textbf{问题} & \textbf{Gear 表的好处} \\
+\midrule
+$h += \text{字节值}$ & 相邻字节导致 $h$ 变化太「规律」 & 每个字节值映射到看似随机的 32 位数 \\
+$h += \text{字节值}^2$ & 仍不够「搅散」低位 bit & 切点分布更均匀，dedup 更稳 \\
+查 gear{[字节]} & 需要 256 个预存常数 & 滚动快、分布好、工业界标准做法 \\
+\bottomrule
+\end{tabular}
+\end{table}

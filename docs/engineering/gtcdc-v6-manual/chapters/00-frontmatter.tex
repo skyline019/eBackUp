@@ -1,0 +1,47 @@
+\chapter*{前言与文档定位}
+\addcontentsline{toc}{chapter}{前言与文档定位}
+
+\begin{v6box}[本手册写什么]
+\textbf{G-TCDC v6 2F-Gear}（superblock flag \texttt{0x1000|0x10000}）是 ebbackup 2026-07 起的\textbf{生产默认} G-TCDC 内核。本手册\textbf{只写 v6 相对基线的增量}：双指纹、非重叠 bit 域 mask 拆分、流式 resume、引擎接线与 bench 门禁。
+\end{v6box}
+
+\begin{designbox}[不重复的内容（请读 sibling 文档）]
+\begin{itemize}[nosep]
+  \item FastCDC Gear 滚动 hash、\texttt{min/avg/max} 护栏：\crossrefmanual{chapters/05-chunk-fastcdc.tex}
+  \item Pipeline v4 阶段划分、worker 并行：\crossrefmanual{chapters/12-pipeline-v4.tex}
+  \item Streaming 32\,MB feed / carry tail 框架：\crossrefmanual{chapters/13-streaming-cdc.tex}
+  \item HCRBO/CFI 增量语义：\crossrefmanual{chapters/06-chunk-hcrbo.tex}
+  \item Rabin v2 张量路径（兼容仓）：\filepath{docs/engineering/gtcdc-proof/}
+\end{itemize}
+\end{designbox}
+
+\textbf{源码锚点}（v6 热路径）：
+\begin{itemize}[nosep]
+  \item \filepath{engine\_cpp/src/chunk/gt\_cdc\_gear\_scan.cc} — \texttt{Build2FMasks}、\texttt{ScanGearCut2F}
+  \item \filepath{engine\_cpp/src/chunk/gt\_cdc\_streaming.cc} — \texttt{Process2FGearChunkCut}
+  \item \filepath{engine\_cpp/include/ebbackup/chunk/chunk\_profile.h} — \texttt{GtCdcKernelForRepo}
+  \item \filepath{engine\_cpp/src/engine/backup\_engine.cc} — superblock 恢复 \texttt{0x10000}
+\end{itemize}
+
+\chapter*{版本与冻结矩阵}
+\addcontentsline{toc}{chapter}{版本与冻结矩阵}
+
+\begin{table}[htbp]
+\centering
+\caption{G-TCDC 内核代际（摘自 \filepath{GT\_CDC\_SPEC.md}）}
+\label{tab:kernel-matrix}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Flags} & \textbf{内核} & \textbf{状态} \\
+\midrule
+\texttt{0x1000} only & Rabin v2 & 兼容；SLA 不适用 \\
+\texttt{0x1000|0x2000} & Gear v3 & 冻结 \\
+\texttt{0x1000|0x4000} & Native v4 & 冻结 \\
+\texttt{0x1000|0x8000} & AN-Gear v5 & 冻结 \\
+\textbf{\texttt{0x1000|0x10000}} & \textbf{2F-Gear v6} & \textbf{新仓默认；验收对象} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+解析优先级：\texttt{0x10000} $\rightarrow$ \texttt{kTwoFGear}；否则依次 \texttt{0x8000}、\texttt{0x4000}、\texttt{0x2000}、Rabin。

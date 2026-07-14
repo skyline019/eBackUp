@@ -1,0 +1,86 @@
+\chapter{Bench 门禁、Eval 与实测摘要}
+\label{ch:bench}
+
+\section{CI 门禁键（\filepath{ci\_floor.json}）}
+
+\begin{table}[htbp]
+\centering
+\caption{v6 相关 floor（2026-07-11）}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{键} & \textbf{阈值} & \textbf{说明} \\
+\midrule
+\texttt{gtcdc\_vs\_stream\_ratio\_min} & 0.97 & 主门禁：E2E 吞吐 \\
+\texttt{gtcdc\_scan\_ns\_per\_probe\_ratio\_max} & 1.20 & 次门禁：单 probe 扫描成本 \\
+\texttt{gtcdc\_scan\_ns\_ratio\_max} & 0 & 诊断；raw ratio 已弃用为主门禁 \\
+\texttt{gtcdc\_incr\_vs\_stream\_ratio\_min} & 0.97 & L6 增量 A/B \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{工具链}
+
+\begin{itemize}[nosep]
+  \item \filepath{ebbackup\_bench\_check} — L5/L6 gtcdc A/B
+  \item \filepath{run\_gtcdc\_proof.ps1} — 10-run 汇总 + microbench
+  \item \filepath{ebbackup\_gtcdc\_v6\_eval} — 块长分布、2GB/multi/mixed、\texttt{--source} 真实目录
+\end{itemize}
+
+\section{合成 workload 摘要（eval 全量 PASS）}
+
+\begin{table}[htbp]
+\centering
+\caption{Synthetic pipeline A/B（2026-07-11 单次）}
+\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+场景 & stream MB/s & gtcdc MB/s & ratio \\
+\midrule
+256MB incr & 104.8 & 103.3 & 1.015 \\
+2GB full & 165.9 & 167.4 & 1.009 \\
+multi 32$\times$32MB & 630.8 & 615.3 & 0.975 \\
+mixed 800$\times$4K+512MB & 134.1 & 139.2 & 1.038 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{真实目录 D:\textbackslash CUDA（4.78\,GB）}
+
+\begin{table}[htbp]
+\centering
+\caption{真实 CUDA Toolkit 树（3534 文件）}
+\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+指标 & 值 \\
+\midrule
+E2E 吞吐 ratio & 1.02--1.17（多次 run） \\
+\texttt{scan\_ns\_per\_probe\_ratio} & 0.54--0.80 \\
+压缩率 stream / gtcdc & 0.7146 / 0.7138 \\
+压缩率比 gtcdc/stream & 0.9988 \\
+写入 chunks & 25201 / 25002 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{结论}：v6 在真实二进制目录上\textbf{压缩率等价}（$\Delta<0.2\%$），吞吐持平或略优，单 probe 成本更低。
+
+\section{块长分布（256MB 样本）}
+
+\begin{table}[htbp]
+\centering
+\caption{256MB 随机（Large profile avg=1MB）}
+\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+算法 & chunks & mean & cv \\
+\midrule
+fastcdc & 805 & 333KB & 0.73 \\
+2f\_gear v6 & 197 & 1.36MB & 0.74 \\
+an\_gear v5 ref & 212 & 1.27MB & 0.74 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Large profile 下 v6 目标 avg 更大，chunk 数少于 FastCDC Default profile——与 \texttt{ChunkProfile} 档位一致，非算法异常。

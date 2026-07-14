@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <random>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -29,6 +30,15 @@
 #include "ebbackup/job/backup_window.h"
 #include "ebbackup/queue/job_queue.h"
 #include "ebbackup/chunk/chunk_profile.h"
+#include "ebbackup/chunk/eb_hcrbo_gt.h"
+#include "ebbackup/chunk/gt_cdc.h"
+#include "ebbackup/chunk/topo_cdc.h"
+#include "ebbackup/chunk/topo_cdc_internal.h"
+#include "ebbackup/chunk/topo_chain_internal.h"
+#include "ebbackup/chunk/topo_ph.h"
+#include "ebbackup/chunk/topo_ph_internal.h"
+#include "ebbackup/chunk/topo_phn.h"
+#include "ebbackup/chunk/topo_phn_internal.h"
 #include "ebbackup/chunk/rolling_checksum.h"
 #include "ebbackup/codec/content_class.h"
 #include "ebbackup/codec/zstd_dict.h"
@@ -135,12 +145,13 @@ Status ReadFileRangeBytes(const std::string& path, uint64_t offset, uint64_t len
   return Status::Ok();
 }
 
-Status ChunkSparseFile(EbHcrboChunker* chunker, BackupMode mode,
-                       const std::string& file_path,
-                       const std::vector<winmeta::SparseRun>& runs,
-                       const CfiIndex& history,
-                       std::vector<ChunkDescriptor>* out_chunks,
-                       CfiIndex* out_cfi, EbHcrboStats* stats) {
+template <typename Chunker>
+Status ChunkSparseFileImpl(BackupMode mode, const std::string& file_path,
+                           const std::vector<winmeta::SparseRun>& runs,
+                           const CfiIndex& history,
+                           std::vector<ChunkDescriptor>* out_chunks,
+                           CfiIndex* out_cfi, EbHcrboStats* stats,
+                           Chunker* chunker) {
   if (!chunker || !out_chunks || !out_cfi) {
     return Status::InvalidArgument("invalid ChunkSparseFile args");
   }
@@ -333,10 +344,33 @@ BackupOptions ResolveBackupOptions(const BackupSuperBlock& sb,
   if (RepoUsesEbPack(sb) && !options.disable_pipeline) {
     effective.use_pipeline = true;
   }
+  if (CdcTopoChainEnabled() && !options.disable_pipeline) {
+    effective.use_pipeline = true;
+  }
+  if (CdcTopoPhEnabled() && !options.disable_pipeline) {
+    effective.use_pipeline = true;
+  }
+  if (CdcTopoPhnEnabled() && !options.disable_pipeline) {
+    effective.use_pipeline = true;
+  }
+  if (CdcTopoCdcEnabled() && !options.disable_pipeline) {
+    effective.use_pipeline = true;
+  }
+  if (CdcGtCdcEnabled() && !options.disable_pipeline) {
+    effective.use_pipeline = true;
+  }
   if (effective.compress_tier != CompressTier::kFast) {
     effective.use_zstd_dict = true;
   }
   return effective;
+}
+
+uint32_t GenerateGtCdcSeed() {
+  std::random_device rd;
+  uint32_t seed = static_cast<uint32_t>(rd());
+  seed ^= static_cast<uint32_t>(rd() << 16);
+  if (seed == 0) seed = 0xA5B4C3D2u;
+  return seed;
 }
 
 }  // namespace
@@ -438,6 +472,100 @@ Status BackupEngine::InitRepoEx(const std::string& repo_path,
   }
   if (options.coalesced_meta) {
     sb.ext.backup_features |= kBackupFeatureCoalescedMeta;
+  }
+  if (CdcTopoPhnEnabled() &&
+      (CdcTopoPhEnabled() || CdcTopoChainEnabled() || CdcTopoCdcEnabled() ||
+       CdcGtCdcEnabled())) {
+    return Status::InvalidArgument(
+        "EBBACKUP_CDC_ALGO=topophn is mutually exclusive with topoph, "
+        "topochain, topocdc and gtcdc");
+  }
+  if (CdcTopoPhnEnabled()) {
+    sb.ext.backup_features |= kBackupFeatureTopoPhNative;
+    sb.ext.topo_table_seed = GenerateGtCdcSeed();
+    sb.ext.topo_variant = static_cast<uint8_t>(TopoPhnKernelFromEnv());
+    TopoPhnConfig calib_cfg = TopoPhnConfigForProfile(ChunkProfileMode::kDefault);
+    calib_cfg.table_seed = sb.ext.topo_table_seed;
+    calib_cfg.kernel = TopoPhnKernelFromEnv();
+    std::vector<uint8_t> sample(topo_phn_internal::kPhnCalibSampleBytes);
+    topo_phn_internal::FillPhnCalibSample(sample.data(), sample.size(),
+                                          sb.ext.topo_table_seed);
+    topo_phn_internal::CalibratePhnCutParams(sample.data(), sample.size(),
+                                             &calib_cfg);
+    SetRepoTopoPhnEventStride(
+        &sb, static_cast<uint16_t>(std::min<uint32_t>(
+                 calib_cfg.event_stride, 65535u)));
+    SetRepoTopoPhnKPoints(&sb, calib_cfg.k_points);
+    SetRepoTopoPhnPersistDelta(&sb, calib_cfg.enable_persist_delta);
+  } else if (CdcTopoPhEnabled() &&
+      (CdcTopoChainEnabled() || CdcTopoCdcEnabled() || CdcGtCdcEnabled())) {
+    return Status::InvalidArgument(
+        "EBBACKUP_CDC_ALGO=topoph is mutually exclusive with topochain, "
+        "topocdc and gtcdc");
+  }
+  if (CdcTopoPhEnabled()) {
+    sb.ext.backup_features |= kBackupFeatureTopoPh;
+    sb.ext.topo_table_seed = GenerateGtCdcSeed();
+    sb.ext.topo_variant =
+        static_cast<uint8_t>(TopoPhKernelFromEnv());
+    TopoPhConfig calib_cfg = TopoPhConfigForProfile(ChunkProfileMode::kDefault);
+    calib_cfg.table_seed = sb.ext.topo_table_seed;
+    calib_cfg.kernel = TopoPhKernelFromEnv();
+    std::vector<uint8_t> ph_calib_sample(1024 * 1024);
+    topo_ph_internal::FillTopoPhCalibSample(
+        ph_calib_sample.data(), ph_calib_sample.size(), sb.ext.topo_table_seed);
+    const uint16_t perm = topo_ph_internal::CalibrateTopoPhPermille(
+        ph_calib_sample.data(), ph_calib_sample.size(), calib_cfg,
+        sb.ext.topo_table_seed);
+    SetRepoTopoPhCalibPermille(&sb, perm);
+    SetRepoTopoPhKPoints(&sb, calib_cfg.k_points);
+  } else if (CdcTopoChainEnabled() && (CdcTopoCdcEnabled() || CdcGtCdcEnabled())) {
+    return Status::InvalidArgument(
+        "EBBACKUP_CDC_ALGO=topochain is mutually exclusive with topocdc and "
+        "gtcdc");
+  }
+  if (CdcTopoChainEnabled()) {
+    sb.ext.backup_features |= kBackupFeatureTopoChain;
+    sb.ext.topo_table_seed = GenerateGtCdcSeed();
+    sb.ext.topo_variant = 2;
+    TopoCdcConfig calib_cfg =
+        TopoCdcConfigForProfile(ChunkProfileMode::kDefault);
+    calib_cfg.variant = TopoCdcVariant::kChain;
+    calib_cfg.chain_lfsr_seed = sb.ext.topo_table_seed;
+    calib_cfg.chain_enable_beta1 = true;
+    std::vector<uint8_t> chain_calib_sample(1024 * 1024);
+    topo_chain_internal::FillChainCalibSample(
+        chain_calib_sample.data(), chain_calib_sample.size(),
+        sb.ext.topo_table_seed);
+    const uint16_t stride_log = topo_chain_internal::CalibrateChainStrideLog(
+        chain_calib_sample.data(), chain_calib_sample.size(), calib_cfg);
+    SetRepoTopoChainStrideLog(&sb, stride_log);
+    SetRepoTopoChainQuantQ(&sb, 0);
+    SetRepoTopoChainBeta1(&sb, true);
+  } else if (CdcTopoCdcEnabled() && CdcGtCdcEnabled()) {
+    return Status::InvalidArgument(
+        "EBBACKUP_CDC_ALGO=topocdc and gtcdc are mutually exclusive");
+  }
+  if (CdcTopoCdcEnabled()) {
+    sb.ext.backup_features |= kBackupFeatureTopoCdc;
+    sb.ext.topo_table_seed = GenerateGtCdcSeed();
+    sb.ext.topo_variant = CdcTopoTriVariantRequested() ? 1 : 0;
+    TopoCdcConfig calib_cfg =
+        TopoCdcConfigForProfile(ChunkProfileMode::kDefault);
+    calib_cfg.table_seed = sb.ext.topo_table_seed;
+    std::vector<uint8_t> topo_calib_sample(1024 * 1024);
+    topo_cdc_internal::FillTopoCalibSample(topo_calib_sample.data(),
+                                           topo_calib_sample.size(),
+                                           sb.ext.topo_table_seed);
+    const uint16_t perm = topo_cdc_internal::CalibrateTopoPermille(
+        topo_calib_sample.data(), topo_calib_sample.size(), calib_cfg,
+        sb.ext.topo_table_seed);
+    SetRepoTopoCalibPermille(&sb, perm);
+  } else if (CdcGtCdcEnabled()) {
+    sb.ext.backup_features |= kBackupFeatureGtCdc;
+    sb.ext.backup_features |= kBackupFeatureGtCdcTwoFGear;
+    sb.ext.gtcdc_table_seed = GenerateGtCdcSeed();
+    sb.ext.gtcdc_nc_level = 2;
   }
   if (options.persistent_index || options.manifest_binary) {
     sb.ext.default_codec = kDefaultCodecAuto;
@@ -892,6 +1020,7 @@ Status BackupEngine::ChunkPendingFiles(BackupMode mode,
 
   EbHcrboConfig hcrbo_cfg{};
   hcrbo_cfg.digest_algo = digest_algo_;
+  const bool use_gtcdc = RepoUsesGtCdc(sb_) || CdcGtCdcEnabled();
   for (size_t i = 0; i < file_count; ++i) {
     MaybeAdaptBackupWindow();
     if (window_truncated_) {
@@ -958,7 +1087,6 @@ Status BackupEngine::ChunkPendingFiles(BackupMode mode,
 
     hcrbo_cfg = EbHcrboConfigForFileSize(expected_size, options.chunk_profile,
                                          digest_algo_);
-    EbHcrboChunker chunker(hcrbo_cfg);
     EbHcrboStats hstats{};
     Status ch_st;
 #ifdef _WIN32
@@ -966,8 +1094,21 @@ Status BackupEngine::ChunkPendingFiles(BackupMode mode,
       const CfiIndex history =
           (mode == BackupMode::kIncremental) ? FindPriorCfi(prior, rel_final)
                                              : CfiIndex{};
-      ch_st = ChunkSparseFile(&chunker, mode, file_path, sparse_runs, history,
-                              &pending_chunks_[i], &pending_cfi_[i], &hstats);
+      if (use_gtcdc) {
+        EbHcrboGtConfig gt_cfg{};
+        gt_cfg.gt = GtCdcConfigForRepo(sb_, expected_size, options.chunk_profile,
+                                       digest_algo_);
+        gt_cfg.digest_algo = digest_algo_;
+        EbHcrboGtChunker gt_chunker(gt_cfg);
+        ch_st = ChunkSparseFileImpl(mode, file_path, sparse_runs, history,
+                                    &pending_chunks_[i], &pending_cfi_[i], &hstats,
+                                    &gt_chunker);
+      } else {
+        EbHcrboChunker chunker(hcrbo_cfg);
+        ch_st = ChunkSparseFileImpl(mode, file_path, sparse_runs, history,
+                                    &pending_chunks_[i], &pending_cfi_[i], &hstats,
+                                    &chunker);
+      }
       pending_file_bytes_[i].clear();
     } else
 #endif
@@ -979,14 +1120,32 @@ Status BackupEngine::ChunkPendingFiles(BackupMode mode,
         pending_manifest_[i].relative_path.clear();
         continue;
       }
-      if (mode == BackupMode::kIncremental) {
-        const CfiIndex history = FindPriorCfi(prior, rel_final);
-        ch_st = chunker.ChunkIncremental(bytes.data(), bytes.size(), history,
-                                         &pending_chunks_[i], &pending_cfi_[i],
-                                         &hstats);
+      if (use_gtcdc) {
+        EbHcrboGtConfig gt_cfg{};
+        gt_cfg.gt = GtCdcConfigForRepo(sb_, expected_size, options.chunk_profile,
+                                       digest_algo_);
+        gt_cfg.digest_algo = digest_algo_;
+        EbHcrboGtChunker gt_chunker(gt_cfg);
+        if (mode == BackupMode::kIncremental) {
+          const CfiIndex history = FindPriorCfi(prior, rel_final);
+          ch_st = gt_chunker.ChunkIncremental(bytes.data(), bytes.size(), history,
+                                              &pending_chunks_[i], &pending_cfi_[i],
+                                              &hstats);
+        } else {
+          ch_st = gt_chunker.ChunkFull(bytes.data(), bytes.size(), &pending_chunks_[i],
+                                       &pending_cfi_[i], &hstats);
+        }
       } else {
-        ch_st = chunker.ChunkFull(bytes.data(), bytes.size(), &pending_chunks_[i],
-                                  &pending_cfi_[i], &hstats);
+        EbHcrboChunker chunker(hcrbo_cfg);
+        if (mode == BackupMode::kIncremental) {
+          const CfiIndex history = FindPriorCfi(prior, rel_final);
+          ch_st = chunker.ChunkIncremental(bytes.data(), bytes.size(), history,
+                                           &pending_chunks_[i], &pending_cfi_[i],
+                                           &hstats);
+        } else {
+          ch_st = chunker.ChunkFull(bytes.data(), bytes.size(), &pending_chunks_[i],
+                                    &pending_cfi_[i], &hstats);
+        }
       }
       if (!ch_st.ok()) return ch_st;
       PopulateAnchorChecksums(bytes.data(), bytes.size(), &pending_cfi_[i]);
@@ -1122,6 +1281,35 @@ Status BackupEngine::RunPipelineBackup(BackupMode mode,
   pipe_opts.store_shard_count = options.store_shard_count;
   pipe_opts.phase_stats = &pipeline_phase_stats_;
   pipe_opts.scan_issues = &scan_issues_;
+  if (CdcTopoChainEnabled()) {
+    pipe_opts.topo_table_seed = sb_.ext.topo_table_seed;
+    pipe_opts.chain_stride_log =
+        static_cast<uint8_t>(RepoTopoChainStrideLog(sb_) & 0xFFu);
+    pipe_opts.chain_quant_q = RepoTopoChainQuantQ(sb_);
+    pipe_opts.chain_enable_beta1 = RepoTopoChainBeta1(sb_);
+  }
+  if (CdcTopoPhnEnabled()) {
+    pipe_opts.topo_table_seed = sb_.ext.topo_table_seed;
+    pipe_opts.topo_phn_variant = sb_.ext.topo_variant;
+    pipe_opts.topo_phn_k_points = RepoTopoPhnKPoints(sb_);
+    pipe_opts.topo_phn_event_stride = RepoTopoPhnEventStride(sb_);
+    pipe_opts.topo_phn_persist_delta = RepoTopoPhnPersistDelta(sb_);
+  }
+  if (CdcTopoPhEnabled()) {
+    pipe_opts.topo_table_seed = sb_.ext.topo_table_seed;
+    pipe_opts.topo_calib_permille = RepoTopoPhCalibPermille(sb_);
+    pipe_opts.topo_ph_variant = sb_.ext.topo_variant;
+    pipe_opts.topo_ph_k_points = RepoTopoPhKPoints(sb_);
+  }
+  if (CdcTopoCdcEnabled()) {
+    pipe_opts.topo_table_seed = sb_.ext.topo_table_seed;
+    pipe_opts.topo_calib_permille = RepoTopoCalibPermille(sb_);
+  }
+  if (CdcGtCdcEnabled()) {
+    pipe_opts.gtcdc_kernel = GtCdcKernelForRepo(sb_);
+    pipe_opts.gtcdc_table_seed = sb_.ext.gtcdc_table_seed;
+    pipe_opts.gtcdc_nc_level = sb_.ext.gtcdc_nc_level;
+  }
   BackupPipelineResult pipe_result{};
   const Status pipe_st = RunBackupPipeline(
       pending_files_, source_root_, mode, prior_ptr, chunk_store_.get(),
@@ -1478,6 +1666,190 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
   const bool ebpack = RepoUsesEbPack(sb_);
   const bool coalesced_meta = RepoUsesCoalescedMeta(sb_);
   const bool repo_immutable = RepoUsesImmutable(sb_);
+  const bool repo_gtcdc = RepoUsesGtCdc(sb_);
+  const bool runtime_gtcdc = CdcGtCdcEnabled();
+  const bool repo_topo = RepoUsesTopoCdc(sb_);
+  const bool runtime_topo = CdcTopoCdcEnabled();
+  const bool repo_chain = RepoUsesTopoChain(sb_);
+  const bool runtime_chain = CdcTopoChainEnabled();
+  const bool repo_phn = RepoUsesTopoPhNative(sb_);
+  const bool runtime_phn = CdcTopoPhnEnabled();
+  const bool repo_ph = RepoUsesTopoPh(sb_);
+  const bool runtime_ph = CdcTopoPhEnabled();
+  const bool prev_native = RepoUsesGtCdcNative(sb_);
+  const bool prev_angear = RepoUsesGtCdcAnGear(sb_);
+  const bool prev_twofgear = RepoUsesGtCdcTwoFGear(sb_);
+  const bool prev_gear = RepoUsesGtCdcGear(sb_);
+  const uint32_t prev_gtcdc_seed = sb_.ext.gtcdc_table_seed;
+  const uint8_t prev_gtcdc_nc = sb_.ext.gtcdc_nc_level;
+  const uint32_t prev_topo_seed = sb_.ext.topo_table_seed;
+  const uint8_t prev_topo_variant = sb_.ext.topo_variant;
+  const uint16_t prev_topo_calib = RepoTopoCalibPermille(sb_);
+  const uint16_t prev_chain_stride = RepoTopoChainStrideLog(sb_);
+  const uint8_t prev_chain_quant = RepoTopoChainQuantQ(sb_);
+  const uint8_t prev_chain_features = RepoTopoChainFeatures(sb_);
+  const uint16_t prev_ph_calib = RepoTopoPhCalibPermille(sb_);
+  const uint8_t prev_ph_k = RepoTopoPhKPoints(sb_);
+  const uint16_t prev_phn_stride = RepoTopoPhnEventStride(sb_);
+  const uint8_t prev_phn_k = RepoTopoPhnKPoints(sb_);
+  const bool prev_phn_persist = RepoTopoPhnPersistDelta(sb_);
+  const bool has_manifest =
+      std::filesystem::exists(PathFromUtf8(RepoJoin(repo_path_, "manifest")));
+  if (runtime_phn &&
+      (runtime_ph || runtime_chain || runtime_topo || runtime_gtcdc)) {
+    return Status::InvalidArgument(
+        "EBBACKUP_CDC_ALGO=topophn is mutually exclusive with topoph, "
+        "topochain, topocdc and gtcdc");
+  }
+  if (repo_phn && !runtime_phn) {
+    return Status::InvalidArgument(
+        "repository uses TopoPH-Native chunking; set EBBACKUP_CDC_ALGO=topophn");
+  }
+  if (!repo_phn && runtime_phn && has_manifest) {
+    return Status::InvalidArgument(
+        "cannot enable TopoPH-Native on existing non-TopoPH-Native repository");
+  }
+  if (repo_phn && has_manifest) {
+    if (prev_topo_variant != 5 && prev_topo_variant != 6) {
+      return Status::InvalidArgument(
+          "TopoPH-Native repository has invalid topo_variant");
+    }
+    const bool want_ph = CdcTopoPhnKernelIsPh();
+    const bool is_ph = prev_topo_variant == 6;
+    if (want_ph != is_ph) {
+      return Status::InvalidArgument(
+          "cannot switch TopoPH-Native Tri/PH kernel on existing repository");
+    }
+  }
+  if (repo_phn &&
+      (runtime_ph || runtime_chain || runtime_topo || runtime_gtcdc)) {
+    return Status::InvalidArgument(
+        "TopoPH-Native repository cannot use other CDC_ALGO values");
+  }
+  if ((repo_ph || repo_chain || repo_topo || repo_gtcdc) && runtime_phn) {
+    return Status::InvalidArgument(
+        "cannot enable TopoPH-Native on TopoPH/TopoChain/TopoCDC/G-TCDC "
+        "repository");
+  }
+  if (runtime_ph && (runtime_chain || runtime_topo || runtime_gtcdc)) {
+    return Status::InvalidArgument(
+        "EBBACKUP_CDC_ALGO=topoph is mutually exclusive with topochain, "
+        "topocdc and gtcdc");
+  }
+  if (repo_ph && !runtime_ph) {
+    return Status::InvalidArgument(
+        "repository uses TopoPH chunking; set EBBACKUP_CDC_ALGO=topoph");
+  }
+  if (!repo_ph && runtime_ph && has_manifest) {
+    return Status::InvalidArgument(
+        "cannot enable TopoPH on existing non-TopoPH repository");
+  }
+  if (repo_ph && has_manifest) {
+    if (prev_topo_variant != 3 && prev_topo_variant != 4) {
+      return Status::InvalidArgument(
+          "TopoPH repository has invalid topo_variant");
+    }
+    const bool want_ph = CdcTopoPhKernelIsPh();
+    const bool is_ph = prev_topo_variant == 4;
+    if (want_ph != is_ph) {
+      return Status::InvalidArgument(
+          "cannot switch TopoPH Tri/PH kernel on existing repository");
+    }
+  }
+  if (repo_ph && (runtime_chain || runtime_topo || runtime_gtcdc)) {
+    return Status::InvalidArgument(
+        "TopoPH repository cannot use other CDC_ALGO values");
+  }
+  if ((repo_chain || repo_topo || repo_gtcdc) && runtime_ph) {
+    return Status::InvalidArgument(
+        "cannot enable TopoPH on TopoChain/TopoCDC/G-TCDC repository");
+  }
+  if (runtime_chain && (runtime_topo || runtime_gtcdc)) {
+    return Status::InvalidArgument(
+        "EBBACKUP_CDC_ALGO=topochain is mutually exclusive with topocdc and "
+        "gtcdc");
+  }
+  if (runtime_topo && runtime_gtcdc) {
+    return Status::InvalidArgument(
+        "EBBACKUP_CDC_ALGO=topocdc and gtcdc are mutually exclusive");
+  }
+  if (repo_chain && !runtime_chain) {
+    return Status::InvalidArgument(
+        "repository uses TopoChain chunking; set EBBACKUP_CDC_ALGO=topochain");
+  }
+  if (!repo_chain && runtime_chain && has_manifest) {
+    return Status::InvalidArgument(
+        "cannot enable TopoChain on existing non-TopoChain repository");
+  }
+  if (repo_chain && has_manifest) {
+    if (prev_topo_variant != 2) {
+      return Status::InvalidArgument(
+          "TopoChain repository has invalid topo_variant");
+    }
+    if (prev_chain_stride < 8 || prev_chain_stride > 22) {
+      return Status::InvalidArgument(
+          "TopoChain repository has out-of-range chain_stride_log");
+    }
+    if (prev_chain_quant > 7) {
+      return Status::InvalidArgument(
+          "TopoChain repository has out-of-range chain_quant_q");
+    }
+  }
+  if (repo_chain && runtime_topo) {
+    return Status::InvalidArgument(
+        "TopoChain repository cannot use EBBACKUP_CDC_ALGO=topocdc");
+  }
+  if (repo_topo && runtime_chain) {
+    return Status::InvalidArgument(
+        "TopoCDC repository cannot use EBBACKUP_CDC_ALGO=topochain");
+  }
+  if (repo_chain && runtime_gtcdc) {
+    return Status::InvalidArgument(
+        "TopoChain repository cannot use EBBACKUP_CDC_ALGO=gtcdc");
+  }
+  if (repo_gtcdc && runtime_chain) {
+    return Status::InvalidArgument(
+        "G-TCDC repository cannot use EBBACKUP_CDC_ALGO=topochain");
+  }
+  if (repo_topo && !runtime_topo) {
+    return Status::InvalidArgument(
+        "repository uses TopoCDC chunking; set EBBACKUP_CDC_ALGO=topocdc");
+  }
+  const bool runtime_tri = runtime_topo && CdcTopoTriVariantRequested();
+  const bool repo_tri = repo_topo && prev_topo_variant == 1;
+  const bool repo_hom = repo_topo && prev_topo_variant == 0;
+  if (repo_tri && runtime_topo && !runtime_tri) {
+    return Status::InvalidArgument(
+        "repository uses TopoCDC Tri; set EBBACKUP_TOPO_VARIANT=tri");
+  }
+  if (repo_hom && runtime_topo && runtime_tri) {
+    return Status::InvalidArgument(
+        "repository uses TopoCDC Hom-0; unset EBBACKUP_TOPO_VARIANT=tri");
+  }
+  if (repo_topo && runtime_topo && repo_tri != runtime_tri) {
+    return Status::InvalidArgument(
+        "cannot switch TopoCDC Hom/Tri variant on existing repository");
+  }
+  if (!repo_topo && runtime_topo && has_manifest) {
+    return Status::InvalidArgument(
+        "cannot enable TopoCDC on existing non-Topo repository");
+  }
+  if (repo_topo && runtime_gtcdc) {
+    return Status::InvalidArgument(
+        "TopoCDC repository cannot use EBBACKUP_CDC_ALGO=gtcdc");
+  }
+  if (repo_gtcdc && runtime_topo) {
+    return Status::InvalidArgument(
+        "G-TCDC repository cannot use EBBACKUP_CDC_ALGO=topocdc");
+  }
+  if (repo_gtcdc && !runtime_gtcdc) {
+    return Status::InvalidArgument(
+        "repository uses G-TCDC chunking; set EBBACKUP_CDC_ALGO=gtcdc");
+  }
+  if (!repo_gtcdc && runtime_gtcdc && has_manifest) {
+    return Status::InvalidArgument(
+        "cannot enable G-TCDC on existing FastCDC repository");
+  }
   sb_.ext.backup_features = 0;
   if (standard_digest) {
     sb_.ext.backup_features |= kBackupFeatureDigestStandard;
@@ -1500,6 +1872,133 @@ Status BackupEngine::RunBackup(const std::string& source_path, BackupMode mode,
   }
   if (repo_immutable) {
     sb_.ext.backup_features |= kBackupFeatureImmutable;
+  }
+  if (repo_gtcdc || runtime_gtcdc) {
+    sb_.ext.backup_features |= kBackupFeatureGtCdc;
+  }
+  if (prev_twofgear) {
+    sb_.ext.backup_features |= kBackupFeatureGtCdcTwoFGear;
+    sb_.ext.gtcdc_table_seed = prev_gtcdc_seed;
+    sb_.ext.gtcdc_nc_level = prev_gtcdc_nc;
+  } else if (prev_angear) {
+    sb_.ext.backup_features |= kBackupFeatureGtCdcAnGear;
+    sb_.ext.gtcdc_table_seed = prev_gtcdc_seed;
+    sb_.ext.gtcdc_nc_level = prev_gtcdc_nc;
+  } else if (prev_native) {
+    sb_.ext.backup_features |= kBackupFeatureGtCdcNative;
+    sb_.ext.gtcdc_table_seed = prev_gtcdc_seed;
+    sb_.ext.gtcdc_nc_level = prev_gtcdc_nc;
+  } else if (prev_gear) {
+    sb_.ext.backup_features |= kBackupFeatureGtCdcGear;
+  } else if (runtime_gtcdc && !repo_gtcdc) {
+    sb_.ext.backup_features |= kBackupFeatureGtCdcTwoFGear;
+    sb_.ext.gtcdc_table_seed = GenerateGtCdcSeed();
+    sb_.ext.gtcdc_nc_level = 2;
+  }
+  if (repo_topo || runtime_topo) {
+    sb_.ext.backup_features |= kBackupFeatureTopoCdc;
+  }
+  if (repo_topo) {
+    sb_.ext.topo_table_seed = prev_topo_seed;
+    sb_.ext.topo_variant = prev_topo_variant;
+    SetRepoTopoCalibPermille(&sb_, prev_topo_calib);
+  } else if (runtime_topo && !repo_topo) {
+    sb_.ext.topo_table_seed = GenerateGtCdcSeed();
+    sb_.ext.topo_variant = runtime_tri ? 1 : 0;
+    TopoCdcConfig calib_cfg =
+        TopoCdcConfigForProfile(ChunkProfileMode::kDefault);
+    calib_cfg.table_seed = sb_.ext.topo_table_seed;
+    std::vector<uint8_t> topo_calib_sample(1024 * 1024);
+    topo_cdc_internal::FillTopoCalibSample(topo_calib_sample.data(),
+                                           topo_calib_sample.size(),
+                                           sb_.ext.topo_table_seed);
+    const uint16_t perm = topo_cdc_internal::CalibrateTopoPermille(
+        topo_calib_sample.data(), topo_calib_sample.size(), calib_cfg,
+        sb_.ext.topo_table_seed);
+    SetRepoTopoCalibPermille(&sb_, perm);
+  }
+  if (repo_chain || runtime_chain) {
+    sb_.ext.backup_features |= kBackupFeatureTopoChain;
+  }
+  if (repo_chain) {
+    sb_.ext.topo_table_seed = prev_topo_seed;
+    sb_.ext.topo_variant = prev_topo_variant;
+    SetRepoTopoChainStrideLog(&sb_, prev_chain_stride);
+    SetRepoTopoChainQuantQ(&sb_, prev_chain_quant);
+    SetRepoTopoChainFeatures(&sb_, prev_chain_features);
+    // MVP repos (no beta1 bit) must never gain beta1 in-place.
+    if (has_manifest && (prev_chain_features & kChainFeatureBeta1) == 0 &&
+        RepoTopoChainBeta1(sb_)) {
+      return Status::InvalidArgument(
+          "TopoChain MVP repository cannot upgrade to beta1 in-place; "
+          "create a new repository with InitRepo");
+    }
+  } else if (runtime_chain && !repo_chain) {
+    sb_.ext.topo_table_seed = GenerateGtCdcSeed();
+    sb_.ext.topo_variant = 2;
+    TopoCdcConfig calib_cfg =
+        TopoCdcConfigForProfile(ChunkProfileMode::kDefault);
+    calib_cfg.variant = TopoCdcVariant::kChain;
+    calib_cfg.chain_lfsr_seed = sb_.ext.topo_table_seed;
+    calib_cfg.chain_enable_beta1 = true;
+    std::vector<uint8_t> chain_calib_sample(1024 * 1024);
+    topo_chain_internal::FillChainCalibSample(
+        chain_calib_sample.data(), chain_calib_sample.size(),
+        sb_.ext.topo_table_seed);
+    const uint16_t stride_log = topo_chain_internal::CalibrateChainStrideLog(
+        chain_calib_sample.data(), chain_calib_sample.size(), calib_cfg);
+    SetRepoTopoChainStrideLog(&sb_, stride_log);
+    SetRepoTopoChainQuantQ(&sb_, 0);
+    SetRepoTopoChainBeta1(&sb_, true);
+  }
+  if (repo_phn || runtime_phn) {
+    sb_.ext.backup_features |= kBackupFeatureTopoPhNative;
+  }
+  if (repo_phn) {
+    sb_.ext.topo_table_seed = prev_topo_seed;
+    sb_.ext.topo_variant = prev_topo_variant;
+    SetRepoTopoPhnEventStride(&sb_, prev_phn_stride);
+    SetRepoTopoPhnKPoints(&sb_, prev_phn_k);
+    SetRepoTopoPhnPersistDelta(&sb_, prev_phn_persist);
+  } else if (runtime_phn && !repo_phn) {
+    sb_.ext.topo_table_seed = GenerateGtCdcSeed();
+    sb_.ext.topo_variant = static_cast<uint8_t>(TopoPhnKernelFromEnv());
+    TopoPhnConfig calib_cfg = TopoPhnConfigForProfile(ChunkProfileMode::kDefault);
+    calib_cfg.table_seed = sb_.ext.topo_table_seed;
+    calib_cfg.kernel = TopoPhnKernelFromEnv();
+    std::vector<uint8_t> sample(topo_phn_internal::kPhnCalibSampleBytes);
+    topo_phn_internal::FillPhnCalibSample(sample.data(), sample.size(),
+                                          sb_.ext.topo_table_seed);
+    topo_phn_internal::CalibratePhnCutParams(sample.data(), sample.size(),
+                                             &calib_cfg);
+    SetRepoTopoPhnEventStride(
+        &sb_, static_cast<uint16_t>(std::min<uint32_t>(
+                  calib_cfg.event_stride, 65535u)));
+    SetRepoTopoPhnKPoints(&sb_, calib_cfg.k_points);
+    SetRepoTopoPhnPersistDelta(&sb_, calib_cfg.enable_persist_delta);
+  }
+  if (repo_ph || runtime_ph) {
+    sb_.ext.backup_features |= kBackupFeatureTopoPh;
+  }
+  if (repo_ph) {
+    sb_.ext.topo_table_seed = prev_topo_seed;
+    sb_.ext.topo_variant = prev_topo_variant;
+    SetRepoTopoPhCalibPermille(&sb_, prev_ph_calib);
+    SetRepoTopoPhKPoints(&sb_, prev_ph_k);
+  } else if (runtime_ph && !repo_ph) {
+    sb_.ext.topo_table_seed = GenerateGtCdcSeed();
+    sb_.ext.topo_variant = static_cast<uint8_t>(TopoPhKernelFromEnv());
+    TopoPhConfig calib_cfg = TopoPhConfigForProfile(ChunkProfileMode::kDefault);
+    calib_cfg.table_seed = sb_.ext.topo_table_seed;
+    calib_cfg.kernel = TopoPhKernelFromEnv();
+    std::vector<uint8_t> ph_calib_sample(1024 * 1024);
+    topo_ph_internal::FillTopoPhCalibSample(
+        ph_calib_sample.data(), ph_calib_sample.size(), sb_.ext.topo_table_seed);
+    const uint16_t perm = topo_ph_internal::CalibrateTopoPhPermille(
+        ph_calib_sample.data(), ph_calib_sample.size(), calib_cfg,
+        sb_.ext.topo_table_seed);
+    SetRepoTopoPhCalibPermille(&sb_, perm);
+    SetRepoTopoPhKPoints(&sb_, calib_cfg.k_points);
   }
   if (effective.durability == DurabilityMode::kBalanced) {
     sb_.ext.backup_features |= kBackupFeatureBalancedDurability;
@@ -1845,6 +2344,74 @@ Status BackupEngine::FinalizeCompressionArtifacts(const BackupOptions& options) 
 Status BackupEngine::Verify(const BackupOptions& options) {
   const Status key_st = EnsureRepoContentKey(options.encryption_password);
   if (!key_st.ok()) return key_st;
+
+  if (RepoUsesTopoChain(sb_) && !CdcTopoChainEnabled()) {
+    return Status::InvalidArgument(
+        "repository uses TopoChain chunking; set EBBACKUP_CDC_ALGO=topochain");
+  }
+  if (!RepoUsesTopoChain(sb_) && CdcTopoChainEnabled()) {
+    return Status::InvalidArgument(
+        "EBBACKUP_CDC_ALGO=topochain does not match non-TopoChain repository");
+  }
+  if (RepoUsesTopoPhNative(sb_) && !CdcTopoPhnEnabled()) {
+    return Status::InvalidArgument(
+        "repository uses TopoPH-Native chunking; set EBBACKUP_CDC_ALGO=topophn");
+  }
+  if (!RepoUsesTopoPhNative(sb_) && CdcTopoPhnEnabled()) {
+    return Status::InvalidArgument(
+        "EBBACKUP_CDC_ALGO=topophn does not match non-TopoPH-Native repository");
+  }
+  if (RepoUsesTopoPhNative(sb_)) {
+    if (sb_.ext.topo_variant != 5 && sb_.ext.topo_variant != 6) {
+      return Status::InvalidArgument(
+          "TopoPH-Native repository has invalid topo_variant");
+    }
+  }
+  if (RepoUsesTopoPh(sb_) && !CdcTopoPhEnabled()) {
+    return Status::InvalidArgument(
+        "repository uses TopoPH chunking; set EBBACKUP_CDC_ALGO=topoph");
+  }
+  if (!RepoUsesTopoPh(sb_) && CdcTopoPhEnabled()) {
+    return Status::InvalidArgument(
+        "EBBACKUP_CDC_ALGO=topoph does not match non-TopoPH repository");
+  }
+  if (RepoUsesTopoPh(sb_)) {
+    if (sb_.ext.topo_variant != 3 && sb_.ext.topo_variant != 4) {
+      return Status::InvalidArgument(
+          "TopoPH repository has invalid topo_variant");
+    }
+  }
+  if (RepoUsesTopoChain(sb_)) {
+    if (sb_.ext.topo_variant != 2) {
+      return Status::InvalidArgument(
+          "TopoChain repository has invalid topo_variant");
+    }
+    const uint16_t stride = RepoTopoChainStrideLog(sb_);
+    if (stride < 8 || stride > 22) {
+      return Status::InvalidArgument(
+          "TopoChain repository has out-of-range chain_stride_log");
+    }
+    if (RepoTopoChainQuantQ(sb_) > 7) {
+      return Status::InvalidArgument(
+          "TopoChain repository has out-of-range chain_quant_q");
+    }
+  }
+  if (RepoUsesTopoCdc(sb_) && !CdcTopoCdcEnabled()) {
+    return Status::InvalidArgument(
+        "repository uses TopoCDC chunking; set EBBACKUP_CDC_ALGO=topocdc");
+  }
+  if (!RepoUsesTopoCdc(sb_) && CdcTopoCdcEnabled()) {
+    return Status::InvalidArgument(
+        "EBBACKUP_CDC_ALGO=topocdc does not match non-Topo repository");
+  }
+  if (RepoUsesGtCdc(sb_) && !CdcGtCdcEnabled()) {
+    return Status::InvalidArgument(
+        "repository uses G-TCDC chunking; set EBBACKUP_CDC_ALGO=gtcdc");
+  }
+  if (!RepoUsesGtCdc(sb_) && CdcGtCdcEnabled()) {
+    return Status::InvalidArgument(
+        "EBBACKUP_CDC_ALGO=gtcdc does not match FastCDC repository");
+  }
 
   ManifestDocument doc;
   Status rd;

@@ -1,0 +1,135 @@
+% 第二代完整逐步模拟 — 由第 14 章 \input
+
+\section{模拟设定（沿用同一文件）}
+
+\begin{simbox}[第二代额外参数]
+与第一代相同文件、相同 $w$/min/max。\\
+\textbf{beta 表} = 第一代 gear 表；\textbf{norm 表}（节选）：
+
+\SimNormTab
+
+切点条件：
+\begin{lstlisting}
+左OK = (h_gear & 3) == 0
+右OK = ((h_norm >> 2) & 3) == 0
+\end{lstlisting}
+\end{simbox}
+
+\section{Chunk 1：为何 $i=3$ 不切、$i=4$ 才切？}
+
+这是第二代与第一代\textbf{切点不同}的关键演示。
+
+\subsection{暖机（双指纹）}
+
+\begin{simbox}[双路暖机]
+\textbf{左 $h_g$}（同第一代）：$16 \to 18$\\[0.3em]
+\textbf{右 $h_n$}：
+$h = \mathrm{norm[0x10]} = 1$；
+$(1 \ll 1)+5-1 = \mathbf{5}$
+\end{simbox}
+
+\subsection{逐步 probe 表}
+
+\begin{table}[htbp]
+\centering
+\caption{Chunk 1 双指纹逐步模拟}
+\scriptsize
+\begin{tabular}{@{}ccccccl@{}}
+\toprule
+\textbf{$i$} & \textbf{$h_g$} & \textbf{$h_g\&3$} &
+\textbf{$h_n$} & \textbf{$(h_n\!\gg\!2)\&3$} & \textbf{切？} & \textbf{说明} \\
+\midrule
+2 & 18 & 2 & 5  & 1 & 否 & 两路都不 OK \\
+3 & 20 & \textcolor{CutRed}{0} & 8 & 2 & 否 &
+左 OK、右 FAIL → \textbf{不切} \\
+4 & 104 & \textcolor{CutRed}{0} & 16 & \textcolor{CutRed}{0} &
+\textcolor{CutRed}{\textbf{是}} & 两路都 OK \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{simbox}[$i=3$ 详细算式（左 OK 右 FAIL）]
+滚动到 $i=3$ 时：$h_g=20$，$h_n=8$。\\
+左：$20 \& 3 = 0$ \quad$\checkmark$\\
+右：$(8 \gg 2) \& 3 = 2 \& 3 = 2 \neq 0$ \quad$\times$\\
+→ 虽然第一代在此切，第二代\textbf{继续}。
+\end{simbox}
+
+\begin{simbox}[$i=3$ 滚动 → $i=4$ 检查]
+读 \texttt{0x40}，旧字节 \texttt{0x20}（$w=2$）：\\
+$h_g = (20 \ll 1)+66-2 = 104$\\
+$h_n = (8 \ll 1)+3-5 = 16$\\
+在 $i=4$：$(104 \& 3)=0$，$((16 \gg 2) \& 3)=0$ → \textbf{切点 = 4}。
+\end{simbox}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.65cm,y=0.6cm]
+  \foreach \i/\lab in {0/10,1/20,2/30,3/40,4/50,5/60,6/70,7/80,8/90,9/A0,10/B0,11/C0} {
+    \node[byte, minimum width=0.6cm] at (\i,0) {\lab};
+    \node[font=\tiny, below] at (\i,-0.45) {\i};
+  }
+  \draw[cutline, Gen1Blue] (3.35,-0.55) -- (3.35,0.75);
+  \node[font=\tiny, Gen1Blue, above] at (3.35,0.85) {Gen1 切};
+  \draw[cutline] (4.35,-0.55) -- (4.35,0.75);
+  \node[font=\tiny, CutRed, above] at (4.35,0.85) {Gen2 切};
+  \fill[Gen1Blue!12] (0,-0.35) rectangle (3.35,0.65);
+  \fill[Gen2Teal!12] (0,-0.35) rectangle (4.35,0.65);
+\end{tikzpicture}
+\caption{同文件、同参数：第一代切在 3，第二代切在 4 → dedup 不互通。}
+\end{figure}
+
+\section{Chunk 2 模拟预览}
+
+从 pos=4 开始，\texttt{scan\_start=6}，暖机后 $h_g=18$，$h_n=14$。
+
+\begin{table}[htbp]
+\centering
+\caption{Chunk 2 双指纹模拟（前 3 步）}
+\small
+\begin{tabular}{@{}cccccc@{}}
+\toprule
+\textbf{$i$} & \textbf{$h_g$} & \textbf{$h_g\&3$} & \textbf{$h_n$} &
+\textbf{$(h_n\!\gg\!2)\&3$} & \textbf{切？} \\
+\midrule
+6 & 18 & 2 & 14 & 3 & 否 \\
+7 & 40 & \textcolor{CutRed}{0} & 30 & 2 & 否（右 FAIL） \\
+8 & 87 & 3 & 56 & 0 & 否（左 FAIL） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{simbox}[Chunk 2 在 $i=7$：左 OK 右 FAIL]
+$h_g=40,\ 40\&3=0$ \quad$\checkmark$；\quad
+$h_n=30,\ (30\gg2)\&3=2$ \quad$\times$ → 继续。\\
+在 $i=8$ 时左 FAIL（$h_g=87$）；继续滚动后 Chunk 2 切点落在 $i=11$ 附近（附录自练）。
+\end{simbox}
+
+\section{流式 resume 模拟（512KB 缩小版）}
+
+把 12 字节文件切成 3 个 mini-feed，每个 4 字节：
+
+\begin{table}[htbp]
+\centering
+\caption{mini-feed 流式模拟（第二代）}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{feed} & \textbf{字节范围} & \textbf{结束时 resume} \\
+\midrule
+feed 0 & 0..3 & $h_g=20$, $h_n=8$, scan=4 \\
+feed 1 & 4..7 & 在 $i=4$ 切完 → TwoFClearResume \\
+feed 2 & 8..11 & 新 chunk 从 4 继续 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{gentwobox}[第二代 9 步模拟链]
+\begin{enumerate}[nosep]
+  \item 同第一代：定区间、暖机（但\textbf{两路}）
+  \item 每个 $i$：左 OK \textbf{AND} 右 OK？
+  \item 未切：两路同时滚动（beta + norm 各查一次）
+  \item feed 结束：存 $h_g, h_n$, scan\_abs
+  \item 切完：TwoFClearResume
+\end{enumerate}
+\end{gentwobox}

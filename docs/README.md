@@ -12,6 +12,10 @@
 |------|------|
 | [engineering/kernel-manual/](engineering/kernel-manual/) | **LaTeX 工程技术手册**（v1.4，Phase 16--19 扩写，XeLaTeX） |
 | [engineering/io-saturation-proof/](engineering/io-saturation-proof/) | **E2E IO 稳态饱和证明专册**（NVMe/USB 十次数据、定理证明、pgfplots 图，XeLaTeX） |
+| [engineering/cdc-kernel-narrative/](engineering/cdc-kernel-narrative/) | **CDC 内核叙事专册**（FastCDC/Gear/HCRBO/路由五路径、形象化 TikZ 图，XeLaTeX） |
+| [engineering/gtcdc-v6-manual/](engineering/gtcdc-v6-manual/) | **G-TCDC v6 2F-Gear 工程技术手册**（双指纹/mask 拆分/Streaming resume/bench，规格同 kernel-manual，XeLaTeX） |
+| [engineering/gtcdc-v6-narrative/](engineering/gtcdc-v6-narrative/) | **G-TCDC v6 形象化解析专册**（比喻、TikZ 大图、实测 pgfplots 图库，XeLaTeX） |
+| [engineering/cdc-two-gen-beginner/](engineering/cdc-two-gen-beginner/) | **两代 CDC 小白完全手册**（FastCDC Stream + 2F-Gear，零基础图示，XeLaTeX） |
 | [engineering/windows-native/](engineering/windows-native/) | **Windows 原生元数据专册**（9 册独立 PDF：Manifest/ACL/ADS/VSS/EFS 等） |
 | [engineering/ecosystem-evolution/](engineering/ecosystem-evolution/) | **LaTeX 生态理念与本土化发展实录**（压力驱动时间线、剪枝、流程反思；**第 12 章 L1–L7 实测数据**） |
 | [engineering/defense-presentation/](engineering/defense-presentation/) | **答辩演讲稿**（Beamer 幻灯片 + 逐字稿双 PDF；[`DEFENSE_QA_ARCHIVE.md`](engineering/defense-presentation/DEFENSE_QA_ARCHIVE.md) 技术 Q&A 模拟） |

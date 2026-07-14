@@ -1,0 +1,135 @@
+\chapter{第二代切点与流式 resume}
+\label{ch:gen2-cut-stream}
+
+\section{完整 probe 循环（第二代）}
+
+\begin{codebox}[ScanGearCut2F 逻辑（简化）]
+\begin{lstlisting}
+// 每个字节位置 pos：
+if ((h_gear & mask_lo) == 0 &&
+    ((h_norm >> norm_shift) & mask_hi) == 0) {
+    切点在 pos;
+}
+h_gear = (h_gear << 1) + beta[pos] - beta[pos-w];
+h_norm = (h_norm << 1) + norm[pos] - norm[pos-w];
+\end{lstlisting}
+\end{codebox}
+
+与第一代相比，\textbf{只多了 4 行左右的实质工作}（第二路 \&、第二路滚动）。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.35cm]
+  \node[byte] (pos) {pos};
+  \node[gen1, below=0.5cm of pos, minimum width=2.2cm] (u1) {更新 $h_g$};
+  \node[gen2, right=0.5cm of u1, minimum width=2.2cm] (u2) {更新 $h_n$};
+  \node[gen1, below=0.5cm of u1, minimum width=2cm] (l) {左 OK?};
+  \node[gen2, right=0.5cm of l, minimum width=2cm] (r) {右 OK?};
+  \node[gen2, below=0.5cm of l, xshift=1.25cm, minimum width=2.2cm] (cut) {AND → 切};
+  \draw[arr] (pos) -- (u1);
+  \draw[arr] (pos) -| (u2);
+  \draw[arr] (u1) -- (l);
+  \draw[arr] (u2) -- (r);
+  \draw[arr] (l) -- (cut);
+  \draw[arr] (r) -- (cut);
+\end{tikzpicture}
+\caption{每个 probe：先判断（用更新前的 $h$），再滚动两路指纹。}
+\end{figure}
+
+\section{流式：为什么要记两个 h？}
+
+512KB feed 读完时，可能还没切。  
+第一代只保存 \texttt{carry} + 一个 $h$。  
+第二代要保存：
+
+\begin{itemize}[nosep]
+  \item \texttt{tf\_gear\_h} — 左指纹 resume；
+  \item \texttt{tf\_norm\_h} — 右指纹 resume；
+  \item \texttt{tf\_scan\_abs} — 下次从文件绝对哪个字节继续扫。
+\end{itemize}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.45cm]
+  \node[feed, minimum width=2.2cm] (feed0) {feed 0\\512KB};
+  \node[gen2, minimum width=3.4cm, right=0.5cm of feed0, align=center] (card)
+    {\shortstack{状态卡片\\{\footnotesize $h_g$ = 0x...\quad $h_n$ = 0x...}\\{\footnotesize scan = 字节 1,048,576}}};
+  \node[feedalt, minimum width=2.2cm, right=0.5cm of card] (feed1) {feed 1\\512KB};
+
+  \draw[arr] (feed0) -- node[above,font=\tiny]{扫到一半} (card);
+  \draw[arr] (card) -- node[above,font=\tiny]{续扫} (feed1);
+
+  \node[zone=Gen2Teal, minimum width=9cm, below=0.75cm of card]
+    {切点确认后调用 TwoFClearResume，卡片清零，开始下一块 chunk};
+\end{tikzpicture}
+\caption{Process2FGearChunkCut：双指纹 resume 是第一代 resume 的直接扩展。}
+\end{figure}
+
+\section{第一代 vs 第二代 resume 对照}
+
+\begin{table}[htbp]
+\centering
+\caption{流式存档点字段}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{字段} & \textbf{第一代} & \textbf{第二代} \\
+\midrule
+滚动指纹 & 1 个 $h$ & $h_g$ + $h_n$ \\
+carry 尾巴 & 有 & 有（相同机制） \\
+绝对位置 & 有 & \texttt{tf\_scan\_abs} \\
+清空时机 & 切完 / max-cut & \texttt{TwoFClearResume} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{函数名对照（给会看代码的你）}
+
+\begin{table}[htbp]
+\centering
+\caption{第二代关键函数（不必全记，查表用）}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{函数} & \textbf{作用} \\
+\midrule
+\texttt{Build2FMasks} & 由 avg 算 mask\_lo/hi、shift \\
+\texttt{ScanGearCut2F} & 整段内存上双指纹扫描 \\
+\texttt{Process2FGearChunkCut} & 流式 feed 上切一块 \\
+\texttt{TwoFClearResume} & 切完或 max-cut 后清空 resume \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{stepbox}[Step 8 — parity 再次强调]
+同一文件：\\
+\textbf{一次性 ChunkCuts} 与 \textbf{512KB 流式} 必须产出相同切点列表。\\
+第二代单元测试 \texttt{GtCdc2FTest} 就是干这个的。
+\end{stepbox}
+
+\section{和备份引擎怎么接上？}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{0.92\linewidth}{!}{%
+\begin{tikzpicture}[node distance=0.4cm]
+  \node[gen1] (env) {环境变量\\EBBACKUP\_CDC\_ALGO=gtcdc};
+  \node[gen2, right=0.5cm of env] (flag) {仓库 flag\\0x10000};
+  \node[gen2, right=0.5cm of flag] (kern) {路由\\kTwoFGear};
+  \node[gen2, right=0.5cm of kern] (pipe) {Process2F...};
+  \draw[arr] (env) -- (flag) -- (kern) -- (pipe);
+\end{tikzpicture}%
+}
+\caption{只有 G-TCDC 仓库 + 运行时开关同时满足才走第二代。}
+\end{figure}
+
+\section{模拟示例：单个 probe 的双路更新}
+
+\begin{simbox}[$i=2$ 未切，执行滚动]
+\begin{enumerate}[nosep]
+  \item 检查：$h_g=18\ (18\&3=2)$，$h_n=5\ ((5\!\gg\!2)\&3=1)$ → 不切
+  \item $h_g \leftarrow (18 \ll 1)+0-16 = 20$
+  \item $h_n \leftarrow (5 \ll 1)+5-1 = 8$
+  \item 下一 probe 在 $i=3$ 用\textbf{更新后}的值判断
+\end{enumerate}
+\end{simbox}

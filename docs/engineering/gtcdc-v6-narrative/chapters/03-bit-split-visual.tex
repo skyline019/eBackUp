@@ -1,0 +1,78 @@
+\chapter{bit 预算拆分：从 bug 到修复}
+\label{ch:bit-split}
+
+\section{错误方案 vs 正确方案}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.8cm]
+  \node[v6block, minimum width=4.8cm, minimum height=1.1cm, align=center] (wrong)
+    {错误：$M_{full}$ on $h_g$ \textbf{AND}\\ $M_{full}$ on $h_n$};
+  \node[below=0.4cm of wrong, font=\small, text=CoreRed] {$P\approx 2^{-2B}$ → 几乎永不切};
+  \node[v6block, minimum width=4.8cm, minimum height=1.1cm, below=1.6cm of wrong, align=center] (right)
+    {正确：$(h_g \mathbin{\&} M_{lo})=0$ \textbf{AND}\\ $((h_n\gg s)\mathbin{\&} M_{hi})=0$};
+  \node[below=0.4cm of right, font=\small, text=CoreGreen] {$P\approx 2^{-B}$ → 目标 avg};
+  \draw[arr, CoreRed] (wrong.south) -- ++(0,-0.6) node[midway,right,font=\scriptsize]{max-cut 洪水};
+  \draw[arr, CoreGreen] (right.south) -- ++(0,-0.6) node[midway,right,font=\scriptsize]{正常块长分布};
+\end{tikzpicture}
+\caption{Build2FMasks 的本质：把一次 $B$-bit 零检测拆成两个独立子检测。}
+\label{fig:bug-fix}
+\end{figure}
+
+\section{32 位字可视化（avg=256KB 例）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.19cm,y=0.7cm]
+  \foreach \i in {0,...,17} {
+    \fill[blue!25] (\i,0) rectangle ++(0.95,1);
+    \draw (\i,0) rectangle ++(0.95,1);
+  }
+  \foreach \i in {18,...,31} {
+    \fill[green!35] (\i,0) rectangle ++(0.95,1);
+    \draw (\i,0) rectangle ++(0.95,1);
+  }
+  \node[font=\scriptsize] at (9,-0.5) {低 18 bit：$h_{\mathrm{gear}}$ 检测};
+  \node[font=\scriptsize] at (24.5,-0.5) {高 14 bit：$h_{\mathrm{norm}}$ 检测};
+  \node[font=\footnotesize] at (16,1.6) {$B=18$ for avg=262144, nc=2};
+\end{tikzpicture}
+\caption{两域\textbf{不重叠}：左域清零 + 右域（移位后）清零。}
+\label{fig:32bit-visual}
+\end{figure}
+
+\section{块长分布：修复前后（256MB 随机）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  ybar,
+  width=11cm,
+  height=6cm,
+  bar width=22pt,
+  ymin=0,
+  ylabel={chunk 数量},
+  symbolic x coords={before, fastcdc, {2f v6}, {an v5}},
+  xticklabels={修复前, fastcdc, 2f v6, an v5},
+  xtick=data,
+  x tick label style={font=\small},
+  nodes near coords,
+  enlarge x limits=0.15,
+  legend style={font=\small}
+]
+\addplot[fill=CoreRed!50] coordinates {(before, 12) (fastcdc, 805) ({2f v6}, 197) ({an v5}, 212)};
+\end{axis}
+\end{tikzpicture}
+\caption{修复前 2F 块数极少（大量 max-cut）；修复后与 AN-Gear 同量级，avg 更大因 Large profile。}
+\label{fig:chunk-count-bar}
+\end{figure}
+
+\section{源码锚点}
+
+\begin{verbatim}
+*mask_lo = (1u << lo_bits) - 1u;
+*mask_hi = (1u << hi_bits) - 1u;
+*norm_shift = lo_bits;
+// cut: (h_gear & mask_lo) == 0 &&
+//       ((h_norm >> norm_shift) & mask_hi) == 0
+\end{verbatim}

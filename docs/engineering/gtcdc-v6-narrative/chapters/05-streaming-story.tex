@@ -1,0 +1,58 @@
+\chapter{流式续扫：512KB feed 故事板}
+\label{ch:streaming-story}
+
+\begin{analogybox}[接力赛]
+整文件 CDC 像一人跑完全程；Streaming 是 512\,KB 一棒。v6 在交棒时必须把\textbf{两路 hash} 和\textbf{下一扫描绝对坐标} 交给下一棒——否则切点会在 feed 边界「漂移」。
+\end{analogybox}
+
+\section{状态卡片}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.95]
+  \node[draw=V6Teal, thick, rounded corners, fill=V6Teal!8,
+    minimum width=7cm, minimum height=4.2cm, align=left, font=\small] (card) {
+    \textbf{GtCdcStreamState (v6)}\\[0.3em]
+    \texttt{tf\_gear\_h} : uint32\\[0.15em]
+    \texttt{tf\_norm\_h} : uint32\\[0.15em]
+    \texttt{tf\_h\_valid} : bool\\[0.15em]
+    \texttt{tf\_scan\_abs} : uint64\\[0.4em]
+    \textit{切点确认 $\Rightarrow$ TwoFClearResume()}
+  };
+  \node[v6block, left=1.2cm of card] (feed0) {feed \#0};
+  \node[v6block, right=1.2cm of card] (feed1) {feed \#1};
+  \draw[arr] (feed0) -- node[above,font=\scriptsize]{交棒} (card);
+  \draw[arr] (card) -- node[above,font=\scriptsize]{续扫} (feed1);
+\end{tikzpicture}
+\caption{Resume 卡片：双 hash + 绝对 scan 指针。}
+\label{fig:resume-card}
+\end{figure}
+
+\section{时序：未命中 stop\_outer}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[x=0.85cm,y=0.7cm]
+  \node[font=\small] at (0,3) {Worker};
+  \node[font=\small] at (0,2) {View};
+  \node[font=\small] at (0,1) {State};
+  \draw[arr] (1,3) -- node[above,font=\tiny]{Process2F(pos)} (3,3);
+  \draw[arr] (3,2.8) -- (3,2.2);
+  \draw[arr] (3,2) -- node[above,font=\tiny]{Scan2FView} (5,2);
+  \draw[arr] (5,1.8) -- node[right,font=\tiny]{!found} (5,1.2);
+  \node[font=\tiny, align=center] at (6.8,1.2) {save $h_g,h_n$\\ \texttt{tf\_scan\_abs}};
+  \draw[arr] (5,1) -- (7.5,1);
+  \draw[darr] (7.5,3) -- node[above,font=\tiny]{下一段 feed} (9.5,3);
+  \draw[arr] (9.5,2.8) -- node[right,font=\tiny]{use\_h=true} (9.5,2);
+\end{tikzpicture}%
+}
+\caption{段内未找到切点且非 EOF：stop\_outer 等待更多数据。}
+\label{fig:seq-stop}
+\end{figure}
+
+\section{Parity 不变量}
+
+\begin{invariantbox}[整文件 $\equiv$ 流式]
+对任意文件 $F$，$Offsets(ChunkCuts(F)) = Offsets(Streaming(F))$。这是 \texttt{GtCdc2FTest} 与 Pipeline 集成测试的硬断言。
+\end{invariantbox}

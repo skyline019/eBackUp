@@ -1,0 +1,160 @@
+\chapter{滚动窗口：指纹怎么「滚」起来}
+\label{ch:gen1-rolling}
+
+\begin{analogybox}[窗口 = 只记最近 64 个字节]
+指纹 $h$ 不是「从文件头算到当前」的全体哈希（那样太慢且不好流式）。  
+它只盯着\textbf{滑动的 64 字节小窗}：每前进一步，丢掉最旧的一个字节，加入最新的一个。
+\end{analogybox}
+
+\section{一步一步滚（最重要的一页）}
+
+假设窗口宽度 $w=4$（真实是 64，这里用小数字看清过程）：
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.55cm,y=0.65cm]
+  \node[note] at (4,3.2) {Step A：当前窗口内的 4 个字节};
+  \foreach \i/\lab in {0/A,1/B,2/C,3/D} {
+    \node[byte] at (\i,2) {\lab};
+  }
+  \draw[decorate, decoration={brace, amplitude=4pt}] (-0.3,1.5) -- (3.3,1.5)
+    node[midway,below=6pt,font=\scriptsize] {窗口};
+
+  \node[note] at (4,0.8) {Step B：再读入新字节 E，丢掉 A};
+  \node[byte, fill=gray!30] at (0,0) {A};
+  \foreach \i/\lab in {1/B,2/C,3/D,4/E} {
+    \node[byte] at (\i,-0.8) {\lab};
+  }
+  \draw[decorate, decoration={brace, amplitude=4pt}] (0.7,-1.3) -- (4.3,-1.3)
+    node[midway,below=6pt,font=\scriptsize] {新窗口};
+
+  \draw[arr] (2,1.5) -- (2,0.3);
+\end{tikzpicture}
+\caption{窗口右移：旧左端出，新右端进。}
+\end{figure}
+
+\section{更新公式（拆开看）}
+
+\begin{stepbox}[Step 4 — 滚动更新三行话]
+\begin{enumerate}[nosep]
+  \item 把旧指纹 $h$ \textbf{左移 1 位}（二进制意义下的「滚」）；
+  \item \textbf{加上}新字节通过 gear 表查到的数；
+  \item \textbf{减去}被扔掉的旧字节通过 gear 表查到的数。
+\end{enumerate}
+\end{stepbox}
+
+\begin{codebox}[对应代码（第一代）]
+\begin{lstlisting}
+// 新字节在 pos，旧字节在 pos - w
+h = (h << 1) + gear[文件[pos]] - gear[文件[pos - w]];
+\end{lstlisting}
+\end{codebox}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.5cm]
+  \node[gen1] (h0) {$h_{\text{旧}}$};
+  \node[gen1, right=0.4cm of h0] (sh) {$\ll 1$};
+  \node[gen1, right=0.4cm of sh] (add) {$+\ \mathrm{gear}[\text{新}]$};
+  \node[gen1, right=0.4cm of add] (sub) {$-\ \mathrm{gear}[\text{旧}]$};
+  \node[gen2, right=0.4cm of sub] (h1) {$h_{\text{新}}$};
+  \draw[arr] (h0) -- (sh) -- (add) -- (sub) -- (h1);
+\end{tikzpicture}
+\caption{每前进 1 字节，做一次这个算术。}
+\end{figure}
+
+\section{数字例子：窗口 $w=4$ 滚一步}
+
+\begin{table}[htbp]
+\centering
+\caption{玩具窗口 B-C-D-E（丢掉 A，加入 E）}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{步骤} & \textbf{操作} & \textbf{说明} \\
+\midrule
+旧窗口 & A B C D & 当前 $h_{\text{旧}}$ 已算好 \\
+读新字节 & E 进入右端 & 用 gear{[E]} \\
+丢旧字节 & A 离开左端 & 用 gear{[A]} 减掉 \\
+新 $h$ & $(h \ll 1) + \mathrm{gear[E]} - \mathrm{gear[A]}$ & 只改 1 次，不用重算整窗 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{为什么要「预热」？}
+
+刚开始扫描时，窗口里还没有凑满 $w$ 个字节。  
+程序会先读够 $w$ 个，算出一个初始 $h$，这叫 \keyterm{InitWindowHash}（暖机）。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.55cm,y=0.7cm]
+  \node[note, anchor=west] at (-0.2,3.3) {一个 chunk 内的字节（$w=4$，min=2 示意）};
+
+  \foreach \i in {0,1,2,3,4,5,6,7,8,9} {
+    \node[byte] at (\i,2) {\i};
+  }
+
+  \fill[CutRed!12] (-0.35,1.55) rectangle (1.65,2.55);
+  \node[font=\scriptsize, CutRed!80!black] at (0.65,1.25) {禁切 min};
+
+  \fill[Gen1Blue!18] (1.65,1.55) rectangle (5.65,2.55);
+  \node[font=\scriptsize, Gen1Blue!80!black] at (3.65,1.25) {暖机：凑满窗口};
+
+  \fill[Gen1Blue!8] (5.65,1.55) rectangle (9.65,2.55);
+  \node[font=\scriptsize] at (7.65,1.25) {for 循环扫路标};
+
+  \draw[cutline] (5.65,1.4) -- (5.65,2.7);
+  \node[font=\scriptsize, align=center] at (5.65,3.05) {scan\_start\\窗口已满};
+
+  \draw[arr, Gen1Blue] (5.65,2.85) -- (6.5,2.85)
+    node[right, font=\scriptsize] {从这里 probe};
+\end{tikzpicture}
+\caption{for 循环不是从 chunk 头开始，而是从 min 之后、且窗口已满的 scan\_start 开始。}
+\end{figure}
+
+\begin{stepbox}[暖机 vs 主循环]
+\begin{itemize}[nosep]
+  \item \textbf{暖机阶段}：从 chunk 起点读 $w$ 字节，初始化 $h$（不做切点判断）；
+  \item \textbf{主循环}：从 \texttt{scan\_start = pos + min} 起，每字节更新 $h$ 并检查 mask；
+  \item 真实 FastCDC：$w=64$，min 通常是 256KB 量级——暖机相对整个 chunk 很短。
+\end{itemize}
+\end{stepbox}
+
+\section{Probe：每走一步算一次}
+
+工程里把「每检查一个位置能不能切」叫一次 \keyterm{probe}。  
+第一代：每个字节位置 $\approx$ 1 次 probe。性能好不好，就看 probe 有多省。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.35cm]
+  \node[byte] (p0) {pos};
+  \node[byte, right=0.25cm of p0] (p1) {+1};
+  \node[byte, right=0.25cm of p1] (p2) {+2};
+  \node[byte, right=0.25cm of p2] (p3) {+3};
+  \node[right=0.15cm of p3, font=\Large] {$\cdots$};
+
+  \node[gen1, below=0.55cm of p0, minimum width=1.1cm] (h0) {probe};
+  \node[gen1, below=0.55cm of p1, minimum width=1.1cm] (h1) {probe};
+  \node[gen1, below=0.55cm of p2, minimum width=1.1cm] (h2) {probe};
+  \node[gen1, below=0.55cm of p3, minimum width=1.1cm] (h3) {probe};
+
+  \draw[arr] (p0) -- (h0);
+  \draw[arr] (p1) -- (h1);
+  \draw[arr] (p2) -- (h2);
+  \draw[arr] (p3) -- (h3);
+\end{tikzpicture}
+\caption{每个候选位置：更新 $h$ → 看 mask → 命中则切，否则继续。}
+\end{figure}
+
+\section{模拟示例：$i=2$ 完整滚动}
+
+\begin{simbox}[窗口 $w=2$，在 $i=2$ 读入 \texttt{0x30}]
+\begin{tabular}{@{}ll@{}}
+旧窗口 & \texttt{10, 20}（$h=18$） \\
+新窗口 & \texttt{20, 30}（丢掉 \texttt{10}） \\
+公式 & $h = (18 \ll 1) + \mathrm{gear[0x30]} - \mathrm{gear[0x10]}$ \\
+    & $= 36 + 0 - 16 = 20$ \\
+\end{tabular}
+\end{simbox}

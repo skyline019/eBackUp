@@ -1,0 +1,55 @@
+\chapter{双钥匙与双路标：2F-Gear 比喻}
+\label{ch:two-keys-analogy}
+
+\begin{analogybox}[双钥匙门]
+想象每个字节位置是一扇门：
+\begin{itemize}[nosep]
+  \item \textbf{左锁} $h_{\mathrm{gear}}$：标准 Gear 指纹，低 $b_{lo}$ bit 必须为 0；
+  \item \textbf{右锁} $h_{\mathrm{norm}}$：仓库 seed 派生的第二指纹，高 $b_{hi}$ bit 必须为 0；
+  \item \textbf{两锁同时打开}才允许切香肠（chunk 结束）。
+\end{itemize}
+单锁（FastCDC）期望 $1/2^{b_{lo}}$ 开门；双锁若各用满宽 $B$ bit 则 $1/2^{2B}$——几乎永远不开（v6 早期 bug）；\textbf{拆分} $B=b_{lo}+b_{hi}$ 后恢复 $1/2^B$。
+\end{analogybox}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=1.0]
+  \node[draw, rounded corners, minimum width=3.5cm, minimum height=2.2cm, fill=V6Teal!8] (door) at (0,0) {切点候选};
+  \node[block=StreamGold, left=1.8cm of door] (k1) {钥匙 A\\$h_{\mathrm{gear}}$};
+  \node[block=V6Teal, right=1.8cm of door] (k2) {钥匙 B\\$h_{\mathrm{norm}}$};
+  \node[lab, below=0.8cm of k1] {$M_{lo}$ 位全 0};
+  \node[lab, below=0.8cm of k2] {$M_{hi}$ 位全 0};
+  \draw[arr] (k1) -- node[above,font=\scriptsize]{AND} (door);
+  \draw[arr] (k2) -- (door);
+  \node[streamblock, below=1.8cm of door, minimum width=4cm] (open) {chunk 切下};
+  \draw[arr] (door) -- node[right,font=\scriptsize]{同时满足} (open);
+\end{tikzpicture}
+\caption{2F-Gear 切点 = 双条件 AND；与 v5「同一把钥匙换三把不同锁」形成对比（\cref{ch:v5-v6}）。}
+\label{fig:two-keys}
+\end{figure}
+
+\section{滚动更新：两列齿轮}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.35cm,y=0.5cm]
+  \foreach \i in {0,...,14} {
+    \draw (\i,0) rectangle ++(0.9,1.2);
+    \node[font=\tiny] at (\i+0.45,0.6) {$b_{\i}$};
+  }
+  \draw[->,thick] (-0.5,2) -- (15,2);
+  \node[font=\small] at (7,2.6) {字节滑窗 $w=64$};
+  \draw[CoreBlue, thick, ->] (6.5,1.2) -- (6.5,3.5) node[above,font=\scriptsize] {$h_{\mathrm{gear}}$ 列};
+  \draw[V6Teal, thick, ->] (8.5,1.2) -- (8.5,3.5) node[above,font=\scriptsize] {$h_{\mathrm{norm}}$ 列};
+  \node[block=CoreBlue, minimum width=2.2cm] at (3,4.8) {$\beta$ 表};
+  \node[block=V6Teal, minimum width=2.2cm] at (11,4.8) {norm 表};
+\end{tikzpicture}
+\caption{每前进一字节，两列 hash 各做一次「减旧加新」；probe 循环体仅多 2 次表查 + 1 次移位比较。}
+\label{fig:two-columns}
+\end{figure}
+
+\section{norm 表：仓库指纹}
+
+\begin{corebox}[Golden ratio 搅拌]
+\texttt{norm\_seed = table\_seed \^{} 0x9E3779B9}（32-bit golden ratio 常数）使 norm 表与 beta 表\textbf{统计独立}，降低双 hash 相关性；同一 CUDA 目录 backup 时，不同仓库 seed 产生不同切点（opt-in dedup 域隔离）。
+\end{corebox}

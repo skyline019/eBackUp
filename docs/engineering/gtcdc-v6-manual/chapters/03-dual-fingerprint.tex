@@ -1,0 +1,51 @@
+\chapter{双指纹 Gear 表与滚动更新}
+\label{ch:dual-fingerprint}
+
+\section{表初始化：\texttt{InitGearTableForConfig}}
+
+v6 维护两张 256 项表，滑窗更新公式与 FastCDC 相同，仅表内容不同：
+
+\begin{align}
+  h_{\mathrm{gear}} &\leftarrow (h_{\mathrm{gear}} \ll 1) + \mathrm{gear}[b] - \mathrm{gear}[b-w] \\
+  h_{\mathrm{norm}} &\leftarrow (h_{\mathrm{norm}} \ll 1) + \mathrm{norm}[b] - \mathrm{norm}[b-w]
+\end{align}
+
+\begin{lstlisting}[caption={v6 norm 表种子（\filepath{gt\_cdc.cc}）},label={lst:init-norm-table}]
+if (cfg->kernel == GtCdcKernel::kTwoFGear) {
+  const uint32_t norm_seed =
+      cfg->table_seed != 0 ? (cfg->table_seed ^ 0x9E3779B9u) : 0u;
+  if (norm_seed != 0) {
+    InitKeyedGearTable(cfg->norm_table, norm_seed);
+  } else {
+    InitGearTable(cfg->norm_table);
+  }
+}
+\end{lstlisting}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.65cm]
+  \node[flowdata] (byte) {输入字节 $b$};
+  \node[flowstep, below left=0.9cm and 1.2cm of byte] (beta) {$\beta\_table$\\标准 Gear};
+  \node[flowstep, below right=0.9cm and 1.2cm of byte] (norm) {$norm\_table$\\keyed(seed$\oplus$golden)};
+  \node[flowstep, below left=1.3cm of beta] (hg) {$h_{\mathrm{gear}}$};
+  \node[flowstep, below right=1.3cm of norm] (hn) {$h_{\mathrm{norm}}$};
+  \node[flowdec, below=1.6cm of byte, yshift=-1.8cm] (and) {双域 AND\\切点?};
+  \draw[arrow] (byte) -| (beta);
+  \draw[arrow] (byte) -| (norm);
+  \draw[arrow] (beta) -- (hg);
+  \draw[arrow] (norm) -- (hn);
+  \draw[arrow] (hg) |- (and);
+  \draw[arrow] (hn) |- (and);
+\end{tikzpicture}
+\caption{每字节并行维护两路 rolling hash；切点判定见 \cref{ch:scan-cut2f}。}
+\label{fig:dual-roll}
+\end{figure}
+
+\section{与 v5 seed-mix 的对比}
+
+v5 在\textbf{单} $h$ 上做 $\texttt{MixSeedHash}(h, seed, pos)$，且 $M$ 随 chunk 内距离变化。v6 把「seed 隔离」前移到 \texttt{norm\_table} 构造，扫描循环内\textbf{无} \texttt{MixSeedHash}、\textbf{无} \texttt{SelectPhaseMask}，probe 体与 FastCDC 同量级。
+
+\section{窗口预热}
+
+在 \texttt{scan\_start = pos + min\_size} 处，两路 hash 均通过 \texttt{InitWindowHash(data, scan\_start, w, table)} 预热；Streaming resume 时跳过预热，直接注入 \texttt{tf\_gear\_h}/\texttt{tf\_norm\_h}（\cref{ch:streaming-resume}）。

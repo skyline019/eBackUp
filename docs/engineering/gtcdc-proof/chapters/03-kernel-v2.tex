@@ -1,0 +1,42 @@
+\chapter{v2 内核：Vector8 与块 Compose 跳态}
+\label{ch:kernel-v2}
+
+\section{v1 与 v2 差异}
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+项 & v1 & v2 \\
+\midrule
+块内扫描 & 逐字节 \texttt{RabinStep} & 8-lane 首命中展开 \\
+块尾无 cut & 隐式链式 $h$ & \texttt{ComposeBlockFast} + \texttt{blocks\_composed} \\
+min\_size feed & 逐字节 virtual & contiguous 段块合成 \\
+Profile & \texttt{gtcdc\_scan\_ns} & + \texttt{vector8\_groups} \\
+\bottomrule
+\end{tabular}
+\caption{G-TCDC v1$\to$v2 实现差异}
+\end{table}
+
+\section{数据流}
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=1.1cm,
+  box/.style={draw, rounded corners, minimum width=3.2cm, minimum height=0.75cm, align=center, font=\small}
+]
+  \node[box] (in) {scan\_start..cut\_limit};
+  \node[box, below=of in] (blk) {64B 块循环};
+  \node[box, below left=1.0cm and 0.2cm of blk] (v8) {VectorFirstHit8};
+  \node[box, below right=1.0cm and 0.2cm of blk] (cmp) {ComposeBlockFast};
+  \node[box, below=1.4cm of blk] (out) {切点或 $h$ 跳态};
+  \draw[-{Stealth}] (in) -- (blk);
+  \draw[-{Stealth}] (blk) -- (v8);
+  \draw[-{Stealth}] (blk) -- (cmp);
+  \draw[-{Stealth}] (v8) -- (out);
+  \draw[-{Stealth}] (cmp) -- (out);
+\end{tikzpicture}
+\end{center}
+
+源码锚点：\filepath{gt\_cdc\_tensor.cc}（\texttt{VectorFirstHit8}、\texttt{ScanBlockLeapfrogV2}），
+\filepath{gt\_cdc\_streaming.cc}（\texttt{FeedViewRange}）。

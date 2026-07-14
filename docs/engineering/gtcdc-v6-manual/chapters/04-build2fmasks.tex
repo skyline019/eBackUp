@@ -1,0 +1,82 @@
+\chapter{Build2FMasks：非重叠 bit 域拆分}
+\label{ch:build2fmasks}
+
+\section{算法}
+
+\texttt{Build2FMasks(avg\_size, nc\_level, mask\_lo, mask\_hi, norm\_shift)} 是 v6 的\textbf{核心参数化}函数，源码位于 \filepath{gt\_cdc\_gear\_scan.cc}。
+
+\begin{lstlisting}[caption={Build2FMasks 完整实现},label={lst:build2fmasks}]
+void Build2FMasks(uint32_t avg_size, uint8_t nc_level,
+                  uint32_t* mask_lo, uint32_t* mask_hi,
+                  uint32_t* norm_shift) {
+  uint32_t total_bits = 0;
+  uint32_t v = avg_size;
+  while (v > 1) { v >>= 1; ++total_bits; }
+  if (total_bits == 0) total_bits = 1;
+  if (total_bits > 31) total_bits = 31;
+
+  uint32_t hi_bits = total_bits / 2;
+  if (nc_level > 0) {
+    const uint32_t nc_cap =
+        total_bits / (static_cast<uint32_t>(nc_level) + 1u);
+    if (nc_cap > 0 && nc_cap < hi_bits) hi_bits = nc_cap;
+  }
+  if (hi_bits == 0) hi_bits = 1;
+  uint32_t lo_bits = total_bits - hi_bits;
+  if (lo_bits == 0) { lo_bits = 1; if (hi_bits > 1) --hi_bits; }
+
+  *mask_lo = (1u << lo_bits) - 1u;
+  *mask_hi = (1u << hi_bits) - 1u;
+  *norm_shift = lo_bits;
+}
+\end{lstlisting}
+
+\section{bit 域几何}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.22cm,y=0.8cm]
+  \foreach \i in {0,...,31} {
+    \draw (\i,0) rectangle ++(1,1);
+    \node[font=\tiny] at (\i+0.5,0.5) {\i};
+  }
+  \fill[blue!25] (0,0) rectangle (10,1);
+  \fill[green!25] (10,0) rectangle (20,1);
+  \node[font=\small,below] at (5,-0.3) {$M_{lo}$：$h_{\mathrm{gear}}$ 低 $b_{lo}$ bit};
+  \node[font=\small,below] at (15,-0.3) {$(h_{\mathrm{norm}} \gg b_{lo}) \mathbin{\&} M_{hi}$};
+  \draw[decorate, decoration={brace, amplitude=5pt}] (-0.2,1.3) -- (10.2,1.3)
+    node[midway,above=6pt,font=\footnotesize] {$b_{lo}$ bit};
+  \draw[decorate, decoration={brace, amplitude=5pt}] (10.2,1.3) -- (20.2,1.3)
+    node[midway,above=6pt,font=\footnotesize] {$b_{hi}$ bit};
+\end{tikzpicture}
+\caption{32-bit 字内的非重叠检测域：$b_{lo}+b_{hi} \approx \log_2(\texttt{avg\_size})$。}
+\label{fig:bit-domains}
+\end{figure}
+
+\section{数值例：\texttt{avg=1MB}（Large profile）}
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{avg\_size=1048576}，\texttt{nc\_level=2}}
+\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+量 & 值 \\
+\midrule
+\texttt{total\_bits} & 20 \\
+\texttt{nc\_cap} = $\lfloor 20/(2+1)\rfloor$ & 6 \\
+\texttt{hi\_bits} & min(10, 6) = 6 \\
+\texttt{lo\_bits} & 14 \\
+期望 hit 率 & $2^{-20} \approx 1/1\text{MB}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{早期缺陷与修复}
+
+\begin{v6box}[v6 关键 bug：满宽双 AND]
+若错误地对 $h_{\mathrm{gear}}$ 与 $h_{\mathrm{norm}}$ 各用完整 $\log_2(\texttt{avg})$ bit mask 再 AND，则
+$P(\text{hit}) \approx 2^{-2B}$，切点几乎永不出现 $\Rightarrow$ 大量 max-cut、块长 $\approx$ \texttt{max\_size}、probe 统计异常。\textbf{修复}：将 $B$ bit \textbf{拆分}到 $M_{lo}$ 与 $M_{hi}$（\cref{fig:bit-domains}）。
+\end{v6box}
+
+实测（256\,MB 随机，Large profile）：修复后 2f\_gear 约 197 chunks（mean $\approx$1.36\,MB），与目标 avg 同阶；修复前 hit$\approx 0$ 时 chunks 数极低且 mean$\rightarrow$max。

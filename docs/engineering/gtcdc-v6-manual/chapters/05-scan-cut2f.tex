@@ -1,0 +1,56 @@
+\chapter{ScanGearCut2F 扫描内核}
+\label{ch:scan-cut2f}
+
+\section{切点判定}
+
+在 $[\texttt{scan\_start}, \texttt{cut\_limit})$ 上逐 probe 更新双 hash，首个满足下式的位置为切点：
+\begin{equation}
+  (h_{\mathrm{gear}} \mathbin{\&} M_{lo}) = 0
+  \;\land\;
+  \bigl((h_{\mathrm{norm}} \gg \texttt{norm\_shift}) \mathbin{\&} M_{hi}\bigr) = 0
+  \label{eq:2f-cut}
+\end{equation}
+
+\begin{lstlisting}[caption={ScanGearCut2F 核心循环（scalar 节选）},label={lst:scan2f}]
+if ((h_gear & mask_lo) == 0 &&
+    ((h_norm >> norm_shift) & mask_hi) == 0) {
+  *out_cut = pos;
+  *found = true;
+  return true;
+}
+h_gear = (h_gear << 1) + gear[data[pos]] - gear[data[pos - w]];
+h_norm = (h_norm << 1) + norm_gear[data[pos]] - norm_gear[data[pos - w]];
+\end{lstlisting}
+
+\section{AVX2 路径}
+
+Release 下 \texttt{ScanGearCut2F} 与 scalar \textbf{逻辑等价}：8-byte 内层展开 + \texttt{\_mm\_prefetch}。与 FastCDC \texttt{ScanGearCut} 结构同构，额外维护第二路 $h_{\mathrm{norm}}$。
+
+\section{View 扫描与 probe 计数}
+
+Streaming 通过 \texttt{GtCdcScanGear2FView} 在 \texttt{GtCdcSegmentView} 双段虚拟视图上调用同一判定式；每次距离 advance 计 1 probe，写入 \texttt{PipelinePhaseStats::stream\_cdc\_probes} / \texttt{gtcdc\_scan\_probes}，供 \texttt{scan\_ns\_per\_probe\_ratio} 门禁（\cref{ch:bench}）。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.92, transform shape,
+  node distance=0.55cm]
+  \node[flowstep, minimum width=4.2cm] (start) {scan\_start};
+  \node[flowstep, minimum width=4.2cm, below=of start] (loop) {pos++：更新 $h_g, h_n$};
+  \node[flowdec, below=of loop] (hit) {式 \eqref{eq:2f-cut}?};
+  \node[flowstep, below left=1.0cm and 0.5cm of hit, fill=green!15] (yes) {out\_cut=pos};
+  \node[flowstep, below right=1.0cm and 0.5cm of hit] (no) {pos < cut\_limit?};
+  \node[flowstep, below=1.0cm of no, fill=orange!12] (max) {max-cut / resume};
+  \draw[arrow] (start) -- (loop);
+  \draw[arrow] (loop) -- (hit);
+  \draw[arrow] (hit) -| node[above left,font=\scriptsize]{是} (yes);
+  \draw[arrow] (hit) -| node[above right,font=\scriptsize]{否} (no);
+  \draw[arrow] (no) -- node[right,font=\scriptsize]{否} (max);
+  \draw[arrow] (no.west) -- ++(-1.1,0) |- (loop.west);
+\end{tikzpicture}
+\caption{\texttt{ScanGearCut2F} 控制流；未命中且未达 EOF 时由 Streaming 层 resume（\cref{ch:streaming-resume}）。}
+\label{fig:scan2f-flow}
+\end{figure}
+
+\section{整文件入口}
+
+\texttt{GtCdcSlice::ChunkCuts} 在 \texttt{kernel==kTwoFGear} 时调用 \texttt{ScanGearCut2F}；配置由 \texttt{GtCdcConfigForRepo} 注入 \texttt{table\_seed}、\texttt{nc\_level}。增量路径 \texttt{EbHcrboGtChunker} 内层复用同一 \texttt{GtCdcSlice}。

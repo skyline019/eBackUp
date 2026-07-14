@@ -32,6 +32,15 @@ constexpr uint32_t kBackupFeatureCoalescedMeta = 0x200;
 constexpr uint32_t kBackupFeatureEbPack = 0x100;
 constexpr uint32_t kBackupFeatureWinMeta = 0x400;
 constexpr uint32_t kBackupFeatureImmutable = 0x800;
+constexpr uint32_t kBackupFeatureGtCdc = 0x1000;
+constexpr uint32_t kBackupFeatureGtCdcGear = 0x2000;
+constexpr uint32_t kBackupFeatureGtCdcNative = 0x4000;
+constexpr uint32_t kBackupFeatureGtCdcAnGear = 0x8000;
+constexpr uint32_t kBackupFeatureGtCdcTwoFGear = 0x10000;
+constexpr uint32_t kBackupFeatureTopoCdc = 0x20000;
+constexpr uint32_t kBackupFeatureTopoChain = 0x40000;
+constexpr uint32_t kBackupFeatureTopoPh = 0x80000;
+constexpr uint32_t kBackupFeatureTopoPhNative = 0x100000;
 
 inline bool RepoUsesCoalescedMeta(const BackupSuperBlock& sb) {
   return (sb.ext.backup_features & kBackupFeatureCoalescedMeta) != 0;
@@ -60,6 +69,154 @@ inline bool RepoUsesBalancedDurability(const BackupSuperBlock& sb) {
 
 inline bool RepoUsesImmutable(const BackupSuperBlock& sb) {
   return (sb.ext.backup_features & kBackupFeatureImmutable) != 0;
+}
+
+inline bool RepoUsesGtCdc(const BackupSuperBlock& sb) {
+  return (sb.ext.backup_features & kBackupFeatureGtCdc) != 0;
+}
+
+inline bool RepoUsesGtCdcGear(const BackupSuperBlock& sb) {
+  return (sb.ext.backup_features & kBackupFeatureGtCdcGear) != 0;
+}
+
+inline bool RepoUsesGtCdcNative(const BackupSuperBlock& sb) {
+  return (sb.ext.backup_features & kBackupFeatureGtCdcNative) != 0;
+}
+
+inline bool RepoUsesGtCdcAnGear(const BackupSuperBlock& sb) {
+  return (sb.ext.backup_features & kBackupFeatureGtCdcAnGear) != 0;
+}
+
+inline bool RepoUsesGtCdcTwoFGear(const BackupSuperBlock& sb) {
+  return (sb.ext.backup_features & kBackupFeatureGtCdcTwoFGear) != 0;
+}
+
+inline bool RepoUsesTopoCdc(const BackupSuperBlock& sb) {
+  return (sb.ext.backup_features & kBackupFeatureTopoCdc) != 0;
+}
+
+inline bool RepoUsesTopoChain(const BackupSuperBlock& sb) {
+  return (sb.ext.backup_features & kBackupFeatureTopoChain) != 0;
+}
+
+inline bool RepoUsesTopoPh(const BackupSuperBlock& sb) {
+  return (sb.ext.backup_features & kBackupFeatureTopoPh) != 0;
+}
+
+inline bool RepoUsesTopoPhNative(const BackupSuperBlock& sb) {
+  return (sb.ext.backup_features & kBackupFeatureTopoPhNative) != 0;
+}
+
+inline uint16_t RepoTopoPhnEventStride(const BackupSuperBlock& sb) {
+  const uint16_t s = static_cast<uint16_t>(sb.ext.topo_reserved[0]) |
+                     (static_cast<uint16_t>(sb.ext.topo_reserved[1]) << 8);
+  return s == 0 ? 64 : s;
+}
+
+inline void SetRepoTopoPhnEventStride(BackupSuperBlock* sb, uint16_t stride) {
+  sb->ext.topo_reserved[0] = static_cast<uint8_t>(stride & 0xFFu);
+  sb->ext.topo_reserved[1] = static_cast<uint8_t>((stride >> 8) & 0xFFu);
+}
+
+// topo_reserved[2]: low 5 bits = k_points (0 → default 16); bit5 = persist δ enable.
+constexpr uint8_t kTopoPhnKPointsMask = 0x1Fu;
+constexpr uint8_t kTopoPhnPersistBit = 0x20u;
+
+inline uint8_t RepoTopoPhnKPoints(const BackupSuperBlock& sb) {
+  const uint8_t raw = static_cast<uint8_t>(sb.ext.topo_reserved[2] & kTopoPhnKPointsMask);
+  return raw == 0 ? 16 : raw;
+}
+
+inline void SetRepoTopoPhnKPoints(BackupSuperBlock* sb, uint8_t k_points) {
+  const uint8_t packed_k =
+      static_cast<uint8_t>((k_points == 0 ? 16 : k_points) & kTopoPhnKPointsMask);
+  const uint8_t persist =
+      static_cast<uint8_t>(sb->ext.topo_reserved[2] & kTopoPhnPersistBit);
+  sb->ext.topo_reserved[2] = static_cast<uint8_t>(packed_k | persist);
+}
+
+inline bool RepoTopoPhnPersistDelta(const BackupSuperBlock& sb) {
+  return (sb.ext.topo_reserved[2] & kTopoPhnPersistBit) != 0;
+}
+
+inline void SetRepoTopoPhnPersistDelta(BackupSuperBlock* sb, bool enable) {
+  if (enable) {
+    sb->ext.topo_reserved[2] =
+        static_cast<uint8_t>(sb->ext.topo_reserved[2] | kTopoPhnPersistBit);
+  } else {
+    sb->ext.topo_reserved[2] = static_cast<uint8_t>(sb->ext.topo_reserved[2] &
+                                                    static_cast<uint8_t>(~kTopoPhnPersistBit));
+  }
+}
+
+inline uint16_t RepoTopoPhCalibPermille(const BackupSuperBlock& sb) {
+  return static_cast<uint16_t>(sb.ext.topo_reserved[0]) |
+         (static_cast<uint16_t>(sb.ext.topo_reserved[1]) << 8);
+}
+
+inline void SetRepoTopoPhCalibPermille(BackupSuperBlock* sb, uint16_t permille) {
+  sb->ext.topo_reserved[0] = static_cast<uint8_t>(permille & 0xFFu);
+  sb->ext.topo_reserved[1] = static_cast<uint8_t>((permille >> 8) & 0xFFu);
+}
+
+inline uint8_t RepoTopoPhKPoints(const BackupSuperBlock& sb) {
+  return sb.ext.topo_reserved[2] == 0 ? 16 : sb.ext.topo_reserved[2];
+}
+
+inline void SetRepoTopoPhKPoints(BackupSuperBlock* sb, uint8_t k_points) {
+  sb->ext.topo_reserved[2] = k_points;
+}
+
+inline uint16_t RepoTopoCalibPermille(const BackupSuperBlock& sb) {
+  return static_cast<uint16_t>(sb.ext.topo_reserved[0]) |
+         (static_cast<uint16_t>(sb.ext.topo_reserved[1]) << 8);
+}
+
+inline void SetRepoTopoCalibPermille(BackupSuperBlock* sb, uint16_t permille) {
+  sb->ext.topo_reserved[0] = static_cast<uint8_t>(permille & 0xFFu);
+  sb->ext.topo_reserved[1] = static_cast<uint8_t>((permille >> 8) & 0xFFu);
+}
+
+inline uint16_t RepoTopoChainStrideLog(const BackupSuperBlock& sb) {
+  return static_cast<uint16_t>(sb.ext.topo_reserved[0]) |
+         (static_cast<uint16_t>(sb.ext.topo_reserved[1]) << 8);
+}
+
+inline void SetRepoTopoChainStrideLog(BackupSuperBlock* sb, uint16_t stride_log) {
+  sb->ext.topo_reserved[0] = static_cast<uint8_t>(stride_log & 0xFFu);
+  sb->ext.topo_reserved[1] = static_cast<uint8_t>((stride_log >> 8) & 0xFFu);
+}
+
+inline uint8_t RepoTopoChainQuantQ(const BackupSuperBlock& sb) {
+  return sb.ext.topo_reserved[2];
+}
+
+inline void SetRepoTopoChainQuantQ(BackupSuperBlock* sb, uint8_t quant_q) {
+  sb->ext.topo_reserved[2] = quant_q;
+}
+
+constexpr uint8_t kChainFeatureBeta1 = 0x01;
+
+inline uint8_t RepoTopoChainFeatures(const BackupSuperBlock& sb) {
+  return sb.ext.topo_reserved[3];
+}
+
+inline void SetRepoTopoChainFeatures(BackupSuperBlock* sb, uint8_t features) {
+  sb->ext.topo_reserved[3] = features;
+}
+
+inline bool RepoTopoChainBeta1(const BackupSuperBlock& sb) {
+  return (RepoTopoChainFeatures(sb) & kChainFeatureBeta1) != 0;
+}
+
+inline void SetRepoTopoChainBeta1(BackupSuperBlock* sb, bool enable) {
+  uint8_t f = RepoTopoChainFeatures(*sb);
+  if (enable) {
+    f = static_cast<uint8_t>(f | kChainFeatureBeta1);
+  } else {
+    f = static_cast<uint8_t>(f & ~kChainFeatureBeta1);
+  }
+  SetRepoTopoChainFeatures(sb, f);
 }
 
 struct ManifestFileEntry {

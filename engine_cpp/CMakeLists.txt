@@ -1,5 +1,20 @@
 cmake_minimum_required(VERSION 3.20)
 
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  project(ebbackup_engine LANGUAGES CXX C)
+  set(CMAKE_CXX_STANDARD 17)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  set(CMAKE_CXX_EXTENSIONS OFF)
+  if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  endif()
+  set(EBBACKUP_ENGINE_STANDALONE ON)
+endif()
+
+if(NOT DEFINED EBBACKUP_BUILD_TESTS)
+  option(EBBACKUP_BUILD_TESTS "Build backup kernel tests" ON)
+endif()
+
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchLZ4.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchZSTD.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildSQLite.cmake")
@@ -28,8 +43,27 @@ set(EBBACKUP_CORE_SOURCES
   src/chunk/rolling_checksum.cc
   src/chunk/rabin_anchor.cc
   src/chunk/eb_hcrbo.cc
+  src/chunk/eb_hcrbo_gt.cc
   src/chunk/cfi_rolling.cc
   src/chunk/fast_cdc_streaming.cc
+  src/chunk/gt_cdc.cc
+  src/chunk/gt_cdc_gear_scan.cc
+  src/chunk/gt_cdc_gear.cc
+  src/chunk/gt_cdc_tensor.cc
+  src/chunk/gt_cdc_streaming.cc
+  src/chunk/topo_cdc/topo_cdc.cc
+  src/chunk/topo_cdc/topo_hom_scan.cc
+  src/chunk/topo_cdc/topo_chain_scan.cc
+  src/chunk/topo_cdc/topo_tri_scan.cc
+  src/chunk/topo_cdc/topo_cdc_config.cc
+  src/chunk/topo_cdc/topo_cdc_streaming.cc
+  src/chunk/topo_cdc/topo_chain_streaming.cc
+  src/chunk/topo_ph/topo_ph_config.cc
+  src/chunk/topo_ph/topo_ph_scan.cc
+  src/chunk/topo_ph/topo_ph_streaming.cc
+  src/chunk/topo_phn/topo_phn_config.cc
+  src/chunk/topo_phn/topo_phn_scan.cc
+  src/chunk/topo_phn/topo_phn_streaming.cc
   src/chunk/chunk_profile.cc
   src/codec/lz4_codec.cc
   src/codec/zstd_codec.cc
@@ -177,6 +211,30 @@ if(MSVC)
   target_link_options(ebbackup_bench_check PRIVATE $<$<CONFIG:Release>:/LTCG>)
 endif()
 
+add_executable(ebbackup_gtcdc_bench tests/bench/gt_cdc_scan_bench.cc)
+target_link_libraries(ebbackup_gtcdc_bench PRIVATE ebbackup_core)
+if(MSVC)
+  target_link_options(ebbackup_gtcdc_bench PRIVATE $<$<CONFIG:Release>:/LTCG>)
+endif()
+
+add_executable(ebbackup_gtcdc_v6_eval tests/bench/gt_cdc_v6_eval.cc)
+target_link_libraries(ebbackup_gtcdc_v6_eval PRIVATE ebbackup_core)
+target_include_directories(ebbackup_gtcdc_v6_eval PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/helpers")
+target_compile_definitions(ebbackup_gtcdc_v6_eval PRIVATE ${EBTEST_COMPILE_DEFS})
+if(MSVC)
+  target_link_options(ebbackup_gtcdc_v6_eval PRIVATE $<$<CONFIG:Release>:/LTCG>)
+endif()
+
+add_executable(ebbackup_topo_cdc_eval tests/bench/topo_cdc_eval.cc)
+target_link_libraries(ebbackup_topo_cdc_eval PRIVATE ebbackup_core)
+target_include_directories(ebbackup_topo_cdc_eval PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/helpers")
+target_compile_definitions(ebbackup_topo_cdc_eval PRIVATE ${EBTEST_COMPILE_DEFS})
+if(MSVC)
+  target_link_options(ebbackup_topo_cdc_eval PRIVATE $<$<CONFIG:Release>:/LTCG>)
+endif()
+
 add_library(ebbackup_workbench SHARED
   workbench/ebbackup_workbench_shim.cc
 )
@@ -196,8 +254,23 @@ if(MSVC)
 endif()
 
 if(EBBACKUP_BUILD_TESTS)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/SetupGTest.cmake")
+
   set(EBBACKUP_TEST_SOURCES
     tests/chunk/fast_cdc_test.cc
+    tests/chunk/gt_cdc_test.cc
+    tests/chunk/gt_cdc_compose_test.cc
+    tests/chunk/gt_cdc_drift_test.cc
+    tests/chunk/gt_cdc_nc_test.cc
+    tests/chunk/gt_cdc_an_test.cc
+    tests/chunk/gt_cdc_2f_test.cc
+    tests/chunk/topo_cdc_hom_test.cc
+    tests/chunk/topo_cdc_chain_test.cc
+    tests/chunk/topo_cdc_tri_test.cc
+    tests/chunk/topo_ph_test.cc
+    tests/chunk/topo_phn_test.cc
+    tests/chunk/topo_gear_parity_test.cc
+    tests/chunk/gt_cdc_parity_test.cc
     tests/chunk/digest_pool_test.cc
     tests/chunk/digest_sha_ni_test.cc
     tests/chunk/fast_cdc_streaming_test.cc
@@ -235,6 +308,7 @@ if(EBBACKUP_BUILD_TESTS)
     tests/engine/recovery_test.cc
     tests/engine/coalesced_meta_test.cc
     tests/engine/eb_hcrbo_test.cc
+    tests/engine/eb_hcrbo_gt_test.cc
     tests/engine/progress_test.cc
     tests/engine/eb_backup_capi_test.cc
     tests/engine/path_normalize_test.cc
@@ -308,6 +382,7 @@ if(EBBACKUP_BUILD_TESTS)
     tests/pipeline/pipeline_v4_test.cc
     tests/pipeline/pipeline_deadlock_test.cc
     tests/pipeline/streaming_chunk_pipeline_test.cc
+    tests/pipeline/gt_cdc_pipeline_test.cc
     tests/bench/bench_reuse_gate_test.cc
     tests/failure/powerfail_test.cc
     tests/failure/balanced_durability_test.cc
@@ -375,5 +450,15 @@ if(EBBACKUP_BUILD_TESTS)
   target_compile_definitions(eb_run_tests_capi PRIVATE ${EBTEST_COMPILE_DEFS})
   if(MSVC)
     target_link_options(eb_run_tests_capi PRIVATE $<$<CONFIG:Release>:/LTCG>)
+  endif()
+
+  if(EBBACKUP_ENGINE_STANDALONE)
+    enable_testing()
+    add_test(NAME ebbackup_tests COMMAND ebbackup_tests)
+    add_test(NAME eb_run_tests_capi COMMAND eb_run_tests_capi "EbBackupCapiTest.*")
+    add_test(NAME ebbackup_bench_check COMMAND ebbackup_bench_check)
+    set_tests_properties(ebbackup_bench_check PROPERTIES
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    )
   endif()
 endif()

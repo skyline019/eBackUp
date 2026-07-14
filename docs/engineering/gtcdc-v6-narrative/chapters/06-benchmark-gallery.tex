@@ -1,0 +1,121 @@
+\chapter{实测图库：性能与压缩率}
+\label{ch:bench-gallery}
+
+\section{E2E 吞吐 ratio（gtcdc / stream）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  ybar,
+  width=12cm,
+  height=7cm,
+  bar width=14pt,
+  ymin=0.75, ymax=1.25,
+  ylabel={gtcdc/stream ratio},
+  symbolic x coords={256MB incr, 2GB, multi, mixed, CUDA 4.8G},
+  xtick=data,
+  x tick label style={rotate=20, anchor=east, font=\small},
+  nodes near coords,
+  nodes near coords style={font=\tiny},
+  enlarge x limits=0.1,
+  ytick={0.8,0.9,1.0,1.1,1.2},
+  grid=major
+]
+\addplot[fill=V6Teal!70] coordinates {
+  (256MB incr, 1.015)
+  (2GB, 1.009)
+  (multi, 0.975)
+  (mixed, 1.038)
+  (CUDA 4.8G, 1.021)
+};
+\draw[red, thick, dashed] (axis cs:256MB incr,0.97) -- (axis cs:CUDA 4.8G,0.97)
+  node[above right,font=\scriptsize] {floor 0.97};
+\end{axis}
+\end{tikzpicture}
+\caption{合成与真实 workload 均满足主门禁；multi 略低仍 $>0.97$。}
+\label{fig:throughput-gallery}
+\end{figure}
+
+\section{scan\_ns\_per\_probe\_ratio}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  ybar,
+  width=10cm,
+  height=6cm,
+  bar width=20pt,
+  ymin=0, ymax=1.4,
+  ylabel={gtcdc/stream per-probe},
+  symbolic x coords={10-run proof, CUDA real},
+  xtick=data,
+  nodes near coords,
+  enlarge x limits=0.2
+]
+\addplot[fill=CoreOrange!70] coordinates {
+  (10-run proof, 1.14)
+  (CUDA real, 0.798)
+};
+\draw[red, thick, dashed] (axis cs:10-run proof,1.20) -- (axis cs:CUDA real,1.20)
+  node[above,font=\scriptsize] {floor 1.20};
+\end{axis}
+\end{tikzpicture}
+\caption{随机 256MB proof 略超旧 floor 1.05；真实 CUDA 目录 v6 单 probe \textbf{更优}。}
+\label{fig:per-probe-gallery}
+\end{figure}
+
+\section{压缩率：D:\textbackslash CUDA}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  ybar,
+  width=9cm,
+  height=6cm,
+  bar width=28pt,
+  ymin=0.65, ymax=0.75,
+  ylabel={compress\_ratio（越低越好）},
+  symbolic x coords={stream, gtcdc v6},
+  xtick=data,
+  nodes near coords,
+  nodes near coords style={font=\small},
+  enlarge x limits=0.25
+]
+\addplot[fill=StreamGold!70] coordinates {(stream, 0.7146)};
+\addplot[fill=V6Teal!70] coordinates {(gtcdc v6, 0.7138)};
+\end{axis}
+\end{tikzpicture}
+\caption{4.78\,GB CUDA 树：payload 节省 $\approx$60.7\%；gtcdc/stream = 0.9988。}
+\label{fig:compress-cuda}
+\end{figure}
+
+\section{Radar：三角约束达成度（示意）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.9]
+  \foreach \a/\lab in {90/性能, 210/压缩率, 330/dedup 隔离} {
+    \coordinate (P\a) at (\a:2.8cm);
+  }
+  \draw[gray] (P90) -- (P210) -- (P330) -- cycle;
+  \node[font=\small] at (P90) {性能};
+  \node[font=\small] at (P210) {压缩率};
+  \node[font=\small] at (P330) {dedup};
+  \draw[V6Teal, fill=V6Teal!25, thick, opacity=0.85]
+    (90:2.5cm) -- (210:2.45cm) -- (330:2.4cm) -- cycle;
+  \node[font=\footnotesize, align=center] at (0,0) {v6\\实测};
+\end{tikzpicture}
+\caption{真实 CUDA 数据：吞吐+、压缩等价、独立切点域（opt-in）。}
+\label{fig:radar}
+\end{figure}
+
+\section{如何复现}
+
+\begin{verbatim}
+ebbackup_gtcdc_v6_eval.exe --source D:\CUDA
+ebbackup_gtcdc_v6_eval.exe --compress-256
+.\run_gtcdc_proof.ps1 -Runs 10
+\end{verbatim}

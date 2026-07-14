@@ -17,8 +17,19 @@
 
 #include "ebbackup/chunk/chunk_profile.h"
 #include "ebbackup/chunk/eb_hcrbo.h"
+#include "ebbackup/chunk/eb_hcrbo_gt.h"
 #include "ebbackup/chunk/fast_cdc.h"
 #include "ebbackup/chunk/fast_cdc_streaming.h"
+#include "ebbackup/chunk/gt_cdc.h"
+#include "ebbackup/chunk/gt_cdc_streaming.h"
+#include "ebbackup/chunk/topo_cdc.h"
+#include "ebbackup/chunk/topo_cdc_streaming.h"
+#include "ebbackup/chunk/topo_chain_streaming.h"
+#include "ebbackup/chunk/topo_ph.h"
+#include "ebbackup/chunk/topo_ph_streaming.h"
+#include "ebbackup/chunk/topo_phn.h"
+#include "ebbackup/chunk/topo_phn_internal.h"
+#include "ebbackup/chunk/topo_phn_streaming.h"
 #include "ebbackup/chunk/rolling_checksum.h"
 #include "ebbackup/codec/content_class.h"
 #include "ebbackup/codec/lz4_codec.h"
@@ -217,6 +228,13 @@ struct PipelineShared {
   mutable std::mutex stats_mu;
   std::vector<report::BackupPathIssue>* scan_issues{nullptr};
   mutable std::mutex scan_issues_mu;
+  // Cached TopoPH-Native runtime cfg per avg_size band (Small/Default/Large).
+  static constexpr size_t kTopoPhnCfgSlots = 3;
+  mutable std::mutex topo_phn_cfg_mu;
+  mutable bool topo_phn_cfg_ready[kTopoPhnCfgSlots]{};
+  mutable TopoPhnConfig topo_phn_cfg_by_avg[kTopoPhnCfgSlots]{};
+  mutable uint16_t topo_phn_sb_stride{0};
+  mutable bool topo_phn_sb_stride_set{false};
 
   void RecordPipelineIssue(const std::string& path, const std::string& reason) {
     if (!scan_issues) return;
@@ -317,11 +335,184 @@ struct PipelineShared {
   }
 };
 
+GtCdcKernel GtCdcKernelForPipeline(const PipelineShared* shared) {
+  return shared ? shared->options.gtcdc_kernel : GtCdcKernel::kRabin;
+}
+
+void MergeTopoCdcStreamProfileToPhaseStats(const TopoCdcStreamProfile& profile,
+                                           PipelineShared* shared) {
+  if (!shared || !shared->phase_stats) return;
+  shared->phase_stats->stream_cdc_ns.fetch_add(
+      profile.topo_scan_ns, std::memory_order_relaxed);
+  shared->phase_stats->stream_cdc_probes.fetch_add(
+      profile.topo_scan_probes, std::memory_order_relaxed);
+  shared->phase_stats->stream_digest_ns.fetch_add(
+      profile.digest_ns, std::memory_order_relaxed);
+  shared->phase_stats->stream_carry_ns.fetch_add(
+      profile.carry_copy_ns, std::memory_order_relaxed);
+}
+
+void MergeTopoChainStreamProfileToPhaseStats(const TopoChainStreamProfile& profile,
+                                             PipelineShared* shared) {
+  if (!shared || !shared->phase_stats) return;
+  shared->phase_stats->stream_cdc_ns.fetch_add(
+      profile.chain_scan_ns, std::memory_order_relaxed);
+  shared->phase_stats->stream_cdc_probes.fetch_add(
+      profile.chain_scan_probes, std::memory_order_relaxed);
+  shared->phase_stats->stream_digest_ns.fetch_add(
+      profile.digest_ns, std::memory_order_relaxed);
+  shared->phase_stats->stream_carry_ns.fetch_add(
+      profile.carry_copy_ns, std::memory_order_relaxed);
+}
+
+GtCdcConfig GtCdcPipelineConfig(size_t byte_len, PipelineShared* shared) {
+  GtCdcConfig cfg = GtCdcConfigForFileSize(
+      byte_len, shared->options.chunk_profile, shared->options.digest_algo,
+      GtCdcKernelForPipeline(shared));
+  if (cfg.kernel == GtCdcKernel::kNative) {
+    cfg.table_seed = shared->options.gtcdc_table_seed;
+    cfg.nc_level = shared->options.gtcdc_nc_level;
+    if (cfg.nc_level == 0) cfg.nc_level = 2;
+    gtcdc_internal::InitGearTableForConfig(&cfg);
+  } else if (cfg.kernel == GtCdcKernel::kAnGear ||
+             cfg.kernel == GtCdcKernel::kTwoFGear) {
+    cfg.table_seed = shared->options.gtcdc_table_seed;
+    cfg.nc_level = shared->options.gtcdc_nc_level;
+    if (cfg.nc_level == 0) cfg.nc_level = 2;
+    gtcdc_internal::InitGearTableForConfig(&cfg);
+  }
+  return cfg;
+}
+
+TopoCdcConfig TopoCdcPipelineConfig(size_t byte_len, PipelineShared* shared) {
+  TopoCdcConfig cfg = TopoCdcConfigForFileSize(
+      byte_len, shared->options.chunk_profile, shared->options.digest_algo);
+  cfg.table_seed = shared->options.topo_table_seed;
+  cfg.topo_calib_permille = shared->options.topo_calib_permille;
+  return cfg;
+}
+
+TopoCdcConfig TopoChainPipelineConfig(size_t byte_len, PipelineShared* shared) {
+  TopoCdcConfig cfg = TopoCdcConfigForFileSize(
+      byte_len, shared->options.chunk_profile, shared->options.digest_algo);
+  cfg.variant = TopoCdcVariant::kChain;
+  cfg.chain_lfsr_seed = shared->options.topo_table_seed;
+  cfg.chain_stride_log = shared->options.chain_stride_log;
+  if (cfg.chain_stride_log == 0) cfg.chain_stride_log = 12;
+  cfg.chain_quant_q = shared->options.chain_quant_q;
+  cfg.chain_enable_beta1 = shared->options.chain_enable_beta1;
+  return cfg;
+}
+
+TopoPhConfig TopoPhPipelineConfig(size_t byte_len, PipelineShared* shared) {
+  TopoPhConfig cfg = TopoPhConfigForFileSize(
+      byte_len, shared->options.chunk_profile, shared->options.digest_algo);
+  cfg.table_seed = shared->options.topo_table_seed;
+  cfg.topo_calib_permille = shared->options.topo_calib_permille;
+  cfg.k_points = shared->options.topo_ph_k_points;
+  cfg.kernel = shared->options.topo_ph_variant == 4 ? TopoPhKernel::kPhH0
+                                                    : TopoPhKernel::kTriV2;
+  return cfg;
+}
+
+namespace {
+
+// Small=16KiB → 0, Default=256KiB → 1, Large=1MiB → 2 (matches chunk_profile).
+size_t TopoPhnCfgSlotForAvg(uint32_t avg_size) {
+  if (avg_size <= 16u * 1024u) return 0;
+  if (avg_size >= 1024u * 1024u) return 2;
+  return 1;
+}
+
+}  // namespace
+
+TopoPhnConfig TopoPhnPipelineConfig(size_t byte_len, PipelineShared* shared) {
+  const TopoPhnConfig sized = TopoPhnConfigForFileSize(
+      byte_len, shared->options.chunk_profile, shared->options.digest_algo);
+  const size_t slot = TopoPhnCfgSlotForAvg(sized.avg_size);
+  const uint16_t sb_stride = shared->options.topo_phn_event_stride;
+
+  {
+    std::lock_guard<std::mutex> lock(shared->topo_phn_cfg_mu);
+    if (!shared->topo_phn_sb_stride_set) {
+      shared->topo_phn_sb_stride = sb_stride;
+      shared->topo_phn_sb_stride_set = true;
+    }
+    if (shared->topo_phn_cfg_ready[slot]) {
+      TopoPhnConfig cfg = shared->topo_phn_cfg_by_avg[slot];
+      cfg.digest_algo = sized.digest_algo;
+      return cfg;
+    }
+  }
+
+  TopoPhnConfig cfg = sized;
+  cfg.table_seed = shared->options.topo_table_seed;
+  cfg.event_stride = topo_phn_internal::ScaleEventStrideForAvg(
+      sb_stride, cfg.avg_size);
+  cfg.k_points = shared->options.topo_phn_k_points;
+  cfg.enable_persist_delta = shared->options.topo_phn_persist_delta;
+  cfg.kernel = shared->options.topo_phn_variant == 6
+                   ? TopoPhnKernel::kPhH0Native
+                   : TopoPhnKernel::kTriNative;
+  const size_t runtime_n = std::max(
+      topo_phn_internal::kPhnCalibSampleBytes,
+      static_cast<size_t>(cfg.avg_size) * 8u);
+  std::vector<uint8_t> sample(runtime_n);
+  topo_phn_internal::FillPhnCalibSample(sample.data(), sample.size(),
+                                        cfg.table_seed);
+  topo_phn_internal::CalibratePhnRuntimeParams(sample.data(), sample.size(),
+                                               &cfg);
+
+  {
+    std::lock_guard<std::mutex> lock(shared->topo_phn_cfg_mu);
+    if (!shared->topo_phn_sb_stride_set) {
+      shared->topo_phn_sb_stride = sb_stride;
+      shared->topo_phn_sb_stride_set = true;
+    }
+    if (!shared->topo_phn_cfg_ready[slot]) {
+      shared->topo_phn_cfg_by_avg[slot] = cfg;
+      shared->topo_phn_cfg_ready[slot] = true;
+    } else {
+      cfg = shared->topo_phn_cfg_by_avg[slot];
+    }
+    cfg.digest_algo = sized.digest_algo;
+  }
+  return cfg;
+}
+
+void MergeTopoPhnStreamProfileToPhaseStats(const TopoPhnStreamProfile& profile,
+                                           PipelineShared* shared) {
+  if (!shared || !shared->phase_stats) return;
+  shared->phase_stats->stream_cdc_ns.fetch_add(
+      profile.topo_scan_ns, std::memory_order_relaxed);
+  shared->phase_stats->stream_cdc_probes.fetch_add(
+      profile.topo_scan_probes, std::memory_order_relaxed);
+  shared->phase_stats->stream_digest_ns.fetch_add(
+      profile.digest_ns, std::memory_order_relaxed);
+  shared->phase_stats->stream_carry_ns.fetch_add(
+      profile.carry_copy_ns, std::memory_order_relaxed);
+}
+
 void MergeStreamProfileToPhaseStats(const FastCdcStreamProfile& profile,
                                    PipelineShared* shared) {
   if (!shared || !shared->phase_stats) return;
   shared->phase_stats->stream_cdc_ns.fetch_add(
       profile.cdc_scan_ns, std::memory_order_relaxed);
+  shared->phase_stats->stream_cdc_probes.fetch_add(
+      profile.cdc_scan_probes, std::memory_order_relaxed);
+  shared->phase_stats->stream_digest_ns.fetch_add(
+      profile.digest_ns, std::memory_order_relaxed);
+  shared->phase_stats->stream_carry_ns.fetch_add(
+      profile.carry_copy_ns, std::memory_order_relaxed);
+}
+
+void MergeGtCdcStreamProfileToPhaseStats(const GtCdcStreamProfile& profile,
+                                           PipelineShared* shared) {
+  if (!shared || !shared->phase_stats) return;
+  shared->phase_stats->stream_cdc_ns.fetch_add(
+      profile.gtcdc_scan_ns, std::memory_order_relaxed);
+  shared->phase_stats->stream_cdc_probes.fetch_add(
+      profile.gtcdc_scan_probes, std::memory_order_relaxed);
   shared->phase_stats->stream_digest_ns.fetch_add(
       profile.digest_ns, std::memory_order_relaxed);
   shared->phase_stats->stream_carry_ns.fetch_add(
@@ -791,13 +982,448 @@ void ChunkFileStreamingFastSlice(FileData item, PipelineShared* shared,
           std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
 }
 
+void ChunkFileStreamingGtCdc(FileData item, PipelineShared* shared,
+                             BoundedQueue<ChunkTask>* chunk_q) {
+  const auto t0 = std::chrono::steady_clock::now();
+  auto file_state = std::make_shared<FilePipelineState>();
+  file_state->index = item.index;
+  file_state->relative_path = item.relative_path;
+  file_state->view = std::make_shared<FileView>(std::move(item.view));
+  file_state->file_size = file_state->view->size();
+  const uint8_t* bytes = file_state->view->data();
+  const size_t byte_len = file_state->view->size();
+
+  GtCdcConfig gt_cfg = GtCdcPipelineConfig(byte_len, shared);
+  GtCdcStreamState stream_state{};
+  GtCdcStreamInit(&stream_state, gt_cfg);
+  stream_state.digest_base = bytes;
+
+  const size_t hash_slot_capacity =
+      byte_len == 0 ? 0
+                    : std::max<size_t>(1, byte_len / gt_cfg.min_size + 2);
+  file_state->chunk_hashes_hex.assign(hash_slot_capacity, std::string());
+
+  size_t off = 0;
+  size_t chunk_index = 0;
+  const size_t feed_bytes = StreamFeedBytesForFile(byte_len);
+  while (off < byte_len) {
+    const size_t n = std::min(feed_bytes, byte_len - off);
+    const bool last = (off + n >= byte_len);
+    std::vector<ChunkDescriptor> batch;
+    const Status st =
+        GtCdcStreamFeed(&stream_state, bytes + off, n, last, &batch);
+    if (!st.ok()) {
+      shared->SetError(st);
+      return;
+    }
+    off += n;
+    if (batch.empty()) continue;
+
+    AppendWeakCfiAnchors(batch, bytes, byte_len, &file_state->cfi);
+    {
+      std::lock_guard<std::mutex> lock(file_state->finalize_mu);
+      file_state->total_chunks = chunk_index + batch.size();
+      if (file_state->total_chunks > file_state->chunk_hashes_hex.size()) {
+        shared->SetError(Status::Internal("gtcdc streaming chunk index overflow"));
+        return;
+      }
+    }
+    std::vector<bool> store_exists;
+    FillStoreExists(shared->store, shared, batch, &store_exists);
+    for (size_t bi = 0; bi < batch.size(); ++bi) {
+      ChunkTask task{};
+      task.file = file_state;
+      task.chunk_index = chunk_index + bi;
+      task.descriptor = batch[bi];
+      task.store_exists = store_exists[bi];
+      if (!chunk_q->Push(std::move(task))) {
+        shared->SetError(Status::Internal("pipeline chunk queue closed early"));
+        return;
+      }
+    }
+    chunk_index += batch.size();
+  }
+
+  file_state->chunking_complete.store(true, std::memory_order_release);
+  TryFinalizeFile(file_state, shared);
+  MergeGtCdcStreamProfileToPhaseStats(stream_state.profile, shared);
+
+  const auto t1 = std::chrono::steady_clock::now();
+  shared->AddPhaseNs(
+      shared->phase_stats ? &shared->phase_stats->chunk_ns : nullptr,
+      static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+}
+
+void ChunkFileStreamingTopoCdc(FileData item, PipelineShared* shared,
+                               BoundedQueue<ChunkTask>* chunk_q) {
+  const auto t0 = std::chrono::steady_clock::now();
+  auto file_state = std::make_shared<FilePipelineState>();
+  file_state->index = item.index;
+  file_state->relative_path = item.relative_path;
+  file_state->view = std::make_shared<FileView>(std::move(item.view));
+  file_state->file_size = file_state->view->size();
+  const uint8_t* bytes = file_state->view->data();
+  const size_t byte_len = file_state->view->size();
+
+  TopoCdcConfig topo_cfg = TopoCdcPipelineConfig(byte_len, shared);
+  TopoCdcStreamState stream_state{};
+  TopoCdcStreamInit(&stream_state, topo_cfg);
+  stream_state.digest_base = bytes;
+
+  const size_t hash_slot_capacity =
+      byte_len == 0 ? 0
+                    : std::max<size_t>(1, byte_len / topo_cfg.min_size + 2);
+  file_state->chunk_hashes_hex.assign(hash_slot_capacity, std::string());
+
+  size_t off = 0;
+  size_t chunk_index = 0;
+  const size_t feed_bytes = StreamFeedBytesForFile(byte_len);
+  while (off < byte_len) {
+    const size_t n = std::min(feed_bytes, byte_len - off);
+    const bool last = (off + n >= byte_len);
+    std::vector<ChunkDescriptor> batch;
+    const Status st =
+        TopoCdcStreamFeed(&stream_state, bytes + off, n, last, &batch);
+    if (!st.ok()) {
+      shared->SetError(st);
+      return;
+    }
+    off += n;
+    if (batch.empty()) continue;
+
+    AppendWeakCfiAnchors(batch, bytes, byte_len, &file_state->cfi);
+    {
+      std::lock_guard<std::mutex> lock(file_state->finalize_mu);
+      file_state->total_chunks = chunk_index + batch.size();
+      if (file_state->total_chunks > file_state->chunk_hashes_hex.size()) {
+        shared->SetError(Status::Internal("topocdc streaming chunk index overflow"));
+        return;
+      }
+    }
+    std::vector<bool> store_exists;
+    FillStoreExists(shared->store, shared, batch, &store_exists);
+    for (size_t bi = 0; bi < batch.size(); ++bi) {
+      ChunkTask task{};
+      task.file = file_state;
+      task.chunk_index = chunk_index + bi;
+      task.descriptor = batch[bi];
+      task.store_exists = store_exists[bi];
+      if (!chunk_q->Push(std::move(task))) {
+        shared->SetError(Status::Internal("pipeline chunk queue closed early"));
+        return;
+      }
+    }
+    chunk_index += batch.size();
+  }
+
+  file_state->chunking_complete.store(true, std::memory_order_release);
+  TryFinalizeFile(file_state, shared);
+  MergeTopoCdcStreamProfileToPhaseStats(stream_state.profile, shared);
+
+  const auto t1 = std::chrono::steady_clock::now();
+  shared->AddPhaseNs(
+      shared->phase_stats ? &shared->phase_stats->chunk_ns : nullptr,
+      static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+}
+
+void ChunkFileStreamingTopoChain(FileData item, PipelineShared* shared,
+                                 BoundedQueue<ChunkTask>* chunk_q) {
+  const auto t0 = std::chrono::steady_clock::now();
+  auto file_state = std::make_shared<FilePipelineState>();
+  file_state->index = item.index;
+  file_state->relative_path = item.relative_path;
+  file_state->view = std::make_shared<FileView>(std::move(item.view));
+  file_state->file_size = file_state->view->size();
+  const uint8_t* bytes = file_state->view->data();
+  const size_t byte_len = file_state->view->size();
+
+  TopoCdcConfig chain_cfg = TopoChainPipelineConfig(byte_len, shared);
+  TopoChainStreamState stream_state{};
+  TopoChainStreamInit(&stream_state, chain_cfg);
+  stream_state.digest_base = bytes;
+
+  const size_t hash_slot_capacity =
+      byte_len == 0 ? 0
+                    : std::max<size_t>(1, byte_len / chain_cfg.min_size + 2);
+  file_state->chunk_hashes_hex.assign(hash_slot_capacity, std::string());
+
+  size_t off = 0;
+  size_t chunk_index = 0;
+  const size_t feed_bytes = StreamFeedBytesForFile(byte_len);
+  while (off < byte_len) {
+    const size_t n = std::min(feed_bytes, byte_len - off);
+    const bool last = (off + n >= byte_len);
+    std::vector<ChunkDescriptor> batch;
+    const Status st =
+        TopoChainStreamFeed(&stream_state, bytes + off, n, last, &batch);
+    if (!st.ok()) {
+      shared->SetError(st);
+      return;
+    }
+    off += n;
+    if (batch.empty()) continue;
+
+    AppendWeakCfiAnchors(batch, bytes, byte_len, &file_state->cfi);
+    {
+      std::lock_guard<std::mutex> lock(file_state->finalize_mu);
+      file_state->total_chunks = chunk_index + batch.size();
+      if (file_state->total_chunks > file_state->chunk_hashes_hex.size()) {
+        shared->SetError(
+            Status::Internal("topochain streaming chunk index overflow"));
+        return;
+      }
+    }
+    std::vector<bool> store_exists;
+    FillStoreExists(shared->store, shared, batch, &store_exists);
+    for (size_t bi = 0; bi < batch.size(); ++bi) {
+      ChunkTask task{};
+      task.file = file_state;
+      task.chunk_index = chunk_index + bi;
+      task.descriptor = batch[bi];
+      task.store_exists = store_exists[bi];
+      if (!chunk_q->Push(std::move(task))) {
+        shared->SetError(Status::Internal("pipeline chunk queue closed early"));
+        return;
+      }
+    }
+    chunk_index += batch.size();
+  }
+
+  file_state->chunking_complete.store(true, std::memory_order_release);
+  TryFinalizeFile(file_state, shared);
+  MergeTopoChainStreamProfileToPhaseStats(stream_state.profile, shared);
+
+  const auto t1 = std::chrono::steady_clock::now();
+  shared->AddPhaseNs(
+      shared->phase_stats ? &shared->phase_stats->chunk_ns : nullptr,
+      static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+}
+
+void ChunkFileFullGtCdc(FileData item, PipelineShared* shared,
+                        BoundedQueue<ChunkTask>* chunk_q) {
+  const auto t0 = std::chrono::steady_clock::now();
+  auto file_state = std::make_shared<FilePipelineState>();
+  file_state->index = item.index;
+  file_state->relative_path = item.relative_path;
+  file_state->view = std::make_shared<FileView>(std::move(item.view));
+  file_state->file_size = file_state->view->size();
+  const uint8_t* bytes = file_state->view->data();
+  const size_t byte_len = file_state->view->size();
+
+  EbHcrboGtConfig hcrbo_cfg = EbHcrboGtConfigForFileSize(
+      byte_len, shared->options.chunk_profile, shared->options.digest_algo,
+      GtCdcKernelForPipeline(shared));
+  EbHcrboGtChunker chunker(hcrbo_cfg);
+  EbHcrboStats hstats{};
+  std::vector<ChunkDescriptor> chunks;
+  Status ch_st;
+  if (shared->mode == BackupMode::kIncremental && shared->prior) {
+    const CfiIndex history = FindPriorCfi(*shared->prior, item.relative_path);
+    ch_st = chunker.ChunkIncremental(bytes, byte_len, history, &chunks,
+                                     &file_state->cfi, &hstats);
+  } else {
+    ch_st = chunker.ChunkFull(bytes, byte_len, &chunks, &file_state->cfi,
+                              &hstats);
+  }
+  if (!ch_st.ok()) {
+    shared->SetError(ch_st);
+    return;
+  }
+  PopulateAnchorChecksums(bytes, byte_len, &file_state->cfi);
+  std::vector<bool> store_exists;
+  FillStoreExists(shared->store, shared, chunks, &store_exists);
+  shared->RecordCfiReuse(hstats.chunks_reused_from_cfi);
+  PushChunkTasks(file_state, chunks, store_exists, chunk_q, shared);
+  file_state->chunking_complete.store(true, std::memory_order_release);
+  TryFinalizeFile(file_state, shared);
+  const auto t1 = std::chrono::steady_clock::now();
+  shared->AddPhaseNs(
+      shared->phase_stats ? &shared->phase_stats->chunk_ns : nullptr,
+      static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+}
+
 void ChunkFileStreamingHybrid(FileData item, PipelineShared* shared,
                               BoundedQueue<ChunkTask>* chunk_q) {
   ChunkFileStreamingFeed(std::move(item), shared, chunk_q, true);
 }
 
+void ChunkFileStreamingTopoPh(FileData item, PipelineShared* shared,
+                              BoundedQueue<ChunkTask>* chunk_q) {
+  const auto t0 = std::chrono::steady_clock::now();
+  auto file_state = std::make_shared<FilePipelineState>();
+  file_state->index = item.index;
+  file_state->relative_path = item.relative_path;
+  file_state->view = std::make_shared<FileView>(std::move(item.view));
+  file_state->file_size = file_state->view->size();
+  const uint8_t* bytes = file_state->view->data();
+  const size_t byte_len = file_state->view->size();
+
+  TopoPhConfig ph_cfg = TopoPhPipelineConfig(byte_len, shared);
+  TopoPhStreamState stream_state{};
+  TopoPhStreamInit(&stream_state, ph_cfg);
+  stream_state.digest_base = bytes;
+
+  const size_t hash_slot_capacity =
+      byte_len == 0 ? 0
+                    : std::max<size_t>(1, byte_len / ph_cfg.min_size + 2);
+  file_state->chunk_hashes_hex.assign(hash_slot_capacity, std::string());
+
+  size_t off = 0;
+  size_t chunk_index = 0;
+  const size_t feed_bytes = StreamFeedBytesForFile(byte_len);
+  while (off < byte_len) {
+    const size_t n = std::min(feed_bytes, byte_len - off);
+    const bool last = (off + n >= byte_len);
+    std::vector<ChunkDescriptor> batch;
+    const Status st =
+        TopoPhStreamFeed(&stream_state, bytes + off, n, last, &batch);
+    if (!st.ok()) {
+      shared->SetError(st);
+      return;
+    }
+    off += n;
+    if (batch.empty()) continue;
+
+    AppendWeakCfiAnchors(batch, bytes, byte_len, &file_state->cfi);
+    {
+      std::lock_guard<std::mutex> lock(file_state->finalize_mu);
+      file_state->total_chunks = chunk_index + batch.size();
+      if (file_state->total_chunks > file_state->chunk_hashes_hex.size()) {
+        shared->SetError(
+            Status::Internal("topoph streaming chunk index overflow"));
+        return;
+      }
+    }
+    std::vector<bool> store_exists;
+    FillStoreExists(shared->store, shared, batch, &store_exists);
+    for (size_t bi = 0; bi < batch.size(); ++bi) {
+      ChunkTask task{};
+      task.file = file_state;
+      task.chunk_index = chunk_index + bi;
+      task.descriptor = batch[bi];
+      task.store_exists = store_exists[bi];
+      if (!chunk_q->Push(std::move(task))) {
+        shared->SetError(Status::Internal("pipeline chunk queue closed early"));
+        return;
+      }
+    }
+    chunk_index += batch.size();
+  }
+
+  file_state->chunking_complete.store(true, std::memory_order_release);
+  TryFinalizeFile(file_state, shared);
+  if (shared->phase_stats) {
+    shared->phase_stats->stream_cdc_ns.fetch_add(
+        stream_state.profile.topo_scan_ns, std::memory_order_relaxed);
+  }
+
+  const auto t1 = std::chrono::steady_clock::now();
+  shared->AddPhaseNs(
+      shared->phase_stats ? &shared->phase_stats->chunk_ns : nullptr,
+      static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+}
+
+void ChunkFileStreamingTopoPhn(FileData item, PipelineShared* shared,
+                               BoundedQueue<ChunkTask>* chunk_q) {
+  const auto t0 = std::chrono::steady_clock::now();
+  auto file_state = std::make_shared<FilePipelineState>();
+  file_state->index = item.index;
+  file_state->relative_path = item.relative_path;
+  file_state->view = std::make_shared<FileView>(std::move(item.view));
+  file_state->file_size = file_state->view->size();
+  const uint8_t* bytes = file_state->view->data();
+  const size_t byte_len = file_state->view->size();
+
+  TopoPhnConfig phn_cfg = TopoPhnPipelineConfig(byte_len, shared);
+  TopoPhnStreamState stream_state{};
+  TopoPhnStreamInit(&stream_state, phn_cfg);
+  stream_state.digest_base = bytes;
+
+  const size_t hash_slot_capacity =
+      byte_len == 0 ? 0
+                    : std::max<size_t>(1, byte_len / phn_cfg.min_size + 2);
+  file_state->chunk_hashes_hex.assign(hash_slot_capacity, std::string());
+
+  size_t off = 0;
+  size_t chunk_index = 0;
+  const size_t feed_bytes = StreamFeedBytesForFile(byte_len);
+  while (off < byte_len) {
+    const size_t n = std::min(feed_bytes, byte_len - off);
+    const bool last = (off + n >= byte_len);
+    std::vector<ChunkDescriptor> batch;
+    const Status st =
+        TopoPhnStreamFeed(&stream_state, bytes + off, n, last, &batch);
+    if (!st.ok()) {
+      shared->SetError(st);
+      return;
+    }
+    off += n;
+    if (batch.empty()) continue;
+
+    AppendWeakCfiAnchors(batch, bytes, byte_len, &file_state->cfi);
+    {
+      std::lock_guard<std::mutex> lock(file_state->finalize_mu);
+      file_state->total_chunks = chunk_index + batch.size();
+      if (file_state->total_chunks > file_state->chunk_hashes_hex.size()) {
+        shared->SetError(
+            Status::Internal("topophn streaming chunk index overflow"));
+        return;
+      }
+    }
+    std::vector<bool> store_exists;
+    FillStoreExists(shared->store, shared, batch, &store_exists);
+    for (size_t bi = 0; bi < batch.size(); ++bi) {
+      ChunkTask task{};
+      task.file = file_state;
+      task.chunk_index = chunk_index + bi;
+      task.descriptor = batch[bi];
+      task.store_exists = store_exists[bi];
+      if (!chunk_q->Push(std::move(task))) {
+        shared->SetError(Status::Internal("pipeline chunk queue closed early"));
+        return;
+      }
+    }
+    chunk_index += batch.size();
+  }
+
+  file_state->chunking_complete.store(true, std::memory_order_release);
+  TryFinalizeFile(file_state, shared);
+  MergeTopoPhnStreamProfileToPhaseStats(stream_state.profile, shared);
+
+  const auto t1 = std::chrono::steady_clock::now();
+  shared->AddPhaseNs(
+      shared->phase_stats ? &shared->phase_stats->chunk_ns : nullptr,
+      static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+}
+
 void ChunkFileStreaming(FileData item, PipelineShared* shared,
                         BoundedQueue<ChunkTask>* chunk_q) {
+  if (CdcTopoPhnEnabled()) {
+    ChunkFileStreamingTopoPhn(std::move(item), shared, chunk_q);
+    return;
+  }
+  if (CdcTopoPhEnabled()) {
+    ChunkFileStreamingTopoPh(std::move(item), shared, chunk_q);
+    return;
+  }
+  if (CdcTopoChainEnabled()) {
+    ChunkFileStreamingTopoChain(std::move(item), shared, chunk_q);
+    return;
+  }
+  if (CdcTopoCdcEnabled()) {
+    ChunkFileStreamingTopoCdc(std::move(item), shared, chunk_q);
+    return;
+  }
+  if (CdcGtCdcEnabled()) {
+    ChunkFileStreamingGtCdc(std::move(item), shared, chunk_q);
+    return;
+  }
   const uint8_t* bytes_preview = item.view.data();
   const size_t byte_len_preview = item.view.size();
   if (UseCdcHybridPath(shared, bytes_preview, byte_len_preview)) {
@@ -904,6 +1530,60 @@ Status ReadOneFileData(const std::string& path, const BackupPipelineOptions& opt
     out->view.owned.assign(std::istreambuf_iterator<char>(file),
                            std::istreambuf_iterator<char>());
   }
+  return Status::Ok();
+}
+
+Status RunSingleFileStreamingGtCdcPipeline(const std::string& path,
+                                           const std::string& relative_path,
+                                           size_t index, PipelineShared* shared) {
+  const auto read_t0 = std::chrono::steady_clock::now();
+  FileData item{};
+  item.index = index;
+  item.relative_path = relative_path;
+  const Status read_st = ReadOneFileData(path, shared->options, &item);
+  if (!read_st.ok()) return read_st;
+  const auto read_t1 = std::chrono::steady_clock::now();
+  shared->AddPhaseNs(
+      shared->phase_stats ? &shared->phase_stats->read_ns : nullptr,
+      static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(read_t1 - read_t0)
+              .count()));
+
+  constexpr size_t kQueueDepth = 1024;
+  constexpr size_t kEncodeWorkers = 2;
+  constexpr size_t kStoreWorkers = 1;
+  BoundedQueue<ChunkTask> chunk_q(kQueueDepth);
+  BoundedQueue<EncodedChunkTask> encoded_q(kQueueDepth);
+  shared->chunk_q = &chunk_q;
+  shared->encoded_q = &encoded_q;
+  shared->compressors_remaining.store(kEncodeWorkers, std::memory_order_release);
+  shared->chunkers_remaining.store(1, std::memory_order_release);
+
+  std::vector<std::thread> workers;
+  workers.reserve(kEncodeWorkers + kStoreWorkers);
+  for (size_t i = 0; i < kEncodeWorkers; ++i) {
+    workers.emplace_back(CompressorWorker, &chunk_q, &encoded_q, shared);
+  }
+  for (size_t i = 0; i < kStoreWorkers; ++i) {
+    workers.emplace_back(StoreWorker, &encoded_q, shared);
+  }
+
+  ChunkFileStreamingGtCdc(std::move(item), shared, &chunk_q);
+
+  if (shared->chunkers_remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+    chunk_q.Close();
+  }
+  for (auto& worker : workers) {
+    worker.join();
+  }
+  shared->chunk_q = nullptr;
+  shared->encoded_q = nullptr;
+
+  const Status err = shared->CurrentError();
+  if (!err.ok()) return err;
+
+  ++shared->files_read;
+  ++shared->files_chunked;
   return Status::Ok();
 }
 
@@ -1223,9 +1903,30 @@ void ChunkerStage(BoundedQueue<FileData>* in, BoundedQueue<ChunkTask>* chunk_q,
   FileData item{};
   while (in->Pop(&item)) {
     if (!shared->CurrentError().ok()) break;
+    const bool phn = CdcTopoPhnEnabled();
+    const bool ph = CdcTopoPhEnabled();
+    const bool chain = CdcTopoChainEnabled();
+    const bool topo = CdcTopoCdcEnabled();
+    const bool gtcdc = CdcGtCdcEnabled();
     const bool stream = shared->mode == BackupMode::kFull &&
                         item.view.size() > kStreamFeedBytes;
-    if (stream) {
+    if (phn) {
+      ChunkFileStreamingTopoPhn(std::move(item), shared, chunk_q);
+    } else if (ph) {
+      ChunkFileStreamingTopoPh(std::move(item), shared, chunk_q);
+    } else if (chain && stream) {
+      ChunkFileStreamingTopoChain(std::move(item), shared, chunk_q);
+    } else if (chain) {
+      ChunkFileStreamingTopoChain(std::move(item), shared, chunk_q);
+    } else if (topo && stream) {
+      ChunkFileStreamingTopoCdc(std::move(item), shared, chunk_q);
+    } else if (topo) {
+      ChunkFileStreamingTopoCdc(std::move(item), shared, chunk_q);
+    } else if (gtcdc && stream) {
+      ChunkFileStreamingGtCdc(std::move(item), shared, chunk_q);
+    } else if (gtcdc) {
+      ChunkFileFullGtCdc(std::move(item), shared, chunk_q);
+    } else if (stream) {
       ChunkFileStreaming(std::move(item), shared, chunk_q);
     } else {
       ChunkFileFull(std::move(item), shared, chunk_q);
@@ -1409,8 +2110,12 @@ Status RunBackupPipeline(const std::vector<std::string>& file_paths,
   if (file_paths.size() == 1 && total_bytes > kStreamFeedBytes &&
       mode == BackupMode::kFull && options.worker_count == 0 &&
       !PipelineWorkersExplicitlyRequested(options.worker_count)) {
-    const Status stream_st = RunSingleFileStreamingChunkPipeline(
-        file_paths[0], schedule_in[0].relative_path, 0, &shared);
+    const Status stream_st =
+        CdcGtCdcEnabled()
+            ? RunSingleFileStreamingGtCdcPipeline(
+                  file_paths[0], schedule_in[0].relative_path, 0, &shared)
+            : RunSingleFileStreamingChunkPipeline(
+                  file_paths[0], schedule_in[0].relative_path, 0, &shared);
     chunk_store->SetPipelineDedupTrust(false);
     if (!stream_st.ok()) return stream_st;
     result->manifest_files.erase(

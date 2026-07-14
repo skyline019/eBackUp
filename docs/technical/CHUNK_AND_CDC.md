@@ -47,6 +47,37 @@
 
 ---
 
+## G-TCDC v1（opt-in）
+
+**规格 SSOT**：[GT_CDC_SPEC.md](GT_CDC_SPEC.md)
+
+**环境变量**：`EBBACKUP_CDC_ALGO=gtcdc`
+
+**实现**：`engine_cpp/src/chunk/gt_cdc*.cc`、`gt_cdc_streaming.cc`；pipeline 路由 `ChunkFileStreamingGtCdc()`
+
+- Rabin 模加指纹：`h = alpha*h + beta(b) (mod 2^32)`，`alpha=0x00010001`
+- 切点 `(h & BuildMask(avg)) == 0`，min/avg/max 与 ChunkProfile 一致
+- Release 张量/leapfrog 路径（AVX2 必需）；scalar 仅 CI golden
+- **nofallback**：禁用 Hybrid/FastSlice/FastStream；`digest_base` 强制；incremental → `Unimplemented`
+- superblock `kBackupFeatureGtCdc` 标记；与 FastCDC repo **dedup 不互通**
+
+---
+
+## TopoCDC Gen3（opt-in，独立产品线）
+
+**规格 SSOT**：[TOPO_CDC_SPEC.md](TOPO_CDC_SPEC.md) · 三族对照：[CDC_ALGO_MATRIX.md](CDC_ALGO_MATRIX.md)
+
+**环境变量**：`EBBACKUP_CDC_ALGO=topocdc`（与 `gtcdc` 互斥）
+
+**实现**：`engine_cpp/src/chunk/topo_cdc/`、`topo_cdc_streaming.cc`；pipeline 路由 `ChunkFileStreamingTopoCdc()`
+
+- **Hom-0 主线**：`primaryOK AND UFComponentEvent(W_t)`（Gear + birth/death，非 G-TCDC 第二指纹）
+- superblock `kBackupFeatureTopoCdc = 0x20000`（**不含** `0x1000`）；`topo_table_seed` / `topo_variant`
+- **nofallback**：禁用 Hybrid/FastSlice/FastStream；与 FastCDC / G-TCDC **dedup 三域隔离**
+- **验收（C++ SSOT）**：`ebbackup_topo_cdc_eval` + `run_topo_proof.ps1` + `L5_topo_ab`；Tri 研究轨见 [TOPO_CDC_TRI_RESEARCH.md](TOPO_CDC_TRI_RESEARCH.md)（**Python eval 已废弃**）
+
+---
+
 ## HCRBO 增量分块
 
 **实现**：`engine_cpp/src/chunk/eb_hcrbo.cc`

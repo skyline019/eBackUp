@@ -1,0 +1,30 @@
+\chapter{Rabin CDC 与块指纹模型}
+\label{ch:model}
+
+\begin{definition}[G-TCDC Rabin 状态]
+自 chunk 起点 $pos$ 起 $h_{pos}=0$，对字节 $b_i$（$i\ge pos$）：
+\begin{equation}
+  h_{i+1} = \alpha \cdot h_i + \beta(b_i) \pmod{2^{32}}
+\end{equation}
+固定 $\alpha=\texttt{0x00010001}$，$\beta(\cdot)$ 由 \texttt{InitBetaTable} 确定。
+\end{definition}
+
+\begin{definition}[切点]
+在 $[\mathit{pos}+\mathit{min},\min(\mathit{pos}+\mathit{max},|T|))$ 内，首个满足 $(h\wedge\mathit{mask})=0$ 的偏移为切点；
+$\mathit{mask}=\mathit{BuildMask}(\mathit{avg})$ 与 FastCDC 相同。
+\end{definition}
+
+\begin{definition}[块指纹]
+对块 $D=(d_0,\ldots,d_{B-1})$，定义与初始状态无关的块贡献：
+\begin{equation}
+  F(D) = \sum_{j=0}^{B-1} \alpha^{B-1-j}\cdot\beta(d_j) \pmod{2^{32}}
+\end{equation}
+\end{definition}
+
+\begin{proposition}[块合成]
+对任意 $h_k$ 与块 $D$：
+\begin{equation}
+  h_{k+B} = \alpha^B h_k + F(D)
+\end{equation}
+实现为 \texttt{ComposeBlockFast(h, F, pow[B])}。
+\end{proposition}

@@ -38,6 +38,20 @@ struct BackupPipelineOptions {
   ZstdDictTrainer* dict_trainer{nullptr};
   PipelinePhaseStats* phase_stats{nullptr};
   std::vector<report::BackupPathIssue>* scan_issues{nullptr};
+  GtCdcKernel gtcdc_kernel{GtCdcKernel::kRabin};
+  uint32_t gtcdc_table_seed{0};
+  uint8_t gtcdc_nc_level{0};
+  uint32_t topo_table_seed{0};
+  uint16_t topo_calib_permille{0};
+  uint8_t chain_stride_log{0};
+  uint8_t chain_quant_q{0};
+  bool chain_enable_beta1{false};
+  uint8_t topo_ph_variant{3};
+  uint8_t topo_ph_k_points{16};
+  uint8_t topo_phn_variant{5};
+  uint8_t topo_phn_k_points{16};
+  uint16_t topo_phn_event_stride{64};
+  bool topo_phn_persist_delta{false};
 };
 
 struct BackupPipelineResult {

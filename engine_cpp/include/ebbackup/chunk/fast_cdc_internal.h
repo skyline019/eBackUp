@@ -13,7 +13,7 @@ uint32_t InitWindowHash(const uint8_t* data, size_t end, uint32_t w,
 
 bool ScanGearCut(const uint8_t* data, size_t scan_start, size_t cut_limit,
                  uint32_t w, uint32_t mask, const uint32_t gear[256],
-                 size_t* out_cut, bool* found);
+                 size_t* out_cut, bool* found, uint64_t* probes = nullptr);
 
 }  // namespace fastcdc_internal
 }  // namespace ebbackup

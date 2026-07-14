@@ -1,0 +1,80 @@
+\chapter{第二代总览：两个指纹，两个路标}
+\label{ch:gen2-big}
+
+\begin{gentwobox}[第二代 G-TCDC v6 2F-Gear 一句话]
+在第一代的基础上，\textbf{多维护一个指纹} $h_{\mathrm{norm}}$；  
+切点要同时满足：\textbf{左指纹的路标} 和 \textbf{右指纹的路标}（各占不同 bit 位）。
+\end{gentwobox}
+
+\section{为什么要第二代？}
+
+\begin{itemize}[nosep]
+  \item G-TCDC 是 \textbf{opt-in} 的另一套 dedup 域（和 FastCDC 仓库不混用）；
+  \item 需要在「切点质量」和「扫描速度」之间找新的平衡点；
+  \item v6 2F-Gear 的目标：\textbf{切法独立}，但 \textbf{速度接近第一代 Stream}。
+\end{itemize}
+
+\section{和第一代的视觉对比}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.6cm]
+  \node[gen1, minimum width=4.2cm, minimum height=1.4cm] (g1) {第一代\\一个 $h$\\一个 mask};
+  \node[gen2, minimum width=4.2cm, minimum height=1.4cm, right=1.5cm of g1] (g2)
+    {第二代\\$h_{\mathrm{gear}}$ + $h_{\mathrm{norm}}$\\$mask_{lo}$ + $mask_{hi}$};
+  \draw[arr] (g1) -- node[above,font=\scriptsize]{进化} (g2);
+\end{tikzpicture}
+\caption{循环结构不变：仍是每字节 probe 一次；每次多更新一路 hash。}
+\end{figure}
+
+\section{第二代切点条件（先背下来，下章揉碎）}
+
+\begin{codebox}[第二代切点（最终版）]
+\begin{lstlisting}
+左OK  = (h_gear & mask_lo) == 0
+右OK  = ((h_norm >> norm_shift) & mask_hi) == 0
+if (左OK && 右OK)  在这里切;
+\end{lstlisting}
+\end{codebox}
+
+\begin{beginnerbox}[三个新名词]
+\begin{itemize}[nosep]
+  \item \keytermii{mask\_lo}：看 $h_{\mathrm{gear}}$ 的\textbf{低位}；
+  \item \keytermii{mask\_hi}：看 $h_{\mathrm{norm}}$ \textbf{移过几位之后}的位；
+  \item \keytermii{norm\_shift}：右指纹要右移多少，才能和左指纹「不抢同一位」。
+\end{itemize}
+\end{beginnerbox}
+
+\section{第二代多一张表}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.5cm]
+  \node[byte] (b) {字节 $b$};
+  \node[gen1, below left=0.8cm and 0.2cm of b] (t1) {beta\_table\\（同第一代 gear）};
+  \node[gen2, below right=0.8cm and 0.2cm of b] (t2) {norm\_table\\（仓库 seed 派生）};
+  \node[gen1, below=0.8cm of t1] (hg) {$h_{\mathrm{gear}}$};
+  \node[gen2, below=0.8cm of t2] (hn) {$h_{\mathrm{norm}}$};
+  \draw[arr] (b) -- (t1);
+  \draw[arr] (b) -- (t2);
+  \draw[arr] (t1) -- (hg);
+  \draw[arr] (t2) -- (hn);
+\end{tikzpicture}
+\caption{同一个字节，查两张表，得到两个滚动指纹。}
+\end{figure}
+
+滚动公式与第一代\textbf{完全相同}，只是表不同：
+
+\begin{lstlisting}
+h_gear = (h_gear << 1) + beta[b]  - beta[b-w]
+h_norm = (h_norm << 1) + norm[b]  - norm[b-w]
+\end{lstlisting}
+
+\section{模拟示例：同一字节查两表}
+
+\begin{simbox}[$i=3$ 滚动后（未切），为 $i=4$ 准备]
+读 \texttt{0x40}、丢 \texttt{0x20}：\\
+$h_g = (20 \ll 1) + 66 - 2 = 104$；\quad
+$h_n = (8 \ll 1) + 3 - 5 = 16$。\\
+下一 probe（$i=4$）两路同时 OK → 切。
+\end{simbox}

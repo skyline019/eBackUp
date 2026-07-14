@@ -44,12 +44,13 @@ namespace {
 
 bool ScanGearCutScalar(const uint8_t* data, size_t scan_start, size_t cut_limit,
                        uint32_t w, uint32_t mask, const uint32_t gear[256],
-                       size_t* out_cut, bool* found) {
+                       size_t* out_cut, bool* found, uint64_t* probes) {
   uint32_t h = InitWindowHash(data, scan_start, w, gear);
   size_t i = scan_start;
   for (; i + 8 <= cut_limit; i += 8) {
     for (size_t j = 0; j < 8; ++j) {
       const size_t pos = i + j;
+      if (probes) ++*probes;
       if ((h & mask) == 0) {
         *out_cut = pos;
         *found = true;
@@ -59,6 +60,7 @@ bool ScanGearCutScalar(const uint8_t* data, size_t scan_start, size_t cut_limit,
     }
   }
   for (; i < cut_limit; ++i) {
+    if (probes) ++*probes;
     if ((h & mask) == 0) {
       *out_cut = i;
       *found = true;
@@ -73,7 +75,7 @@ bool ScanGearCutScalar(const uint8_t* data, size_t scan_start, size_t cut_limit,
 
 bool ScanGearCut(const uint8_t* data, size_t scan_start, size_t cut_limit,
                  uint32_t w, uint32_t mask, const uint32_t gear[256],
-                 size_t* out_cut, bool* found) {
+                 size_t* out_cut, bool* found, uint64_t* probes) {
   if (!data || !out_cut || !found) return false;
   *found = false;
 
@@ -84,6 +86,7 @@ bool ScanGearCut(const uint8_t* data, size_t scan_start, size_t cut_limit,
     _mm_prefetch(reinterpret_cast<const char*>(data + i + 64), _MM_HINT_T0);
     for (size_t j = 0; j < 8 && i + j < cut_limit; ++j) {
       const size_t pos = i + j;
+      if (probes) ++*probes;
       if ((h & mask) == 0) {
         *out_cut = pos;
         *found = true;
@@ -93,6 +96,7 @@ bool ScanGearCut(const uint8_t* data, size_t scan_start, size_t cut_limit,
     }
   }
   for (; i < cut_limit; ++i) {
+    if (probes) ++*probes;
     if ((h & mask) == 0) {
       *out_cut = i;
       *found = true;
@@ -103,7 +107,7 @@ bool ScanGearCut(const uint8_t* data, size_t scan_start, size_t cut_limit,
   return false;
 #else
   return ScanGearCutScalar(data, scan_start, cut_limit, w, mask, gear, out_cut,
-                           found);
+                           found, probes);
 #endif
 }
 

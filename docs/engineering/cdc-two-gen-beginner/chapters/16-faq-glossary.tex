@@ -1,0 +1,59 @@
+\chapter{常见问题与术语表}
+\label{ch:faq}
+
+\section{FAQ}
+
+\begin{description}[style=nextline, font=\bfseries]
+  \item[CDC 是压缩吗？]
+  不是。CDC 只负责\textbf{切块}；压缩是后面 LZ4/zstd 的事。
+  \item[两代能混用 dedup 吗？]
+  不能。切点不同 → chunk 哈希不同 → 只能各自仓库内 dedup。
+  \item[第二代更慢吗？]
+  历史实测：合成约打平，真实 CUDA 目录有时更快；多维护一路 hash，但路标拆分后 hit 率正常。
+  \item[probe 是什么？]
+  每检查一个「能不能在这里切」的位置，就叫一次 probe。
+  \item[parity 是什么？]
+  整文件算法和流式算法切在\textbf{完全相同}的位置。
+  \item[2F 是什么意思？]
+  Two Fingerprint（双指纹），不是「2 的次方」。
+  \item[我还需要学 Rabin / AN-Gear 吗？]
+  本手册只讲两代\textbf{生产相关}路径：Stream 与 2F-Gear。其它是兼容/冻结内核。
+\end{description}
+
+\section{术语表（按字母/拼音）}
+
+\begin{longtable}{@{}p{3.2cm}p{10.8cm}@{}}
+\toprule
+\textbf{词} & \textbf{解释} \\
+\midrule
+\endhead
+avg\_size & 希望 chunk 平均多长；用来算 mask bit 数 \\
+Build2FMasks & 第二代：把 bit 预算拆成 mask\_lo / mask\_hi \\
+carry & 流式时暂存「还没切完」的尾巴字节 \\
+chunk & 切出来的一段文件内容 \\
+cut / 切点 & chunk 结束（下一块开始）的位置 \\
+dedup & 相同内容只存一份 \\
+FastCDC & 第一代 CDC 算法族名 \\
+feed & 流式读取的一块，约 512KB \\
+Gear 表 & 256 个预计算常数，字节当索引 \\
+G-TCDC & ebbackup opt-in 的 CDC 产品线 \\
+mask / 路标 & 与 $h$ 做 \&，结果为 0 表示命中 \\
+max\_size & chunk 最长强制切 \\
+min\_size & chunk 最短才能切 \\
+norm\_table & 第二代右指纹用的 gear 表 \\
+parity & 整文件 vs 流式切点一致 \\
+probe & 在一个字节位置尝试切点 \\
+resume & 跨 feed 保存的指纹状态 \\
+Stream & 第一代默认的流式 FastCDC 路径 \\
+2F-Gear & 第二代 v6 内核名 \\
+\bottomrule
+\end{longtable}
+
+\section{下一步读什么}
+
+\begin{itemize}[nosep]
+  \item 工程细节：\filepath{docs/engineering/gtcdc-v6-manual/}
+  \item 更多 TikZ 图：\filepath{docs/engineering/gtcdc-v6-narrative/}
+  \item 权威常量：\filepath{docs/technical/GT\_CDC\_SPEC.md}
+  \item 源码热路径：\filepath{engine\_cpp/src/chunk/gt\_cdc\_gear\_scan.cc}
+\end{itemize}

@@ -1,0 +1,37 @@
+\chapter{实验协议}
+\label{ch:experiment}
+
+\section{Scan-only microbench}
+
+\begin{itemize}[nosep]
+  \item 工具：\filepath{ebbackup\_gtcdc\_bench}
+  \item 输入：256\,MB 合成数据（seed=43，与 L5 一致）
+  \item 输出：\texttt{fastcdc\_ChunkCuts\_MBps}、\texttt{gtcdc\_scalar\_MBps}、\texttt{gtcdc\_tensor\_MBps}、\texttt{tensor\_vs\_scalar}
+  \item 目标：\texttt{tensor\_vs\_scalar} $\ge 1.0$（v2 不低于 scalar）；理想 $\ge 1.3$
+\end{itemize}
+
+\section{L5 Pipeline A/B}
+
+\begin{itemize}[nosep]
+  \item 工具：\filepath{ebbackup\_bench\_check} 中 \texttt{RunPipeline256GtCdcVsStreamBench}
+  \item Stream 臂：\texttt{EBBACKUP\_CDC\_HYBRID=0}，默认 FastCDC stream
+  \item G-TCDC 臂：\texttt{EBBACKUP\_CDC\_ALGO=gtcdc}
+  \item 指标：\texttt{gtcdc\_vs\_stream\_ratio}、\texttt{scan\_ns\_ratio}（\texttt{stream\_cdc\_ns} 之比）
+\end{itemize}
+
+\section{CI 门禁键（独立 opt-in）}
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+键 & 含义 \\
+\midrule
+\texttt{gtcdc\_vs\_stream\_ratio\_min} & E2E 吞吐比下限（0=跳过） \\
+\texttt{gtcdc\_scan\_ns\_ratio\_max} & scan 时间比上限（0=跳过） \\
+\texttt{gtcdc\_backup\_pipeline\_256MBps\_min} & 绝对 E2E 下限（0=跳过） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+十次重复脚本：\filepath{engine\_cpp/bench/scripts/run\_gtcdc\_proof.ps1}。

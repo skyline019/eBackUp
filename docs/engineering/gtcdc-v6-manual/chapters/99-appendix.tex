@@ -1,0 +1,30 @@
+\chapter{附录}
+\label{ch:appendix-manual}
+
+\section{文件索引}
+
+\begin{longtable}{@{}p{5.5cm}p{8.5cm}@{}}
+\toprule
+\textbf{路径} & \textbf{内容} \\
+\midrule
+\endhead
+\filepath{docs/technical/GT\_CDC\_SPEC.md} & 权威规格（Markdown） \\
+\filepath{docs/engineering/kernel-manual/} & 备份内核通用手册 \\
+\filepath{docs/engineering/cdc-kernel-narrative/} & CDC 叙事专册（FastCDC/Streaming） \\
+\filepath{docs/engineering/gtcdc-v6-narrative/} & 本 v6 形象化专册 \\
+\filepath{engine\_cpp/tests/chunk/gt\_cdc\_2f\_test.cc} & v6 单元测试 \\
+\filepath{engine\_cpp/tests/bench/gt\_cdc\_v6\_eval.cc} & 补充 eval + \texttt{--source} \\
+\filepath{engine\_cpp/bench/baselines/ci\_floor.json} & CI floor \\
+\bottomrule
+\end{longtable}
+
+\section{构建本 PDF}
+
+\begin{verbatim}
+cd docs/engineering/gtcdc-v6-manual
+make pdf   # WSL: xelatex x2 => build/main.pdf
+\end{verbatim}
+
+\section{迁移提醒}
+
+v5 AN-Gear $\rightarrow$ v6 \textbf{无就地升级}；需新建 \texttt{0x10000} 仓库并 full re-backup。FastCDC 仓库仍不可启用 gtcdc。

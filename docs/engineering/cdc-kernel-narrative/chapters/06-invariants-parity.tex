@@ -1,0 +1,78 @@
+\chapter{不变量、Parity 与完整叙事闭环}\label{ch:parity}
+
+\section{三大不变量}
+
+\begin{invariantbox}[I-B1：Content ID]
+$\text{Content ID} = \texttt{SHA256}(\text{chunk 明文})$。digest 算法可演进，但 cut 边界必须先锁定。
+\end{invariantbox}
+
+\begin{invariantbox}[I-B2：Cut-point Parity]
+\texttt{FastCdcStreamFeed}、\texttt{FastCdcSlice::ChunkCuts}、\texttt{ChunkCutsUntil}、SIMD 路径对相同输入产生\textbf{相同 offsets/lengths}。
+\end{invariantbox}
+
+\begin{invariantbox}[I-B3：Manifest 耐久性]
+chunk hash 列表写入 manifest 前 \texttt{Flush}/fsync；txn 中断 $\rightarrow$ \texttt{kAborted}，不提交半成品。
+\end{invariantbox}
+
+\section{Parity 测试矩阵}
+
+\begin{table}[htbp]
+\centering
+\caption{CDC 算法变更必过测试}
+\label{tab:parity-tests}
+\small
+\begin{tabular}{@{}L{4.8cm}L{3.8cm}L{5.2cm}@{}}
+\toprule
+测试文件 & 验证 & 失败处置 \\
+\midrule
+\texttt{fast\_cdc\_streaming\_test.cc} & StreamFeed vs Slice 切点 & 禁止合并 \\
+\texttt{fast\_cdc\_test.cc} & ChunkCutsUntil vs 全文件 cuts & 禁止合并 \\
+\texttt{streaming\_chunk\_pipeline\_test.cc} & 256MB manifest hash 一致 & 禁止合并 \\
+\texttt{pipeline\_v4\_*\_test.cc} & 多文件 chunk 边界 parity & 禁止合并 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Algorithm Change Policy}
+
+\begin{enumerate}
+  \item 改动 \texttt{fast\_cdc*.cc} 或 \texttt{fast\_cdc\_streaming.cc}；
+  \item 本地跑 \texttt{fast\_cdc\_streaming\_test} + \texttt{streaming\_chunk\_pipeline\_test}；
+  \item parity 失败 $\Rightarrow$ \textbf{回退}（Phase 3C 先例：0 MB/s 收益）；
+  \item parity 通过但 L5 绝对吞吐崩溃 $\Rightarrow$ \textbf{默认关闭}（Phase A：105 MB/s）；
+  \item CI immutable floor：\texttt{reuse\_pct\_min}$\geq$90\%，\texttt{pipeline\_ratio\_min}$\geq$0.90，L5 floor 105 MB/s。
+\end{enumerate}
+
+\section{完整内核叙事闭环}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.5cm, scale=0.92, transform shape]
+  \node[block=CoreBlue, minimum width=2.8cm] (scan) {扫描源树};
+  \node[block=CoreOrange, right=0.8cm of scan, minimum width=2.6cm] (route) {路由决策\\\cref{ch:routing}};
+  \node[block=CoreGreen, right=0.8cm of route, minimum width=2.6cm] (cdc) {FastCDC/HCRBO\\\cref{ch:fastcdc,ch:hcrbo}};
+  \node[block=CorePurple, right=0.8cm of cdc, minimum width=2.4cm] (enc) {Encode};
+  \node[block=CoreBlue, below=1.2cm of cdc, minimum width=2.6cm] (parity) {Parity 保障\\\cref{ch:streaming,ch:parity}};
+  \node[block=CoreGreen, below=1.2cm of enc, minimum width=2.4cm] (store) {EbPack Store};
+  \node[block=CoreOrange, below=1.2cm of store, minimum width=2.4cm] (man) {Manifest};
+  \draw[arr] (scan) -- (route);
+  \draw[arr] (route) -- (cdc);
+  \draw[arr] (cdc) -- (enc);
+  \draw[arr] (enc) -- (store);
+  \draw[arr] (store) -- (man);
+  \draw[darr, CoreRed] (parity) -- (cdc);
+  \node[lab, CoreRed] at ($(parity.north)+(0,0.35)$) {切点立法};
+\end{tikzpicture}
+\caption{从扫描到 manifest 的完整叙事；Parity 横切所有 CDC 路径。}
+\label{fig:full-loop}
+\end{figure}
+
+\section{30 秒 / 2 分钟答辩口播}
+
+\begin{corebox}[30 秒版]
+「分块用 FastCDC 内容定义分块，大小在 min/avg/max 间浮动；Gear mask 使期望间距 $\approx$ avg\_size。生产走 32MB StreamFeed，carry 保 gear 连续，Phase B handoff 防 drift，parity 测试立法。增量用 HCRBO/CFI 三级验证跳过 unchanged chunk。路由五路径：小文件 Inline、大文件 Streaming、多文件/增量 v4。」
+\end{corebox}
+
+\begin{corebox}[2 分钟版（CDC 漂移专集）]
+「CDC 漂移是流式与整文件切点不一致，会导致 SHA256 变。Slice 是 golden，StreamFeed 是生产路径，必须 bit-identical。carry tail 解决 gear 跨 feed 断档；Phase B 在 carry 消耗完后 handoff 到 contiguous loop，禁止 virtual boundary 简化。digest\_base 保证 file-absolute hash。每次改 CDC 跑 streaming\_test 和 256MB manifest parity；失败回退，overlap 丧失的路径默认关闭。」
+\end{corebox}

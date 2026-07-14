@@ -1,0 +1,93 @@
+\chapter{Mask 路标：什么时候切？}
+\label{ch:gen1-mask}
+
+\section{把 32 位指纹画成一排 bit}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.28cm,y=0.7cm]
+  \foreach \i in {0,...,15} {
+    \pgfmathtruncatemacro{\bit}{mod(\i,2)}
+    \ifnum\bit=0
+      \fill[Gen1Blue!30] (\i,0) rectangle ++(0.85,1);
+    \else
+      \fill[white] (\i,0) rectangle ++(0.85,1);
+    \fi
+    \draw (\i,0) rectangle ++(0.85,1);
+    \node[font=\tiny] at (\i+0.42,0.5) {{\ifnum\bit=0 0\else 1\fi}};
+  }
+  \node[note] at (8,-0.8) {$h$ 的 32 位（示意，随机 0/1）};
+  \fill[Gen1Blue!50] (0,0) rectangle (4.85,1);
+  \node[note] at (2.4,1.5) {mask 关心的低位（例如低 8 位）};
+\end{tikzpicture}
+\caption{mask 是一串 1，和 $h$ 做按位与 \&。}
+\end{figure}
+
+\section{路标规则：低位全 0 就切}
+
+\begin{codebox}[第一代切点条件]
+\begin{lstlisting}
+if ((h & mask) == 0) {
+    在这里切;  // 路标命中
+}
+\end{lstlisting}
+\end{codebox}
+
+\begin{analogybox}[抽奖机]
+想象 $h$ 是抽奖号码，mask 规定「末尾若干位必须是 000...0 才算中奖」。  
+末尾 8 位全 0 的概率 $\approx 1/256$；末尾 10 位全 0 $\approx 1/1024$。  
+\textbf{mask 越「长」（1 越多），切点越稀疏，chunk 平均越大。}
+\end{analogybox}
+
+\section{mask 和 avg\_size 的关系（直觉）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  ybar,
+  width=10cm,
+  height=5.5cm,
+  ymin=0,
+  ylabel={大约平均 chunk 长度},
+  symbolic x coords={mask短, mask中, mask长},
+  xtick=data,
+  nodes near coords,
+  bar width=22pt,
+  enlarge x limits=0.2
+]
+\addplot[fill=Gen1Blue!60] coordinates {
+  (mask短, 65536)
+  (mask中, 262144)
+  (mask长, 1048576)
+};
+\end{axis}
+\end{tikzpicture}
+\caption{路标越「难中」，切点越少，chunk 越大（示意，非精确值）。}
+\end{figure}
+
+程序根据你配置的 \texttt{avg\_size} 自动算出 mask 里有多少个 1。  
+你不需要手算；只要知道：**avg 越大 → mask 越长 → 切得越稀**。
+
+\begin{stepbox}[Step 5 — 第一代切点 = 一个条件]
+\[
+\text{切} \Leftrightarrow (h \ \& \ \text{mask}) = 0
+\]
+就这一条（再加上 min/max 护栏）。
+\end{stepbox}
+
+\section{模拟示例：mask=3 的两次 probe}
+
+\begin{simbox}[$h=18$ vs $h=20$（Chunk 1 真实数值）]
+\begin{tabular}{@{}cccc@{}}
+\toprule
+$h$ & 二进制（低 4 位） & $h \& 3$ & 结果 \\
+\midrule
+18 & \texttt{...0010} & 2 & 不切 \\
+20 & \texttt{...0100} & 0 & 切 \\
+\bottomrule
+\end{tabular}
+
+\vspace{0.4em}
+mask=3 即 \texttt{0b11}：只检查\textbf{最低 2 位}是否全 0。
+\end{simbox}

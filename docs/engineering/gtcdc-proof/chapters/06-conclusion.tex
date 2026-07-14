@@ -1,0 +1,21 @@
+\chapter{结论}
+\label{ch:conclusion}
+
+G-TCDC v3 在\textbf{算法规格层}引入 Gear 滑窗内核（\texttt{0x2000}）与 HCRBO-GT 增量路径；v2 Rabin 仓库保持兼容。Release 热路径复用 \texttt{ScanGearCut}，streaming 与 FastCDC 行级对齐。
+
+\section{验收判据（v3 Gear 复测）}
+
+\begin{enumerate}[nosep]
+  \item \texttt{gt\_cdc\_*} parity（含 Gear streaming/full）—— CI 目标；
+  \item \textbf{双门禁 E2E}（单次 L5）：\texttt{gtcdc\_vs\_stream\_ratio} $\ge 1.0$ \textbf{且} \texttt{scan\_ns\_ratio} $\le 1.0$；
+  \item \textbf{增量 L6}：\texttt{incr\_gtcdc\_vs\_stream\_ratio} $\ge 1.0$；
+  \item \texttt{ci\_floor.json} G-TCDC 键 —— 证明脚本十次均值通过后写入。
+\end{enumerate}
+
+\section{分析}
+
+v3 Gear 将 CDC 扫描算子与 FastCDC 同构，E2E 比值从 v2 Rabin 的 $\approx$0.905 收敛至 $\approx$1.0 量级；增量场景通过 CFI 复用与 FastCDC HCRBO 同构，L6 比值可超过 1.0。
+
+\section{后续方向}
+
+v2 Rabin 仓库增量可用但性能 SLA 不适用；达标需 v3 Gear 新仓库 full re-backup。可选 P2：增量大文件 streaming + HCRBO 合一。

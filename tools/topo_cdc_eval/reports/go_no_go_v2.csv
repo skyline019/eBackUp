@@ -1,0 +1,2 @@
+corpus,bytes,chunks,mean_chunk,avg_target,mean_ratio,probes,probes_per_byte,p_primary,p_topo,p_joint,max_cut_ratio,hash_cut_count,max_cut_count,reuse_1byte_pct,reuse_1byte_unchanged,reuse_1byte_total,calib_permille,topo_shift,window_w,seed
+synthetic,4194304,21,199728.7619047619,262144,0.7619047619047619,2842628,0.6777353286743164,0.0002413259842652644,0.030010961687565167,7.035742981494589e-06,0.0,20,0,33.333333333333336,7,21,31,1,64,305419896

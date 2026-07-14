@@ -1,0 +1,47 @@
+% !TEX program = xelatex
+\documentclass[12pt,a4paper,openany]{ctexbook}
+
+\input{preamble.tex}
+
+\title{两代 CDC 算法\\[0.3em]\large 小白完全手册\\[0.2em]\normalsize 第一代 FastCDC Stream · 第二代 G-TCDC v6 2F-Gear}
+\author{ebbackup Project}
+\date{2026-07-13}
+
+\begin{document}
+
+\frontmatter
+\maketitle
+\input{chapters/00-how-to-read.tex}
+\tableofcontents
+\listoffigures
+
+\mainmatter
+\part{先搞懂：备份为什么要「切香肠」}
+\input{chapters/01-why-chunk.tex}
+\input{chapters/02-backup-journey.tex}
+
+\part{第一代：FastCDC Stream（默认切法）}
+\input{chapters/03-gen1-big-picture.tex}
+\input{chapters/04-gen1-gear-table.tex}
+\input{chapters/05-gen1-rolling-window.tex}
+\input{chapters/06-gen1-mask-cut.tex}
+\input{chapters/07-gen1-guards.tex}
+\input{chapters/08-gen1-streaming.tex}
+\input{chapters/09-gen1-walkthrough.tex}
+
+\part{第二代：G-TCDC v6 2F-Gear（新切法）}
+\input{chapters/10-gen2-big-picture.tex}
+\input{chapters/11-gen2-two-hands.tex}
+\input{chapters/12-gen2-bit-split.tex}
+\input{chapters/13-gen2-cut-and-stream.tex}
+\input{chapters/14-gen2-walkthrough.tex}
+
+\part{两代对照与下一步}
+\input{chapters/15-side-by-side.tex}
+\input{chapters/16-faq-glossary.tex}
+
+\appendix
+\input{chapters/99-appendix.tex}
+
+\backmatter
+\end{document}

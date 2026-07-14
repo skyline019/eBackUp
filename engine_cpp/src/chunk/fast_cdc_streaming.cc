@@ -39,8 +39,8 @@ class ScopedStreamTimer {
 
 bool ScanGearCutVirtual(const StreamSegmentView& view, size_t scan_start,
                         size_t cut_limit, uint32_t w, uint32_t mask,
-                        const uint32_t gear[256], size_t* out_cut,
-                        bool* found) {
+                        const uint32_t gear[256], size_t* out_cut, bool* found,
+                        uint64_t* probes) {
   if (!out_cut || !found || scan_start >= cut_limit) return false;
   *found = false;
   if (scan_start < w) return false;
@@ -50,6 +50,7 @@ bool ScanGearCutVirtual(const StreamSegmentView& view, size_t scan_start,
     h = (h << 1) + gear[view.at(i)];
   }
   for (size_t i = scan_start; i < cut_limit; ++i) {
+    if (probes) ++*probes;
     if ((h & mask) == 0) {
       *out_cut = i;
       *found = true;
@@ -199,6 +200,7 @@ Status ChunkCarryPrefixVirtual(FastCdcStreamState* state,
   lengths.reserve(offsets.capacity());
 
   size_t pos = 0;
+  uint64_t* probes = &profile->cdc_scan_probes;
   {
     ScopedStreamTimer cdc_timer(profile ? &profile->cdc_scan_ns : nullptr);
     while (pos < proc_len) {
@@ -221,7 +223,8 @@ Status ChunkCarryPrefixVirtual(FastCdcStreamState* state,
               scan_start >= view.len0 && cut <= view.len0 + view.len1) {
             size_t rel_cut = cut - view.len0;
             fastcdc_internal::ScanGearCut(view.seg1, scan_start - view.len0, rel_cut,
-                                          w, mask, state->gear, &rel_cut, &found);
+                                          w, mask, state->gear, &rel_cut, &found,
+                                          probes);
             if (found) cut = rel_cut + view.len0;
           }
 
@@ -256,15 +259,16 @@ Status ChunkCarryPrefixVirtual(FastCdcStreamState* state,
       if (scan_start >= w && scan_start < cut) {
         if (view.len0 == 0) {
           fastcdc_internal::ScanGearCut(view.seg1, scan_start, cut, w, mask,
-                                          state->gear, &cut, &found);
+                                          state->gear, &cut, &found, probes);
         } else if (scan_start >= view.len0 && cut <= view.len0 + view.len1) {
           size_t rel_cut = cut - view.len0;
           fastcdc_internal::ScanGearCut(view.seg1, scan_start - view.len0, rel_cut,
-                                        w, mask, state->gear, &rel_cut, &found);
+                                        w, mask, state->gear, &rel_cut, &found,
+                                        probes);
           if (found) cut = rel_cut + view.len0;
         } else {
           ScanGearCutVirtual(view, scan_start, cut, w, mask, state->gear, &cut,
-                           &found);
+                           &found, probes);
         }
       }
 
@@ -354,6 +358,7 @@ void AccumulateFastCdcStreamProfile(const FastCdcStreamProfile& src,
   dst->carry_copy_ns += src.carry_copy_ns;
   dst->cdc_scan_ns += src.cdc_scan_ns;
   dst->digest_ns += src.digest_ns;
+  dst->cdc_scan_probes += src.cdc_scan_probes;
 }
 
 }  // namespace ebbackup

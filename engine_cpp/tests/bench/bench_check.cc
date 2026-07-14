@@ -5,6 +5,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,20 @@ struct BenchFloors {
   double backup_pipeline_multi_MBps_min{0.0};
   double backup_pipeline_mixed_MBps_min{0.0};
   double hybrid_stream_ratio_min{0.95};
+  double gtcdc_backup_pipeline_256MBps_min{0.0};
+  double gtcdc_vs_stream_ratio_min{0.0};
+  double gtcdc_scan_ns_ratio_max{0.0};
+  double gtcdc_scan_ns_per_probe_ratio_max{0.0};
+  double gtcdc_incr_vs_stream_ratio_min{0.0};
+  double topo_vs_stream_ratio_min{0.0};
+  double topo_scan_ns_per_probe_ratio_max{0.0};
+  double topo_scan_ns_ratio_max{0.0};
+  double topochain_vs_stream_ratio_min{0.0};
+  double topochain_scan_ns_per_probe_ratio_max{0.0};
+  double topoph_vs_stream_ratio_min{0.0};
+  double topoph_scan_ns_per_probe_ratio_max{0.0};
+  double topophn_vs_stream_ratio_min{0.0};
+  double topophn_scan_ns_per_probe_ratio_max{0.0};
   double ampl_ratio_post_compact_max{1.05};
   double content_auto_vs_lz4_max{1.10};
 };
@@ -53,6 +68,16 @@ std::string MakeSyntheticData(size_t size, uint8_t seed) {
   std::string data(size, '\0');
   for (size_t i = 0; i < size; ++i) {
     data[i] = static_cast<char>((seed + i * 17 + (i >> 8)) & 0xFF);
+  }
+  return data;
+}
+
+std::string MakeRandomData(size_t size, uint32_t seed) {
+  std::mt19937 gen(seed);
+  std::uniform_int_distribution<int> dist(0, 255);
+  std::string data(size, '\0');
+  for (size_t i = 0; i < size; ++i) {
+    data[i] = static_cast<char>(dist(gen));
   }
   return data;
 }
@@ -93,6 +118,29 @@ bool ParseFloorsFile(const std::string& path, BenchFloors* floors) {
   parse_key("backup_pipeline_2GBps_min", &floors->backup_pipeline_2GBps_min);
   parse_key("backup_pipeline_multi_MBps_min", &floors->backup_pipeline_multi_MBps_min);
   parse_key("backup_pipeline_mixed_MBps_min", &floors->backup_pipeline_mixed_MBps_min);
+  parse_key("hybrid_stream_ratio_min", &floors->hybrid_stream_ratio_min);
+  parse_key("gtcdc_backup_pipeline_256MBps_min",
+            &floors->gtcdc_backup_pipeline_256MBps_min);
+  parse_key("gtcdc_vs_stream_ratio_min", &floors->gtcdc_vs_stream_ratio_min);
+  parse_key("gtcdc_scan_ns_ratio_max", &floors->gtcdc_scan_ns_ratio_max);
+  parse_key("gtcdc_scan_ns_per_probe_ratio_max",
+            &floors->gtcdc_scan_ns_per_probe_ratio_max);
+  parse_key("gtcdc_incr_vs_stream_ratio_min",
+            &floors->gtcdc_incr_vs_stream_ratio_min);
+  parse_key("topo_vs_stream_ratio_min", &floors->topo_vs_stream_ratio_min);
+  parse_key("topo_scan_ns_per_probe_ratio_max",
+            &floors->topo_scan_ns_per_probe_ratio_max);
+  parse_key("topo_scan_ns_ratio_max", &floors->topo_scan_ns_ratio_max);
+  parse_key("topochain_vs_stream_ratio_min",
+            &floors->topochain_vs_stream_ratio_min);
+  parse_key("topochain_scan_ns_per_probe_ratio_max",
+            &floors->topochain_scan_ns_per_probe_ratio_max);
+  parse_key("topoph_vs_stream_ratio_min", &floors->topoph_vs_stream_ratio_min);
+  parse_key("topoph_scan_ns_per_probe_ratio_max",
+            &floors->topoph_scan_ns_per_probe_ratio_max);
+  parse_key("topophn_vs_stream_ratio_min", &floors->topophn_vs_stream_ratio_min);
+  parse_key("topophn_scan_ns_per_probe_ratio_max",
+            &floors->topophn_scan_ns_per_probe_ratio_max);
   parse_key("ampl_ratio_post_compact_max", &floors->ampl_ratio_post_compact_max);
   parse_key("content_auto_vs_lz4_max", &floors->content_auto_vs_lz4_max);
 
@@ -223,7 +271,41 @@ double RunBackupSeconds(const std::string& repo, const std::string& source,
   return std::chrono::duration<double>(t1 - t0).count();
 }
 
+struct BackupBenchResult {
+  double seconds{0.0};
+  uint64_t stream_cdc_ns{0};
+  uint64_t stream_cdc_probes{0};
+};
+
+BackupBenchResult RunBackupBench(const std::string& repo,
+                                 const std::string& source,
+                                 const ebbackup::BackupOptions& options) {
+  BackupBenchResult out{};
+  ebbackup::BackupEngine engine(repo);
+  const ebbackup::Status open_st = engine.Open();
+  if (!open_st.ok()) {
+    std::fprintf(stderr, "RunBackupBench: Open(%s): %s\n", repo.c_str(),
+                 open_st.message().c_str());
+    return out;
+  }
+  const auto t0 = std::chrono::steady_clock::now();
+  const ebbackup::Status backup_st =
+      engine.RunBackup(source, ebbackup::BackupMode::kFull, options);
+  if (!backup_st.ok()) {
+    std::fprintf(stderr, "RunBackupBench: RunBackup(%s): %s\n", repo.c_str(),
+                 backup_st.message().c_str());
+    return out;
+  }
+  const auto t1 = std::chrono::steady_clock::now();
+  out.seconds = std::chrono::duration<double>(t1 - t0).count();
+  out.stream_cdc_ns = engine.pipeline_phase_stats().stream_cdc_ns.load();
+  out.stream_cdc_probes =
+      engine.pipeline_phase_stats().stream_cdc_probes.load();
+  return out;
+}
+
 void WriteSyntheticFile(const std::string& path, size_t size, uint8_t seed);
+void WriteRandomFile(const std::string& path, size_t size, uint32_t seed);
 
 void PrintPipelineProfilePct(const ebbackup::PipelinePhaseStats& ps) {
   const double read_ms = static_cast<double>(ps.read_ns.load()) / 1e6;
@@ -526,6 +608,603 @@ bool RunPipeline256Bench(BenchFloors* floors) {
   return true;
 }
 
+bool GtCdcProofMeasurementEnabled() {
+  const char* proof = std::getenv("EB_GTCDC_PROOF");
+  if (proof && std::strcmp(proof, "1") == 0) return true;
+  const char* profile = std::getenv("EBBACKUP_PIPELINE_PROFILE");
+  return profile && std::strcmp(profile, "1") == 0;
+}
+
+bool RunPipeline256GtCdcBench(BenchFloors* floors) {
+  const bool enforce = floors->gtcdc_backup_pipeline_256MBps_min > 0.0;
+  if (!enforce && !GtCdcProofMeasurementEnabled()) return true;
+
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "gtcdc");
+  SetBenchEnv("EBBACKUP_CDC_HYBRID", "0");
+  SetBenchEnv("EBBACKUP_CDC_FAST_SLICE", "0");
+
+  constexpr size_t kFileSize = 256 * 1024 * 1024;
+  const auto base =
+      ebbackup::test::TestOutputRoot() / "eb_bench_check_pipeline_gtcdc_l5";
+  const std::string source = (base / "source").string();
+  const std::string repo = (base / "repo").string();
+  std::error_code ec;
+  std::filesystem::remove_all(base, ec);
+  std::filesystem::create_directories(base);
+  std::filesystem::create_directories(source);
+  WriteRandomFile(source + "/data.bin", kFileSize, 43);
+
+  ebbackup::test::InitGtCdcV6Repo(repo);
+
+  ebbackup::BackupOptions pipe_opts{};
+  pipe_opts.use_pipeline = true;
+
+  ebbackup::BackupEngine engine(repo);
+  if (!engine.Open().ok()) return false;
+  const auto t0 = std::chrono::steady_clock::now();
+  if (!engine.RunBackup(source, ebbackup::BackupMode::kFull, pipe_opts).ok()) {
+    return false;
+  }
+  const auto t1 = std::chrono::steady_clock::now();
+  const double pipe_sec = std::chrono::duration<double>(t1 - t0).count();
+  const uint64_t nbytes = static_cast<uint64_t>(kFileSize);
+  const double pipe_MBps = ebbackup::bench::ThroughputMBps(nbytes, pipe_sec);
+
+  std::printf("bench_check L5_gtcdc: gtcdc_pipeline_256MBps=%.2f\n", pipe_MBps);
+  PrintPipelineProfilePct(engine.pipeline_phase_stats());
+  PrintStreamSubPct(engine.pipeline_phase_stats());
+
+  if (enforce && pipe_MBps < floors->gtcdc_backup_pipeline_256MBps_min) {
+    std::fprintf(stderr, "gtcdc_backup_pipeline_256MBps %.2f below floor %.2f\n",
+                 pipe_MBps, floors->gtcdc_backup_pipeline_256MBps_min);
+    return false;
+  }
+
+  ebbackup::BackupEngine verify(repo);
+  if (!verify.Open().ok()) return false;
+  if (!verify.Verify().ok()) return false;
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "");
+  return true;
+}
+
+bool RunPipeline256GtCdcVsStreamBench(BenchFloors* floors) {
+  const bool enforce_ratio = floors->gtcdc_vs_stream_ratio_min > 0.0;
+  const bool enforce_scan_per_probe =
+      floors->gtcdc_scan_ns_per_probe_ratio_max > 0.0;
+  const bool enforce_scan_raw = floors->gtcdc_scan_ns_ratio_max > 0.0;
+  if (!enforce_ratio && !enforce_scan_per_probe && !enforce_scan_raw &&
+      !GtCdcProofMeasurementEnabled()) {
+    return true;
+  }
+
+  constexpr size_t kFileSize = 256 * 1024 * 1024;
+  const auto base =
+      ebbackup::test::TestOutputRoot() / "eb_bench_check_pipeline_l5_gtcdc_ab";
+  const std::string source = (base / "source").string();
+  const std::string repo_stream = (base / "repo_stream").string();
+  const std::string repo_gtcdc = (base / "repo_gtcdc").string();
+  std::error_code ec;
+  std::filesystem::remove_all(base, ec);
+  std::filesystem::create_directories(base);
+  std::filesystem::create_directories(source);
+  WriteRandomFile(source + "/data.bin", kFileSize, 43);
+
+  ebbackup::test::InitDefaultRepo(repo_stream);
+  ebbackup::test::InitGtCdcV6Repo(repo_gtcdc);
+
+  ebbackup::BackupOptions pipe_opts{};
+  pipe_opts.use_pipeline = true;
+
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "");
+  SetBenchEnv("EBBACKUP_CDC_FAST_SLICE", "0");
+  SetBenchEnv("EBBACKUP_FORCE_STREAM_CDC", "0");
+  SetBenchEnv("EBBACKUP_CDC_HYBRID", "0");
+  SetBenchEnv("EBBACKUP_PIPELINE_PROFILE", "1");
+  const BackupBenchResult stream =
+      RunBackupBench(repo_stream, source, pipe_opts);
+
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "gtcdc");
+  SetBenchEnv("EBBACKUP_CDC_HYBRID", "0");
+  SetBenchEnv("EBBACKUP_CDC_FAST_SLICE", "0");
+  const BackupBenchResult gtcdc =
+      RunBackupBench(repo_gtcdc, source, pipe_opts);
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "");
+
+  const uint64_t nbytes = static_cast<uint64_t>(kFileSize);
+  const double stream_MBps =
+      ebbackup::bench::ThroughputMBps(nbytes, stream.seconds);
+  const double gtcdc_MBps =
+      ebbackup::bench::ThroughputMBps(nbytes, gtcdc.seconds);
+  const double ratio = stream_MBps > 0 ? gtcdc_MBps / stream_MBps : 0.0;
+  const double scan_ratio =
+      stream.stream_cdc_ns > 0
+          ? static_cast<double>(gtcdc.stream_cdc_ns) /
+                static_cast<double>(stream.stream_cdc_ns)
+          : 0.0;
+  const double stream_ns_per_probe =
+      stream.stream_cdc_probes > 0
+          ? static_cast<double>(stream.stream_cdc_ns) /
+                static_cast<double>(stream.stream_cdc_probes)
+          : 0.0;
+  const double gtcdc_ns_per_probe =
+      gtcdc.stream_cdc_probes > 0
+          ? static_cast<double>(gtcdc.stream_cdc_ns) /
+                static_cast<double>(gtcdc.stream_cdc_probes)
+          : 0.0;
+  const double scan_per_probe_ratio =
+      stream_ns_per_probe > 0.0 ? gtcdc_ns_per_probe / stream_ns_per_probe : 0.0;
+
+  std::printf(
+      "bench_check L5_gtcdc_ab: stream_256MBps=%.2f gtcdc_256MBps=%.2f "
+      "gtcdc_vs_stream_ratio=%.3f scan_ns_ratio=%.3f "
+      "scan_ns_per_probe_ratio=%.3f\n",
+      stream_MBps, gtcdc_MBps, ratio, scan_ratio, scan_per_probe_ratio);
+  std::printf(
+      "bench_check L5_gtcdc_ab: stream_cdc_ns=%llu gtcdc_cdc_ns=%llu "
+      "stream_probes=%llu gtcdc_probes=%llu\n",
+      static_cast<unsigned long long>(stream.stream_cdc_ns),
+      static_cast<unsigned long long>(gtcdc.stream_cdc_ns),
+      static_cast<unsigned long long>(stream.stream_cdc_probes),
+      static_cast<unsigned long long>(gtcdc.stream_cdc_probes));
+
+  if (enforce_ratio && ratio + 1e-6 < floors->gtcdc_vs_stream_ratio_min) {
+    std::fprintf(stderr, "gtcdc_vs_stream_ratio %.3f below floor %.3f\n", ratio,
+                 floors->gtcdc_vs_stream_ratio_min);
+    return false;
+  }
+  if (enforce_scan_per_probe &&
+      scan_per_probe_ratio >
+          floors->gtcdc_scan_ns_per_probe_ratio_max + 1e-6) {
+    std::fprintf(stderr,
+                 "gtcdc_scan_ns_per_probe_ratio %.3f above floor %.3f\n",
+                 scan_per_probe_ratio,
+                 floors->gtcdc_scan_ns_per_probe_ratio_max);
+    return false;
+  }
+  if (enforce_scan_raw && scan_ratio > floors->gtcdc_scan_ns_ratio_max + 1e-6) {
+    std::fprintf(stderr, "gtcdc_scan_ns_ratio %.3f above floor %.3f\n",
+                 scan_ratio, floors->gtcdc_scan_ns_ratio_max);
+    return false;
+  }
+  return true;
+}
+
+bool RunPipeline256TopoVsStreamBench(BenchFloors* floors) {
+  const bool enforce_ratio = floors->topo_vs_stream_ratio_min > 0.0;
+  const bool enforce_scan_per_probe =
+      floors->topo_scan_ns_per_probe_ratio_max > 0.0;
+  const bool enforce_scan_raw = floors->topo_scan_ns_ratio_max > 0.0;
+  if (!enforce_ratio && !enforce_scan_per_probe && !enforce_scan_raw) {
+    return true;
+  }
+
+  constexpr size_t kFileSize = 256 * 1024 * 1024;
+  const auto base =
+      ebbackup::test::TestOutputRoot() / "eb_bench_check_pipeline_l5_topo_ab";
+  const std::string source = (base / "source").string();
+  const std::string repo_stream = (base / "repo_stream").string();
+  const std::string repo_topo = (base / "repo_topo").string();
+  std::error_code ec;
+  std::filesystem::remove_all(base, ec);
+  std::filesystem::create_directories(base);
+  std::filesystem::create_directories(source);
+  WriteRandomFile(source + "/data.bin", kFileSize, 43);
+
+  ebbackup::test::InitDefaultRepo(repo_stream);
+  ebbackup::test::InitTopoRepo(repo_topo);
+
+  ebbackup::BackupOptions pipe_opts{};
+  pipe_opts.use_pipeline = true;
+
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "");
+  SetBenchEnv("EBBACKUP_CDC_FAST_SLICE", "0");
+  SetBenchEnv("EBBACKUP_FORCE_STREAM_CDC", "0");
+  SetBenchEnv("EBBACKUP_CDC_HYBRID", "0");
+  SetBenchEnv("EBBACKUP_PIPELINE_PROFILE", "1");
+  const BackupBenchResult stream =
+      RunBackupBench(repo_stream, source, pipe_opts);
+
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "topocdc");
+  SetBenchEnv("EBBACKUP_CDC_HYBRID", "0");
+  SetBenchEnv("EBBACKUP_CDC_FAST_SLICE", "0");
+  const BackupBenchResult topo = RunBackupBench(repo_topo, source, pipe_opts);
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "");
+
+  const uint64_t nbytes = static_cast<uint64_t>(kFileSize);
+  const double stream_MBps =
+      ebbackup::bench::ThroughputMBps(nbytes, stream.seconds);
+  const double topo_MBps =
+      ebbackup::bench::ThroughputMBps(nbytes, topo.seconds);
+  const double ratio = stream_MBps > 0 ? topo_MBps / stream_MBps : 0.0;
+  const double scan_ratio =
+      stream.stream_cdc_ns > 0
+          ? static_cast<double>(topo.stream_cdc_ns) /
+                static_cast<double>(stream.stream_cdc_ns)
+          : 0.0;
+  const double stream_ns_per_probe =
+      stream.stream_cdc_probes > 0
+          ? static_cast<double>(stream.stream_cdc_ns) /
+                static_cast<double>(stream.stream_cdc_probes)
+          : 0.0;
+  const double topo_ns_per_probe =
+      topo.stream_cdc_probes > 0
+          ? static_cast<double>(topo.stream_cdc_ns) /
+                static_cast<double>(topo.stream_cdc_probes)
+          : 0.0;
+  const double scan_per_probe_ratio =
+      stream_ns_per_probe > 0.0 ? topo_ns_per_probe / stream_ns_per_probe : 0.0;
+
+  std::printf(
+      "bench_check L5_topo_ab: stream_256MBps=%.2f topo_256MBps=%.2f "
+      "topo_vs_stream_ratio=%.3f scan_ns_ratio=%.3f "
+      "topo_scan_ns_per_probe_ratio=%.3f\n",
+      stream_MBps, topo_MBps, ratio, scan_ratio, scan_per_probe_ratio);
+
+  if (enforce_ratio && ratio + 1e-6 < floors->topo_vs_stream_ratio_min) {
+    std::fprintf(stderr, "topo_vs_stream_ratio %.3f below floor %.3f\n", ratio,
+                 floors->topo_vs_stream_ratio_min);
+    return false;
+  }
+  if (enforce_scan_per_probe &&
+      scan_per_probe_ratio >
+          floors->topo_scan_ns_per_probe_ratio_max + 1e-6) {
+    std::fprintf(stderr,
+                 "topo_scan_ns_per_probe_ratio %.3f above floor %.3f\n",
+                 scan_per_probe_ratio,
+                 floors->topo_scan_ns_per_probe_ratio_max);
+    return false;
+  }
+  if (enforce_scan_raw && scan_ratio > floors->topo_scan_ns_ratio_max + 1e-6) {
+    std::fprintf(stderr, "topo_scan_ns_ratio %.3f above floor %.3f\n",
+                 scan_ratio, floors->topo_scan_ns_ratio_max);
+    return false;
+  }
+  return true;
+}
+
+bool RunPipeline256TopoChainVsStreamBench(BenchFloors* floors) {
+  const bool enforce_ratio = floors->topochain_vs_stream_ratio_min > 0.0;
+  const bool enforce_scan_per_probe =
+      floors->topochain_scan_ns_per_probe_ratio_max > 0.0;
+  if (!enforce_ratio && !enforce_scan_per_probe) {
+    return true;
+  }
+
+  constexpr size_t kFileSize = 256 * 1024 * 1024;
+  const auto base = ebbackup::test::TestOutputRoot() /
+                    "eb_bench_check_pipeline_l5_topochain_ab";
+  const std::string source = (base / "source").string();
+  const std::string repo_stream = (base / "repo_stream").string();
+  const std::string repo_chain = (base / "repo_chain").string();
+  std::error_code ec;
+  std::filesystem::remove_all(base, ec);
+  std::filesystem::create_directories(base);
+  std::filesystem::create_directories(source);
+  WriteRandomFile(source + "/data.bin", kFileSize, 43);
+
+  ebbackup::test::InitDefaultRepo(repo_stream);
+  ebbackup::test::InitTopoChainRepo(repo_chain);
+
+  ebbackup::BackupOptions pipe_opts{};
+  pipe_opts.use_pipeline = true;
+
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "");
+  SetBenchEnv("EBBACKUP_CDC_FAST_SLICE", "0");
+  SetBenchEnv("EBBACKUP_FORCE_STREAM_CDC", "0");
+  SetBenchEnv("EBBACKUP_CDC_HYBRID", "0");
+  SetBenchEnv("EBBACKUP_PIPELINE_PROFILE", "1");
+  const BackupBenchResult stream =
+      RunBackupBench(repo_stream, source, pipe_opts);
+
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "topochain");
+  SetBenchEnv("EBBACKUP_CDC_HYBRID", "0");
+  SetBenchEnv("EBBACKUP_CDC_FAST_SLICE", "0");
+  const BackupBenchResult chain =
+      RunBackupBench(repo_chain, source, pipe_opts);
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "");
+
+  const uint64_t nbytes = static_cast<uint64_t>(kFileSize);
+  const double stream_MBps =
+      ebbackup::bench::ThroughputMBps(nbytes, stream.seconds);
+  const double chain_MBps =
+      ebbackup::bench::ThroughputMBps(nbytes, chain.seconds);
+  const double ratio = stream_MBps > 0 ? chain_MBps / stream_MBps : 0.0;
+  const double stream_ns_per_probe =
+      stream.stream_cdc_probes > 0
+          ? static_cast<double>(stream.stream_cdc_ns) /
+                static_cast<double>(stream.stream_cdc_probes)
+          : 0.0;
+  const double chain_ns_per_probe =
+      chain.stream_cdc_probes > 0
+          ? static_cast<double>(chain.stream_cdc_ns) /
+                static_cast<double>(chain.stream_cdc_probes)
+          : 0.0;
+  const double scan_per_probe_ratio =
+      stream_ns_per_probe > 0.0 ? chain_ns_per_probe / stream_ns_per_probe : 0.0;
+
+  std::printf(
+      "bench_check L5_topochain_ab: stream_256MBps=%.2f topochain_256MBps=%.2f "
+      "topochain_vs_stream_ratio=%.3f "
+      "topochain_scan_ns_per_probe_ratio=%.3f\n",
+      stream_MBps, chain_MBps, ratio, scan_per_probe_ratio);
+
+  if (enforce_ratio && ratio + 1e-6 < floors->topochain_vs_stream_ratio_min) {
+    std::fprintf(stderr, "topochain_vs_stream_ratio %.3f below floor %.3f\n",
+                 ratio, floors->topochain_vs_stream_ratio_min);
+    return false;
+  }
+  if (enforce_scan_per_probe &&
+      scan_per_probe_ratio >
+          floors->topochain_scan_ns_per_probe_ratio_max + 1e-6) {
+    std::fprintf(stderr,
+                 "topochain_scan_ns_per_probe_ratio %.3f above floor %.3f\n",
+                 scan_per_probe_ratio,
+                 floors->topochain_scan_ns_per_probe_ratio_max);
+    return false;
+  }
+  return true;
+}
+
+bool RunPipeline256TopoPhVsStreamBench(BenchFloors* floors) {
+  const bool enforce_ratio = floors->topoph_vs_stream_ratio_min > 0.0;
+  const bool enforce_scan_per_probe =
+      floors->topoph_scan_ns_per_probe_ratio_max > 0.0;
+  if (!enforce_ratio && !enforce_scan_per_probe) {
+    return true;
+  }
+
+  constexpr size_t kFileSize = 256 * 1024 * 1024;
+  const auto base = ebbackup::test::TestOutputRoot() /
+                    "eb_bench_check_pipeline_l5_topoph_ab";
+  const std::string source = (base / "source").string();
+  const std::string repo_stream = (base / "repo_stream").string();
+  const std::string repo_ph = (base / "repo_ph").string();
+  std::error_code ec;
+  std::filesystem::remove_all(base, ec);
+  std::filesystem::create_directories(base);
+  std::filesystem::create_directories(source);
+  WriteRandomFile(source + "/data.bin", kFileSize, 47);
+
+  ebbackup::test::InitDefaultRepo(repo_stream);
+  ebbackup::test::InitTopoPhRepo(repo_ph);
+
+  ebbackup::BackupOptions pipe_opts{};
+  pipe_opts.use_pipeline = true;
+
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "");
+  SetBenchEnv("EBBACKUP_CDC_FAST_SLICE", "0");
+  SetBenchEnv("EBBACKUP_FORCE_STREAM_CDC", "0");
+  SetBenchEnv("EBBACKUP_CDC_HYBRID", "0");
+  SetBenchEnv("EBBACKUP_PIPELINE_PROFILE", "1");
+  const BackupBenchResult stream =
+      RunBackupBench(repo_stream, source, pipe_opts);
+
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "topoph");
+  SetBenchEnv("EBBACKUP_CDC_HYBRID", "0");
+  SetBenchEnv("EBBACKUP_CDC_FAST_SLICE", "0");
+  const BackupBenchResult ph = RunBackupBench(repo_ph, source, pipe_opts);
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "");
+
+  const uint64_t nbytes = static_cast<uint64_t>(kFileSize);
+  const double stream_MBps =
+      ebbackup::bench::ThroughputMBps(nbytes, stream.seconds);
+  const double ph_MBps = ebbackup::bench::ThroughputMBps(nbytes, ph.seconds);
+  const double ratio = stream_MBps > 0 ? ph_MBps / stream_MBps : 0.0;
+  const double stream_ns_per_probe =
+      stream.stream_cdc_probes > 0
+          ? static_cast<double>(stream.stream_cdc_ns) /
+                static_cast<double>(stream.stream_cdc_probes)
+          : 0.0;
+  const double ph_ns_per_probe =
+      ph.stream_cdc_probes > 0
+          ? static_cast<double>(ph.stream_cdc_ns) /
+                static_cast<double>(ph.stream_cdc_probes)
+          : 0.0;
+  const double scan_per_probe_ratio =
+      stream_ns_per_probe > 0.0 ? ph_ns_per_probe / stream_ns_per_probe : 0.0;
+
+  std::printf(
+      "bench_check L5_topoph_ab: stream_256MBps=%.2f topoph_256MBps=%.2f "
+      "topoph_vs_stream_ratio=%.3f "
+      "topoph_scan_ns_per_probe_ratio=%.3f\n",
+      stream_MBps, ph_MBps, ratio, scan_per_probe_ratio);
+
+  if (enforce_ratio && ratio + 1e-6 < floors->topoph_vs_stream_ratio_min) {
+    std::fprintf(stderr, "topoph_vs_stream_ratio %.3f below floor %.3f\n", ratio,
+                 floors->topoph_vs_stream_ratio_min);
+    return false;
+  }
+  if (enforce_scan_per_probe &&
+      scan_per_probe_ratio >
+          floors->topoph_scan_ns_per_probe_ratio_max + 1e-6) {
+    std::fprintf(stderr,
+                 "topoph_scan_ns_per_probe_ratio %.3f above floor %.3f\n",
+                 scan_per_probe_ratio,
+                 floors->topoph_scan_ns_per_probe_ratio_max);
+    return false;
+  }
+  return true;
+}
+
+bool RunPipeline256TopoPhnVsStreamBench(BenchFloors* floors) {
+  const bool enforce_ratio = floors->topophn_vs_stream_ratio_min > 0.0;
+  const bool enforce_scan_per_probe =
+      floors->topophn_scan_ns_per_probe_ratio_max > 0.0;
+  if (!enforce_ratio && !enforce_scan_per_probe) {
+    return true;
+  }
+
+  constexpr size_t kFileSize = 256 * 1024 * 1024;
+  const auto base = ebbackup::test::TestOutputRoot() /
+                    "eb_bench_check_pipeline_l5_topophn_ab";
+  const std::string source = (base / "source").string();
+  const std::string repo_stream = (base / "repo_stream").string();
+  const std::string repo_phn = (base / "repo_phn").string();
+  std::error_code ec;
+  std::filesystem::remove_all(base, ec);
+  std::filesystem::create_directories(base);
+  std::filesystem::create_directories(source);
+  WriteRandomFile(source + "/data.bin", kFileSize, 47);
+
+  // Clear before Init*: leftover EBBACKUP_CDC_ALGO (e.g. topochain) would
+  // stamp Non-FastCDC features into the stream baseline repo.
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "");
+  SetBenchEnv("EBBACKUP_CDC_FAST_SLICE", "0");
+  SetBenchEnv("EBBACKUP_FORCE_STREAM_CDC", "0");
+  SetBenchEnv("EBBACKUP_CDC_HYBRID", "0");
+
+  ebbackup::test::InitDefaultRepo(repo_stream);
+  ebbackup::test::InitTopoPhnRepo(repo_phn);
+
+  ebbackup::BackupOptions pipe_opts{};
+  pipe_opts.use_pipeline = true;
+
+  SetBenchEnv("EBBACKUP_PIPELINE_PROFILE", "1");
+  const BackupBenchResult stream =
+      RunBackupBench(repo_stream, source, pipe_opts);
+
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "topophn");
+  SetBenchEnv("EBBACKUP_CDC_HYBRID", "0");
+  SetBenchEnv("EBBACKUP_CDC_FAST_SLICE", "0");
+  const BackupBenchResult phn = RunBackupBench(repo_phn, source, pipe_opts);
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "");
+  SetBenchEnv("EBBACKUP_PIPELINE_PROFILE", "0");
+
+  const uint64_t nbytes = static_cast<uint64_t>(kFileSize);
+  const double stream_MBps =
+      ebbackup::bench::ThroughputMBps(nbytes, stream.seconds);
+  const double phn_MBps = ebbackup::bench::ThroughputMBps(nbytes, phn.seconds);
+  const double ratio = stream_MBps > 0 ? phn_MBps / stream_MBps : 0.0;
+  const double stream_ns_per_probe =
+      stream.stream_cdc_probes > 0
+          ? static_cast<double>(stream.stream_cdc_ns) /
+                static_cast<double>(stream.stream_cdc_probes)
+          : 0.0;
+  const double phn_ns_per_probe =
+      phn.stream_cdc_probes > 0
+          ? static_cast<double>(phn.stream_cdc_ns) /
+                static_cast<double>(phn.stream_cdc_probes)
+          : 0.0;
+  const double scan_per_probe_ratio =
+      stream_ns_per_probe > 0.0 ? phn_ns_per_probe / stream_ns_per_probe : 0.0;
+
+  std::printf(
+      "bench_check L5_topophn_ab: stream_256MBps=%.2f topophn_256MBps=%.2f "
+      "topophn_vs_stream_ratio=%.3f "
+      "topophn_scan_ns_per_probe_ratio=%.3f\n",
+      stream_MBps, phn_MBps, ratio, scan_per_probe_ratio);
+
+  if (enforce_ratio && ratio + 1e-6 < floors->topophn_vs_stream_ratio_min) {
+    std::fprintf(stderr, "topophn_vs_stream_ratio %.3f below floor %.3f\n",
+                 ratio, floors->topophn_vs_stream_ratio_min);
+    return false;
+  }
+  if (enforce_scan_per_probe &&
+      scan_per_probe_ratio >
+          floors->topophn_scan_ns_per_probe_ratio_max + 1e-6) {
+    std::fprintf(stderr,
+                 "topophn_scan_ns_per_probe_ratio %.3f above floor %.3f\n",
+                 scan_per_probe_ratio,
+                 floors->topophn_scan_ns_per_probe_ratio_max);
+    return false;
+  }
+  return true;
+}
+
+bool RunPipelineIncrGtCdcAbBench(BenchFloors* floors) {
+  const bool enforce = floors->gtcdc_incr_vs_stream_ratio_min > 0.0;
+  if (!enforce && !GtCdcProofMeasurementEnabled()) return true;
+
+  constexpr size_t kFileSize = 256 * 1024 * 1024;
+  constexpr size_t kDeltaOffset = 5 * 1024 * 1024;
+  const auto base =
+      ebbackup::test::TestOutputRoot() / "eb_bench_check_pipeline_l6_gtcdc_incr";
+  const std::string source = (base / "source").string();
+  const std::string repo_stream = (base / "repo_stream").string();
+  const std::string repo_gtcdc = (base / "repo_gtcdc").string();
+  std::error_code ec;
+  std::filesystem::remove_all(base, ec);
+  std::filesystem::create_directories(base);
+  std::filesystem::create_directories(source);
+  std::string data = MakeRandomData(kFileSize, 43);
+  {
+    std::ofstream out(source + "/data.bin", std::ios::binary);
+    out.write(data.data(), static_cast<std::streamsize>(data.size()));
+    if (!out) return false;
+  }
+
+  ebbackup::test::InitDefaultRepo(repo_stream);
+  ebbackup::test::InitGtCdcV6Repo(repo_gtcdc);
+
+  ebbackup::BackupOptions pipe_opts{};
+  pipe_opts.use_pipeline = true;
+
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "");
+  SetBenchEnv("EBBACKUP_CDC_HYBRID", "0");
+  SetBenchEnv("EBBACKUP_CDC_FAST_SLICE", "0");
+  {
+    ebbackup::BackupEngine engine(repo_stream);
+    if (!engine.Open().ok()) return false;
+    if (!engine.RunBackup(source, ebbackup::BackupMode::kFull, pipe_opts).ok()) {
+      return false;
+    }
+  }
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "gtcdc");
+  {
+    ebbackup::BackupEngine engine(repo_gtcdc);
+    if (!engine.Open().ok()) return false;
+    if (!engine.RunBackup(source, ebbackup::BackupMode::kFull, pipe_opts).ok()) {
+      return false;
+    }
+  }
+
+  data[kDeltaOffset] ^= 0x3C;
+  {
+    std::ofstream out(source + "/data.bin", std::ios::binary);
+    out.write(data.data(), static_cast<std::streamsize>(data.size()));
+  }
+
+  auto run_incr_seconds = [&](const std::string& repo, bool gtcdc) -> double {
+    if (gtcdc) {
+      SetBenchEnv("EBBACKUP_CDC_ALGO", "gtcdc");
+    } else {
+      SetBenchEnv("EBBACKUP_CDC_ALGO", "");
+    }
+    ebbackup::BackupEngine engine(repo);
+    if (!engine.Open().ok()) return -1.0;
+    const auto t0 = std::chrono::steady_clock::now();
+    if (!engine.RunBackup(source, ebbackup::BackupMode::kIncremental, pipe_opts)
+             .ok()) {
+      return -1.0;
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+    return std::chrono::duration<double>(t1 - t0).count();
+  };
+
+  const double stream_sec = run_incr_seconds(repo_stream, false);
+  const double gtcdc_sec = run_incr_seconds(repo_gtcdc, true);
+  SetBenchEnv("EBBACKUP_CDC_ALGO", "");
+  if (stream_sec <= 0.0 || gtcdc_sec <= 0.0) return false;
+
+  const double stream_MBps =
+      ebbackup::bench::ThroughputMBps(static_cast<uint64_t>(kFileSize), stream_sec);
+  const double gtcdc_MBps =
+      ebbackup::bench::ThroughputMBps(static_cast<uint64_t>(kFileSize), gtcdc_sec);
+  const double ratio = gtcdc_MBps > 0 ? stream_MBps / gtcdc_MBps : 0.0;
+
+  std::printf(
+      "bench_check L6_gtcdc_incr_ab: stream_incr_MBps=%.2f gtcdc_incr_MBps=%.2f "
+      "incr_gtcdc_vs_stream_ratio=%.3f\n",
+      stream_MBps, gtcdc_MBps, ratio);
+
+  if (enforce && ratio + 1e-6 < floors->gtcdc_incr_vs_stream_ratio_min) {
+    std::fprintf(stderr, "incr_gtcdc_vs_stream_ratio %.3f below floor %.3f\n",
+                 ratio, floors->gtcdc_incr_vs_stream_ratio_min);
+    return false;
+  }
+  return true;
+}
+
 bool RunPipeline256HybridBench(BenchFloors* floors) {
   if (floors->hybrid_stream_ratio_min <= 0.0) return true;
 
@@ -584,6 +1263,21 @@ void WriteSyntheticFile(const std::string& path, size_t size, uint8_t seed) {
     const size_t n = std::min(kBlock, size - off);
     for (size_t i = 0; i < n; ++i) {
       block[i] = static_cast<char>((seed + (off + i) * 17 + ((off + i) >> 8)) & 0xFF);
+    }
+    out.write(block.data(), static_cast<std::streamsize>(n));
+  }
+}
+
+void WriteRandomFile(const std::string& path, size_t size, uint32_t seed) {
+  std::ofstream out(path, std::ios::binary);
+  constexpr size_t kBlock = 64u * 1024u;
+  std::string block(kBlock, '\0');
+  for (size_t off = 0; off < size; off += kBlock) {
+    const size_t n = std::min(kBlock, size - off);
+    std::mt19937 gen(seed + static_cast<uint32_t>(off / kBlock));
+    std::uniform_int_distribution<int> dist(0, 255);
+    for (size_t i = 0; i < n; ++i) {
+      block[i] = static_cast<char>(dist(gen));
     }
     out.write(block.data(), static_cast<std::streamsize>(n));
   }
@@ -770,6 +1464,27 @@ int main() {
     return 1;
   }
   if (!RunPipeline256Bench(&floors)) {
+    return 1;
+  }
+  if (!RunPipeline256GtCdcBench(&floors)) {
+    return 1;
+  }
+  if (!RunPipeline256GtCdcVsStreamBench(&floors)) {
+    return 1;
+  }
+  if (!RunPipeline256TopoVsStreamBench(&floors)) {
+    return 1;
+  }
+  if (!RunPipeline256TopoChainVsStreamBench(&floors)) {
+    return 1;
+  }
+  if (!RunPipeline256TopoPhVsStreamBench(&floors)) {
+    return 1;
+  }
+  if (!RunPipeline256TopoPhnVsStreamBench(&floors)) {
+    return 1;
+  }
+  if (!RunPipelineIncrGtCdcAbBench(&floors)) {
     return 1;
   }
   if (!RunPipeline256HybridBench(&floors)) {

@@ -1,0 +1,78 @@
+\chapter{从文件到 chunk：备份里发生了什么}
+\label{ch:backup-journey}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{0.95\linewidth}{!}{%
+\begin{tikzpicture}[node distance=0.5cm]
+  \node[gen1, minimum width=2.2cm] (f) {你的文件\\（字节流）};
+  \node[gen1, minimum width=2.2cm, right=0.6cm of f] (c) {CDC\\切 chunk};
+  \node[gen1, minimum width=2.2cm, right=0.6cm of c] (h) {算哈希\\SHA256};
+  \node[gen1, minimum width=2.2cm, right=0.6cm of h] (z) {压缩\\LZ4};
+  \node[gen1, minimum width=2.2cm, right=0.6cm of z] (s) {存进\\仓库};
+  \draw[arr] (f) -- (c) -- (h) -- (z) -- (s);
+  \node[note, below=0.6cm of c] {← 本手册只讲这一步};
+\end{tikzpicture}%
+}
+\caption{CDC 是备份流水线的第一环；两代算法只替换「切 chunk」这一环。}
+\end{figure}
+
+\section{三个你会反复见到的词}
+
+\begin{description}[style=nextline, font=\bfseries]
+  \item[字节 $b_i$] 文件里第 $i$ 个字符/数字（0--255）。
+  \item[指纹 $h$] 对最近一小段字节算出的一个整数（32 位），像「这一段的摘要」。
+  \item[切点] 指纹满足某个条件的位置：从这里切开，开始下一块 chunk。
+\end{description}
+
+\section{chunk 的三条护栏}
+
+不管第一代还是第二代，都有同样的「安全护栏」：
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.015cm,y=0.55cm]
+  \draw[->,thick] (0,0) -- (700,0) node[right,font=\small] {字节位置};
+  \fill[Gen1Blue!15] (0,0.4) rectangle (64,1.3);
+  \node[font=\scriptsize] at (32,0.85) {min：太短不能切};
+  \fill[Gen1Blue!25] (64,0.4) rectangle (500,1.3);
+  \node[font=\scriptsize] at (280,0.85) {中间：可以找切点};
+  \draw[cutline] (500,0) -- (500,1.5) node[above,font=\scriptsize] {max：再找不到就强制切};
+\end{tikzpicture}
+\caption{min\_size / max\_size：避免 chunk 太小或太大。}
+\label{fig:guards-preview}
+\end{figure}
+
+\begin{stepbox}[Step 2 — 参数直觉]
+\begin{itemize}[nosep]
+  \item \texttt{min}：至少这么长才允许切（默认大约 64KB--256KB，看文件大小档位）；
+  \item \texttt{avg}：希望平均 chunk 多长（用来算「路标」）；
+  \item \texttt{max}：最长不能超过多少（防止一直找不到切点）。
+\end{itemize}
+\end{stepbox}
+
+\section{第一代 vs 第二代：选哪条管道？}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.8cm]
+  \node[gen1, minimum width=4cm] (repo1) {普通仓库};
+  \node[gen2, minimum width=4cm, below=of repo1] (repo2) {G-TCDC 仓库\\（opt-in）};
+  \node[gen1, minimum width=3.5cm, right=1.5cm of repo1] (g1) {第一代\\FastCDC};
+  \node[gen2, minimum width=3.5cm, right=1.5cm of repo2] (g2) {第二代\\2F-Gear};
+  \draw[arr] (repo1) -- (g1);
+  \draw[arr] (repo2) -- (g2);
+\end{tikzpicture}
+\caption{仓库类型决定用哪代算法；不能混用。}
+\end{figure}
+
+\section{模拟示例：12 字节走流水线}
+
+\begin{simbox}[同一文件 \texttt{10 20 ... C0} 进 pipeline]
+\begin{enumerate}[nosep]
+  \item \textbf{CDC}：第一代切点 $\{3,7,10,\ldots\}$（见第 9 章逐步表）
+  \item \textbf{哈希}：chunk1 $\to$ SHA256(\texttt{10 20 30}) = \texttt{aaa...}（示意）
+  \item \textbf{压缩}：LZ4(chunk1) $\to$ 存 blob
+  \item \textbf{dedup}：下次备份若 \texttt{aaa...} 已在库 → 跳过写入
+\end{enumerate}
+\end{simbox}

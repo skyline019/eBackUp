@@ -1,0 +1,73 @@
+\section{源码索引}\label{sec:source-index}
+
+\begin{longtable}{@{}L{3.2cm}L{11.5cm}@{}}
+\toprule
+\textbf{主题} & \textbf{文件} \\
+\midrule
+\endhead
+FastCDC 整文件 & {\footnotesize\filepath{engine\_cpp/src/chunk/fast\_cdc.cc}} \\
+Gear / Mask / SIMD & {\footnotesize\filepath{engine\_cpp/src/chunk/fast\_cdc\_simd.cc}} \\
+流式 CDC & {\footnotesize\filepath{engine\_cpp/src/chunk/fast\_cdc\_streaming.cc}} \\
+Carry 视图 & {\scriptsize\filepath{engine\_cpp/include/ebbackup/chunk/fast\_cdc\_carry\_buffer.h}} \\
+ChunkProfile & {\footnotesize\filepath{engine\_cpp/src/chunk/chunk\_profile.cc}} \\
+HCRBO/CFI 增量 & {\footnotesize\filepath{engine\_cpp/src/chunk/eb\_hcrbo.cc}} \\
+CFI Bloom & {\footnotesize\filepath{engine\_cpp/src/chunk/cfi\_bloom.cc}} \\
+CFI Rolling & {\footnotesize\filepath{engine\_cpp/src/chunk/cfi\_rolling.cc}} \\
+Pipeline 路由 & {\footnotesize\filepath{engine\_cpp/src/pipeline/backup\_pipeline.cc}} \\
+BackupEngine 入口 & {\footnotesize\filepath{engine\_cpp/src/engine/backup\_engine.cc}} \\
+Phase 统计 & {\scriptsize\filepath{engine\_cpp/include/ebbackup/pipeline/pipeline\_phase\_stats.h}} \\
+Parity 测试 & {\footnotesize\filepath{engine\_cpp/tests/chunk/fast\_cdc\_streaming\_test.cc}} \\
+Pipeline parity & {\scriptsize\filepath{engine\_cpp/tests/pipeline/streaming\_chunk\_pipeline\_test.cc}} \\
+\bottomrule
+\caption{本专册涉及的主要源码路径}
+\end{longtable}
+
+\section{关联文档}
+
+\begin{itemize}[nosep]
+  \item \filepath{docs/technical/CHUNK\_AND\_CDC.md} — 实现要点归档
+  \item \filepath{docs/engineering/kernel-manual/chapters/05-chunk-fastcdc.tex} — FastCDC 手册章
+  \item \filepath{docs/engineering/kernel-manual/chapters/06-chunk-hcrbo.tex} — HCRBO 手册章
+  \item \filepath{docs/engineering/kernel-manual/chapters/13-streaming-cdc.tex} — Streaming 手册章
+  \item \filepath{docs/engineering/defense-presentation/PIPELINE\_CDC\_DEEP\_DIVE.md} — 答辩深挖
+  \item \filepath{docs/engineering/io-saturation-proof/} — E2E IO 稳态饱和证明专册
+\end{itemize}
+
+\section{BuildMask 数值对照表}
+
+\begin{table}[htbp]
+\centering
+\caption{avg\_size $\rightarrow$ mask $\rightarrow$ 期望间距}
+\small
+\begin{tabular}{@{}rrrr@{}}
+\toprule
+avg (B) & bits & mask (hex) & $E[\Delta]$ (B) \\
+\midrule
+4096 & 12 & 0xFFF & $\sim$4\,KB \\
+16384 & 14 & 0x3FFF & $\sim$16\,KB \\
+65536 & 16 & 0xFFFF & $\sim$64\,KB \\
+262144 & 18 & 0x3FFFF & $\sim$256\,KB \\
+1048576 & 20 & 0xFFFFF & $\sim$1\,MB \\
+4194304 & 22 & 0x3FFFFF & $\sim$4\,MB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{五路径触发条件（可复制）}
+
+\begin{verbatim}
+# L3a Inline
+file_count==1 && total_bytes<=32MB && worker_count==0
+
+# Streaming
+file_count==1 && total_bytes>32MB && mode==Full
+  && worker_count==0 && !EBBACKUP_PIPELINE_WORKERS
+
+# Pipeline v4
+else (multi-file || incremental || workers>0)
+
+# Streaming 内部
+Hybrid (default) -> ChunkFileStreamingHybrid
+EBBACKUP_CDC_FAST_SLICE=1 -> ChunkFileStreamingFastSlice
+else -> ChunkFileStreamingFeed
+\end{verbatim}

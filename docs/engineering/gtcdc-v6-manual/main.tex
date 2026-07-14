@@ -1,0 +1,34 @@
+% !TEX program = xelatex
+\documentclass[12pt,a4paper,openany]{ctexbook}
+
+\input{preamble.tex}
+
+\title{G-TCDC v6 2F-Gear\\[0.35em]\large 工程技术手册\\[0.2em]\normalsize 双指纹非重叠 bit 域 · 流式 resume · 性能验收}
+\author{ebbackup Project\\\filepath{engine\_cpp/} G-TCDC 子系统}
+\date{2026-07-11\\{\small 规格同 \filepath{kernel-manual/} · 交叉索引 \filepath{GT\_CDC\_SPEC.md}}}
+
+\begin{document}
+
+\frontmatter
+\maketitle
+\input{chapters/00-frontmatter.tex}
+\tableofcontents
+\listoffigures
+\listoftables
+\lstlistoflistings
+
+\mainmatter
+\input{chapters/01-scope.tex}
+\input{chapters/02-routing-flags.tex}
+\input{chapters/03-dual-fingerprint.tex}
+\input{chapters/04-build2fmasks.tex}
+\input{chapters/05-scan-cut2f.tex}
+\input{chapters/06-streaming-resume.tex}
+\input{chapters/07-engine-pipeline.tex}
+\input{chapters/08-bench-validation.tex}
+
+\appendix
+\input{chapters/99-appendix.tex}
+
+\backmatter
+\end{document}

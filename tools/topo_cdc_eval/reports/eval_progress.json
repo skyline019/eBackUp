@@ -1,0 +1,16 @@
+{
+  "updated_at": "2026-07-13T21:22:38",
+  "elapsed_s": 247.9,
+  "stage": "done",
+  "detail": "exit_code=0",
+  "pct": 100.0,
+  "status": "done",
+  "exit_code": 0,
+  "summary": {
+    "phase1_recommendation": "recalibrate",
+    "synthetic_mean_ratio": 0.7619047619047619,
+    "synthetic_max_cut_ratio": 0.0,
+    "synthetic_calib_permille": 31,
+    "gear_table_entries": 256
+  }
+}

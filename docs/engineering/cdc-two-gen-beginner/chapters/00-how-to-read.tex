@@ -1,0 +1,72 @@
+\chapter*{怎么读这本手册}
+\addcontentsline{toc}{chapter}{怎么读这本手册}
+
+\begin{beginnerbox}[你需要的背景]
+\begin{itemize}[nosep]
+  \item 会看 \keyterm{if/for/数组} 这种最基础的代码即可；
+  \item 不需要懂备份引擎、不需要懂数学系拓扑；
+  \item 每个新概念都会先用\textbf{生活比喻}，再用\textbf{小图}，最后才给\textbf{一行伪代码}。
+\end{itemize}
+\end{beginnerbox}
+
+\section*{两代算法指什么}
+
+\begin{table}[htbp]
+\centering
+\caption{本手册的「两代」}
+\begin{tabular}{@{}cll@{}}
+\toprule
+\textbf{代} & \textbf{名字} & \textbf{一句话} \\
+\midrule
+第一代 & FastCDC Stream & 默认切法：一个滚动指纹 + 一个「路标」 \\
+第二代 & G-TCDC v6 2F-Gear & 新切法：两个滚动指纹 + 两个「路标」 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section*{颜色约定}
+
+\begin{itemize}[nosep]
+  \item \textcolor{Gen1Blue}{蓝色} = 第一代 FastCDC
+  \item \textcolor{Gen2Teal}{青绿色} = 第二代 2F-Gear
+  \item \textcolor{CutRed}{红色虚线} = 切点（chunk 结束）
+\end{itemize}
+
+\section*{图示约定}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.5cm]
+  \node[byte] (b) {字节格};
+  \node[gen1, right=0.6cm of b, minimum width=2cm] (g1) {第一代框};
+  \node[gen2, right=0.6cm of g1, minimum width=2cm] (g2) {第二代框};
+  \node[zone=CutRed, right=0.6cm of g2, minimum width=2cm] (z) {护栏/警告};
+  \draw[cutline] ([yshift=-1.2cm]b.south west) -- ++(0,0.8)
+    node[above,font=\scriptsize,xshift=2.5cm] {红色虚线 = 切点};
+\end{tikzpicture}
+\caption{全书统一视觉语言，看图即可分辨「哪一代、是不是切点」。}
+\end{figure}
+
+\section*{建议阅读顺序}
+
+按章节顺序读即可。若只想快速知道「第二代新在哪」，可直接跳到第 \ref{ch:gen2-big} 章，再回读第一代第 \ref{ch:gen1-big} 章对照。
+
+\begin{simbox}[全书统一模拟文件]
+各章「模拟示例」与第 9、14 章完整走查使用\textbf{同一份 12 字节玩具文件}和\textbf{同一张 gear/norm 表}（见 \filepath{chapters/sim-toy-data.tex}）。\\
+建议：先扫每章模拟框 $\to$ 再读第 9 章逐步表 $\to$ 最后对照第 14 章看两代切点差异。
+\end{simbox}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.3cm]
+  \node[gen1, minimum width=2cm] (a) {Part I\\动机};
+  \node[gen1, minimum width=2cm, right=0.3cm of a] (b) {Part II\\第一代};
+  \node[gen2, minimum width=2cm, right=0.3cm of b] (c) {Part III\\第二代};
+  \node[gen2, minimum width=2cm, right=0.3cm of c] (d) {Part IV\\对照};
+  \draw[arr] (a) -- (b) -- (c) -- (d);
+\end{tikzpicture}
+\caption{约 45--55 页；每章 2--4 张图，可一天读完 Part II。}
+\end{figure}
+
+\vspace{1em}
+\noindent\textit{本手册只讲「怎么切 chunk」，不讲压缩、加密、仓库格式。}
