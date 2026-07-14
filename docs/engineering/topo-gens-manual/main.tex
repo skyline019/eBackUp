@@ -1,0 +1,40 @@
+% !TEX program = xelatex
+\documentclass[12pt,a4paper,openany]{ctexbook}
+
+\input{preamble.tex}
+
+\title{ebbackup Topo 后三代 CDC\\[0.35em]
+  \large Gen3 Hom / Gen4 Chain / Gen5 TopoPH \& Gen5.1 Native\\[0.2em]
+  \normalsize 独立技术手册}
+\author{ebbackup Project\\\filepath{engine\_cpp/} · 规格 SSOT：\filepath{docs/technical/TOPO\_*.md}}
+\date{2026-07-14\\{\small 对齐 SPEC 与 \filepath{CDC\_ALGO\_MATRIX.md}}}
+
+\begin{document}
+
+\frontmatter
+\maketitle
+\input{chapters/00-frontmatter.tex}
+\tableofcontents
+\listoffigures
+\listoftables
+\lstlistoflistings
+
+\mainmatter
+\input{chapters/01-overview.tex}
+\input{chapters/02-shared-framework.tex}
+\input{chapters/03-gen3-hom.tex}
+\input{chapters/04-gen3-impl.tex}
+\input{chapters/05-gen4-chain.tex}
+\input{chapters/06-gen4-impl.tex}
+\input{chapters/07-gen5-ph.tex}
+\input{chapters/08-gen51-native.tex}
+\input{chapters/09-native-impl.tex}
+\input{chapters/10-compare-matrix.tex}
+\input{chapters/11-eval-ci.tex}
+\input{chapters/12-streaming.tex}
+
+\appendix
+\input{chapters/99-appendix.tex}
+
+\backmatter
+\end{document}

@@ -1,0 +1,110 @@
+\chapter{Gen5 TopoPH：Gear 混合态（冻结）}
+\label{ch:gen5}
+
+\section{定位警示}
+
+\begin{warnbox}[Gen5.0 $\neq$ Native CDC]
+\texttt{0x80000}/\envvar{topoph} $=$ \textbf{Gear primary $\wedge$ 事件过滤}。\\
+事件\textbf{不}替代 Gear；切点语义\textbf{冻结}。无 Gear 真切点见 Gen5.1（\cref{ch:gen51}）。
+\end{warnbox}
+
+\begin{table}[htbp]
+\centering
+\caption{Gen5 标识}
+\label{tab:gen5-id}
+\begin{tabular}{@{}ll@{}}
+\toprule
+项 & 值 \\
+\midrule
+feature & \texttt{kBackupFeatureTopoPh = 0x80000} \\
+\texttt{kTopoPhAlgoId} & 3 \\
+运行时 & \envvar{EBBACKUP\_CDC\_ALGO=topoph} \\
+子核 & \envvar{EBBACKUP\_TOPOPH\_KERNEL=tri|ph}（缺省 tri） \\
+variant & 3=Tri-v2，4=PH-H0 \\
+代码 & \filepath{engine\_cpp/src/chunk/topo\_ph/} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+旧 Gen3 Tri（\texttt{0x20000}+variant=1）\textbf{deprecated}，只读。
+
+\section{Layer-1：Gear primary}
+
+\begin{equation}
+h_t=2h_{t-1}+G[b_t]-G[b_{t-w}],\qquad
+\mathrm{primaryOK}=(h_t\mathbin{\&}M)=0.
+\end{equation}
+仅在 primaryOK 时压入 landmark $L_t$（容量 $K\le 24$）。Gen5 坐标：
+\begin{equation}
+\bigl(t \bmod K,\; h_t \bmod Q_h\bigr)
+\quad\text{（实现：\texttt{recent\_t[i] \% k\_points},\ \texttt{recent\_h \% q\_mod}）}.
+\end{equation}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  box/.style={rectangle, rounded corners=2pt, draw=Gen5Color, fill=Gen5Color!10,
+    align=center, font=\small, minimum height=0.85cm},
+  arr/.style={-{Stealth}, thick}]
+  \node[box] (g) {Gear};
+  \node[box, right=0.85cm of g] (p) {primary};
+  \node[box, right=0.85cm of p] (l) {push $L$};
+  \node[box, right=0.85cm of l] (e) {Flip / PH};
+  \node[box, right=0.85cm of e] (c) {cut};
+  \draw[arr] (g)--(p)--(l)--(e)--(c);
+  \node[font=\footnotesize\itshape, below=0.35cm of p] {无 primary $\Rightarrow$ landmark 静止};
+\end{tikzpicture}
+\caption{混合态数据流。}
+\label{fig:gen5-hybrid}
+\end{figure}
+
+\section{定点 Flip（Tri-v2）}
+
+对 landmark 点列 $P_i=(x_i,y_i)$，二维叉积
+\begin{equation}
+\mathrm{Cross}\bigl((B-A),(C-A)\bigr)
+=(B_x-A_x)(C_y-A_y)-(B_y-A_y)(C_x-A_x).
+\end{equation}
+\texttt{FlipCountFixed}：对锚点扇形与相邻三元组统计 $\mathrm{Cross}\le 0$ 次数，记为 $\mathrm{Flip}(L)$。
+
+Tri-v2 切点：
+\begin{equation}
+\mathrm{triOK}=\bigl(\mathrm{Flip}(L_t)-\mathrm{Flip}(L_{t-1})\bigr)\neq 0,\quad
+\mathrm{cut}=\mathrm{primaryOK}\land\mathrm{triOK}.
+\end{equation}
+
+\begin{lstlisting}[caption={Gen5 Flip 核心（\filepath{topo\_ph\_scan.cc} 摘要）},label={lst:gen5-flip}]
+// For i in [1, k-2]: Cross(P_i - P_0, P_{i+1} - P_0) <= 0 => ++flips
+// For i in [0, k-3]: Cross(P_{i+1}-P_i, P_{i+2}-P_i) <= 0 => ++flips
+// axes: t % k_points, h % q_mod
+uint32_t FlipCountFixed(const uint32_t* recent_h, const uint32_t* recent_t,
+                        uint32_t count, uint8_t k_points, uint32_t q_mod);
+\end{lstlisting}
+
+与 Gen3 浮点 Delaunay Flip \textbf{不要求} bit-identical。
+
+\section{PH-H0（variant=4）}
+
+固定半径平方网格 $\{R_j^2\}$（Gen5：$kPhH0EpsCount=5$），对 landmark 建 VR$_\varepsilon$：
+\begin{align}
+\beta0_j &= \#\pi_0\!\left(\mathrm{VR}_{R_j^2}(L)\right)\\
+\mathrm{ph0OK}&=\exists j:\ \beta0_j(t)\neq\beta0_j(t-1)\\
+\mathrm{cut}&=\mathrm{primaryOK}\land\mathrm{ph0OK}.
+\end{align}
+
+\begin{designbox}[非全局 PH]
+仅最近 $K$ 个 primary landmark；无 H1、无瓶颈距离热路径、无外部 TDA 库。
+\end{designbox}
+
+\section{标定与超块}
+
+\texttt{CalibrateTopoPhPermille} 同 Hom 思路：估计事件条件概率，反推 mask。\\
+超块：seed、variant$\in\{3,4\}$、calib\_permille、$k\_points\in[4,24]$。
+
+\section{验收}
+
+\begin{itemize}[nosep]
+  \item \texttt{TopoPhTriTest.*} / \texttt{TopoPhH0Test.*}
+  \item eval：\texttt{tri\_v2}/\texttt{ph\_h0}
+  \item \texttt{L5\_topoph\_ab}：\texttt{vs}$\ge0.95$，\texttt{scan\_ns/probe}$\le2.0$
+\end{itemize}

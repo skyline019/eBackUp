@@ -1,0 +1,75 @@
+\chapter{先说人话：CDC 在干什么}
+\label{ch:cdc-story}
+
+\section{切面包，不是切尺子}
+
+备份要去重：同样内容 ideally 切成同样的块。\\
+固定 256KB 一切（尺子）——文件头插一个字节，后面整段边界全错位。\\
+\textbf{内容定义分块}（CDC）：边界由``内容特征''决定，像在面团上找天然裂缝。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  % ruler
+  \node[anchor=west] at (0,2.2) {\textbf{尺子切}（固定偏移）};
+  \draw[thick] (0,1.6) rectangle (11,2.0);
+  \foreach \x in {0,2.75,5.5,8.25,11} {
+    \draw[CutRed, very thick] (\x,1.55)--(\x,2.05);
+  }
+  \draw[dashed, gray] (0.4,1.6)--(0.4,0.6);
+  \node[font=\footnotesize, gray] at (5.5,1.2) {插入 1 字节后：后面所有刀口全部漂移};
+  % cdc
+  \node[anchor=west] at (0,0.2) {\textbf{CDC 切}（内容裂缝）};
+  \draw[thick] (0,-0.4) rectangle (11,0.0);
+  \foreach \x in {1.8,4.2,7.0,9.6} {
+    \draw[OkGreen, very thick] (\x,-0.45)--(\x,0.05);
+  }
+  \draw[dashed, gray] (0.4,-0.4)--(0.4,-1.2);
+  \node[font=\footnotesize, gray] at (5.5,-0.85) {插入后：裂缝仍贴着相同内容图案};
+\end{tikzpicture}
+\caption{为什么 CDC 在增量备份里重要：刀口跟着内容走。}
+\label{fig:ruler-vs-cdc}
+\end{figure}
+
+\section{三个旋钮：太碎、太大、刚刚好}
+
+每种 CDC 都在说同一句话：``平均多久该出现一次刀口？''
+
+\begin{metaphor}[公交车发车]
+\texttt{avg\_size} 像期望发车间隔；\texttt{min} 是``刚到站不许立刻再发''；\texttt{max} 是``再不等就强制发车''。\\
+算法差异在于：用什么信号决定``可以发车了''。
+\end{metaphor}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.9cm, font=\small]
+  \draw[thick] (0,0)--(12,0);
+  \foreach \x/\t in {0/起点, 2/min, 6/期望平均, 10/max, 12/文件尾} {
+    \draw (\x,0.12)--(\x,-0.12);
+    \node[above, font=\footnotesize] at (\x,0.15) {\t};
+  }
+  \fill[blue!12] (2,-0.35) rectangle (10,0.35);
+  \node[font=\footnotesize] at (6,-0.7) {只在蓝色区间里找刀口；找不到就在 max 硬切};
+\end{tikzpicture}
+\caption{所有后三代共用的外层``扫描窗''。}
+\label{fig:scan-window-illust}
+\end{figure}
+
+\section{后三代各自的``发车信号''}
+
+\begin{center}
+\begin{tabular}{@{}llp{6.5cm}@{}}
+\toprule
+代 & 绰号 & 一句话 \\
+\midrule
+Hom & 珠串变色 & 指纹铃响了，\textbf{且}窗里珠串连通性变了，才切 \\
+Chain & 密码锁 & 密码转到对齐，\textbf{且}骨架变了（可加``有环''），才切 \\
+TopoPH & 双保险滤网 & 仍听指纹铃，再用三角形翻转 / 连通变化过滤 \\
+Native & 星图事件 & \textbf{不听指纹铃}；内容定相``星点''上发生翻转 / $H_0$ 事件才切 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{pitfall}[仓库不能混切]
+不同算法刀口集合不同，同一文件会切成不同块。跨算法仓库\textbf{设计上}复用率是 0\%——像用不同尺子切同一根香肠。
+\end{pitfall}

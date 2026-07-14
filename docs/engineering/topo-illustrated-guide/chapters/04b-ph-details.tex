@@ -1,0 +1,100 @@
+\chapter{TopoPH 细节全拆：钉钉坐标、两套滤网、为何冻结}
+\label{ch:ph-details}
+
+\section{混合态再强调}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=Gen5Color, minimum width=3.2cm] (g) {Gear 叮铃\\决定``有没有机会''};
+  \node[softbox=Gen5Color, minimum width=3.2cm, right=0.8cm of g] (f)
+    {滤网\\决定``机会要不要用''};
+  \draw[-{Stealth}, thick] (g)--(f);
+  \node[font=\footnotesize, gray, below=0.4cm of g] {没有叮 $=$ 不钉星、不算几何};
+\end{tikzpicture}
+\caption{Native 会拆掉左边箱子；本章左边必须保留。}
+\label{fig:hybrid-again}
+\end{figure}
+
+\section{钉钉坐标（Gen5 专用）}
+
+叮时记录：时间轴取模、指纹取模（实现里常见 \texttt{t \% k\_points}，\texttt{h \% q\_mod}）。\\
+只留最近 $K\in[4,24]$ 颗（默认约 16）。满了挤掉最旧。
+
+\begin{toybox}[K=4]
+钉序 $L1..L5$：丢掉 $L1$，窗口恒为最新 4 颗。滤网永远只看这扇``小窗天空''。
+\end{toybox}
+
+\section{翻面滤网：两轮计数}
+
+\begin{enumerate}[nosep]
+  \item 以最旧星为锚，扇形扫一遍叉积符号；
+  \item 再对相邻三元组扫一遍。
+\end{enumerate}
+$\mathrm{Cross}\le 0$ 计一票。票数相对上一拍变化 $\Rightarrow$ triOK。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \foreach \i/\a in {0/0,1/50,2/110,3/160,4/220} {
+    \fill[Gen5Color] ({2*cos(\a)},{2*sin(\a)}) circle (2pt);
+  }
+  \fill[orange!70!black] (0,0) circle (2.5pt);
+  \node[font=\tiny] at (0,-0.35) {锚};
+  \draw[thick, gray!60] (0,0)--({2*cos(50)},{2*sin(50)});
+  \draw[thick, gray!60] (0,0)--({2*cos(110)},{2*sin(110)});
+\end{tikzpicture}
+\caption{锚点扇形：看夹角方向是否``翻过来''。}
+\label{fig:fan-flip}
+\end{figure}
+
+\section{PH-H0：五档半径（Gen5）}
+
+Gen5 用 5 档 $R^2$ 网格；Native 精简为 $\{1,4,16\}$ 三档。\\
+任一一档连通数变 $\Rightarrow$ ph0OK。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\footnotesize]
+  \foreach \r/\lab in {0.4/近, 0.8/ , 1.2/ , 1.6/ , 2.1/远} {
+    \draw[dashed, gray] (0,0) circle (\r);
+  }
+  \foreach \a in {20,80,150,200,300} {
+    \fill[Gen5Color] ({1.3*cos(\a)},{1.3*sin(\a)}) circle (2pt);
+  }
+  \node[right] at (2.4,0) {半径涨 $\to$ 连通块合并};
+\end{tikzpicture}
+\caption{``连连看''半径旋钮；不求全球持久同调电影。}
+\label{fig:five-eps}
+\end{figure}
+
+\section{标定与超块字段}
+
+与 Hom 类似测事件条件概率 $\to$ \texttt{calib\_permille}；\\
+\texttt{reserved[2]} 存 $k\_points$。Seed 仍是 Gear 骰子。
+
+\section{子核切换禁令}
+
+Tri 仓（variant=3）不能突然改口令跑 PH（variant=4）：滤网不同 $=$ 刀口不同 $=$ 要新开房。
+
+\section{为何冻结}
+
+Limit Push / Native 工作不得回头改 Gen5 刀口 —— 已有仓贴纸作废风险。\\
+Gen5 定位：历史过渡物种 + 对照实验基线。
+
+\section{细节对照表}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{7cm}@{}}
+\toprule
+技术点 & 形象说法 \\
+\midrule
+\texttt{ScanTriV2Cut}/\texttt{ScanPhH0Cut} & 两套滤网入口 \\
+\texttt{FlipCountFixed} & 翻面计票 \\
+\texttt{PhH0BettiVec} & 分档连通快照 \\
+\texttt{TopoPhResume} & 带走铃、星、上一拍票数 \\
+与 Gen3 浮点 Delaunay & 不要求同一副牌 \\
+\bottomrule
+\end{tabular}
+\end{center}

@@ -1,0 +1,192 @@
+\chapter{Gen5.1 Native：实现解剖与代码印证}
+\label{ch:native-impl}
+
+\section{代码布局}
+
+\begin{longtable}{@{}p{5.6cm}p{8.1cm}@{}}
+\toprule
+路径 & 职责 \\
+\midrule
+\endhead
+\filepath{topo\_phn.h} & 公开配置 / Slice \\
+\filepath{topo\_phn\_internal.h} & Embed、Flip、PH、标定、resume \\
+\filepath{topo\_phn\_scan.cc} & 热路径、闭合 Embed、分层 UF \\
+\filepath{topo\_phn\_streaming.cc} & 512KB parity \\
+\filepath{topo\_phn\_config.cc} & profile / 超块 \\
+\filepath{backup\_pipeline.cc} & 三档 runtime 缓存 \\
+\bottomrule
+\end{longtable}
+
+\section{公开配置}
+
+\begin{lstlisting}[caption={TopoPhnConfig},label={lst:phn-cfg}]
+enum class TopoPhnKernel : uint8_t {
+  kTriNative = 5, kPhH0Native = 6
+};
+struct TopoPhnConfig {
+  uint32_t min_size, avg_size, max_size;
+  TopoPhnKernel kernel{TopoPhnKernel::kTriNative};
+  uint32_t table_seed{0};
+  uint32_t event_stride{64};  // pow2 after RoundEventStridePow2
+  uint8_t  k_points{16};
+  uint32_t q_mod{1024};
+  uint32_t flip_tau{1};       // runtime re-derive; not in SB
+  uint8_t  persist_delta{1};
+  bool enable_persist_delta{true};
+};
+\end{lstlisting}
+
+\section{\texorpdfstring{LandmarkEmbedY4：闭合 = 迭代}{LandmarkEmbedY4 闭合等于迭代}}
+
+\begin{lstlisting}[caption={bit-identical 闭合形式（\filepath{topo\_phn\_scan.cc}）},label={lst:embed-y4}]
+constexpr uint32_t kLcgM = 1664525u;
+constexpr uint32_t kLcgC = 1013904223u;
+inline uint32_t LandmarkEmbedY4(uint32_t seed, uint8_t b0, uint8_t b1,
+                                uint8_t b2, uint8_t b3) {
+  uint32_t y = seed * kLcgM4 + kLcgCGeom;
+  y += uint32_t(b0) * kLcgM3;
+  y += uint32_t(b1) * kLcgM2;
+  y += uint32_t(b2) * kLcgM;
+  y += uint32_t(b3);
+  y ^= uint32_t(b2) << 8;
+  y ^= uint32_t(b1) << 16;
+  y ^= uint32_t(b0) << 24;
+  return y;
+}
+uint32_t LandmarkEmbedY(...) {
+  if (p >= 3)
+    return LandmarkEmbedY4(seed, data[p-3], data[p-2], data[p-1], data[p]);
+  // short prefix: iterative LCG (rare)
+}
+\end{lstlisting}
+
+单测强制闭合形式与 4 步迭代一致；AVX2 据此向量化邻域加载。
+
+\section{pow2 stride}
+
+\begin{lstlisting}[caption={最近二的幂（平局偏小）},label={lst:pow2-stride}]
+inline uint32_t RoundEventStridePow2(uint32_t s) {
+  s = ClampEventStride(s); // [8, 2MiB]
+  // find hi = next pow2 >= s, lo = hi/2
+  // return (s-lo <= hi-s) ? lo : hi;
+}
+// Soft floor for PH densify:
+inline uint32_t PhnProductiveStrideFloor(uint32_t avg_size) {
+  return RoundEventStridePow2(max(32u, avg_size / 1024u));
+}
+\end{lstlisting}
+
+扫描：$Y\mathbin{\&}(S-1)=0$ 替代昂贵取模。
+
+\section{FlipCountFixed 完整逻辑}
+
+\begin{lstlisting}[caption={Native Flip（环序 + CrossI）},label={lst:phn-flip}]
+inline int64_t CrossI(int64_t ax, int64_t ay, int64_t bx, int64_t by) {
+  return ax * by - ay * bx;
+}
+uint32_t FlipCountFixed(..., uint8_t ring_start) {
+  // Y(i), T(i) via LandmarkIndex(..., ring_start)
+  // fan from P0; then consecutive triples; Cross <= 0 => ++flips
+  // coords: T % q_mod, Y % q_mod
+}
+\end{lstlisting}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.9]
+  \coordinate (A) at (0,0);
+  \coordinate (B) at (1.8,1.2);
+  \coordinate (C) at (2.6,0.2);
+  \coordinate (D) at (1.0,-0.8);
+  \foreach \p/\lab in {A/P_0,B/P_i,C/P_{i+1},D/P_j} {
+    \fill (\p) circle (1.5pt);
+    \node[font=\scriptsize, above right] at (\p) {$\lab$};
+  }
+  \draw[-{Stealth}] (A)--(B);
+  \draw[-{Stealth}] (A)--(C);
+  \node[font=\footnotesize, gray] at (3.8,0.5) {$\mathrm{Cross}\le0\Rightarrow$ flip};
+\end{tikzpicture}
+\caption{锚点扇形方向谓词（示意）。}
+\label{fig:cross-orient}
+\end{figure}
+
+\section{分层 PH-H0}
+
+\begin{lstlisting}[caption={嵌套 eps 一次扫边},label={lst:phn-h0}]
+constexpr uint32_t kEpsR2[3] = {1u, 4u, 16u};
+// Build all pairwise d2; sort ascending
+// UF: comps = k; for each eps level, unite while d2 <= R^2
+// snapshot out_beta0[ei] = comps
+void PhH0BettiVec(...);
+bool PhH0Delta(const uint32_t* prev, const uint32_t* cur);
+uint8_t PhH0PersistSpan(const uint32_t* beta0); // max-min
+\end{lstlisting}
+
+\section{事件评估与切后复位}
+
+\begin{lstlisting}[caption={EvalEvent + ResetLandmarkWindow},label={lst:eval-reset}]
+// Tri: push -> |flip_after - prev| >= tau
+// PH : beta_before, push, beta_after;
+//      flipOK && PhH0Delta [&& PersistSpan >= delta]
+bool EvalEventAtLandmark(...);
+
+// After cut: clear ring so next chunk is content-local
+void ResetLandmarkWindow(TopoPhnResume* resume) {
+  recent_count = 0; ring_start = 0; has_prev = false;
+  prev_flip = 0; memset(prev_beta0, 0, ...);
+}
+\end{lstlisting}
+
+\section{热路径结构}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  box/.style={rectangle, rounded corners=2pt, draw=Gen51Color, fill=Gen51Color!10,
+    align=center, font=\footnotesize, minimum height=0.8cm},
+  arr/.style={-{Stealth}, thick}]
+  \node[box] (a) {bytes};
+  \node[box, right=0.5cm of a] (b) {EmbedY4};
+  \node[box, right=0.5cm of b] (c) {pow2\&};
+  \node[box, right=0.5cm of c] (d) {LM?};
+  \node[box, right=0.5cm of d] (e) {Flip/PH};
+  \node[box, right=0.5cm of e] (f) {cut+reset};
+  \draw[arr] (a)--(b)--(c)--(d)--(e)--(f);
+  \draw[arr,dashed] (d.south)--++(0,-0.5)-| node[pos=0.2,below,font=\tiny]{N} (b.south);
+\end{tikzpicture}
+\caption{绝大多数字节仅 Embed+mask。}
+\label{fig:phn-hotpath}
+\end{figure}
+
+加速要点（切点不变）：
+\begin{enumerate}[nosep]
+  \item AVX2：16B 双 8-lane；无命中跳过 store；
+  \item Embed 用 \texttt{loadl}+\texttt{cvtepu8}，无 gather；
+  \item Pipeline 三档缓存 \texttt{CalibratePhnRuntimeParams} 结果。
+\end{enumerate}
+
+\section{Resume 状态}
+
+\begin{lstlisting}[caption={TopoPhnResume},label={lst:phn-resume}]
+struct TopoPhnResume {
+  size_t scan_rel; bool in_scan;
+  uint32_t recent_y[16], recent_t[16];
+  uint32_t recent_count; uint8_t ring_start;
+  uint32_t prev_flip; uint32_t prev_beta0[3];
+  bool has_prev;
+  size_t last_cut_abs; bool has_last_cut;
+  // rolling_mix retained for ABI; embed is content-local
+};
+\end{lstlisting}
+
+\texttt{MinGapOk}：距上次切 $\ge\min$。多 feed 与整文件 bit-identical。
+
+\section{测试印证清单}
+
+\begin{itemize}[nosep]
+  \item Embed 闭合 $=$ 迭代；
+  \item Tri$\neq$PH 切点集；
+  \item 流式多 feed parity；
+  \item \texttt{reuse\_1byte}；
+  \item \texttt{TopoPhnTriTest.*} / \texttt{TopoPhnH0Test.*}。
+\end{itemize}

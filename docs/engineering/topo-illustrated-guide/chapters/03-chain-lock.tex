@@ -1,0 +1,111 @@
+\chapter{Gen4 Chain：``密码锁 + 骨架 + 有没有环''}
+\label{ch:chain-lock}
+
+\section{形象说法}
+
+Hom 还靠 Gear 指纹表。Chain 说：指纹表又贵又``有点魔法''，不如换成一个\textbf{更便宜的密码锁}。
+
+\begin{metaphor}[老式自行车锁]
+\begin{itemize}[nosep]
+  \item 每来一个字节，转盘扭一下并异或进状态 $S$（LFSR）；
+  \item 当 $S$ 的低 $L$ 位全 0 —— 锁``咔''对齐一次（\texttt{strideOK}）；
+  \item 对齐时再看珠串骨架变没变（与 Hom 同款第二道闸）；
+  \item 可选第三道：骨架里有没有``环''（$\hat\beta_1>0$），像检查链条是否打结。
+\end{itemize}
+\end{metaphor}
+
+\begin{keyidea}[Chain]
+切点 = 密码锁对齐 $\land$ 骨架变了 $\land$（可选）有环。\\
+没有 Gear 表；日常每字节只拧锁，极便宜。
+\end{keyidea}
+
+\section{图解：密码锁如何``咔''一声}
+
+$S \leftarrow \mathrm{rotl}_1(S)\oplus Q(b)$。$Q(b)$ 可以把字节右移几位变``粗糙一点''（量化）。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=Gen4Color, minimum width=3.2cm] (s0) {状态 $S$\\例如 \texttt{...1011}};
+  \node[softbox=Gen4Color, right=1.4cm of s0, minimum width=3.2cm] (s1) {左旋 1 位\\再 $\oplus\,Q(b)$};
+  \node[softbox=OkGreen, right=1.4cm of s1, minimum width=3.0cm] (ok) {低 $L$ 位全 0?\\对齐！};
+  \draw[-{Stealth}, thick] (s0)--(s1)--(ok);
+  \node[font=\footnotesize, gray, below=0.35cm of s1]
+    {$L$ 越大，对齐越稀，块越大（标定会拧 $L$）};
+\end{tikzpicture}
+\caption{Tier-0：用廉价 LFSR 代替 Gear 叮铃。}
+\label{fig:chain-lfsr-illust}
+\end{figure}
+
+\section{为什么还要第二、第三道闸}
+
+如果只靠``密码锁对齐''，刀口太``机械''，内容一抖就漂。\\
+所以对齐时仍检查珠串边是否变化——\textbf{与 Hom 同款数学}，只是键从 $G[b]$ 换成 $Q(b)$。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=Gen4Color] (t0) {Tier-0\\密码锁};
+  \node[softbox=Gen4Color, right=0.7cm of t0] (t1) {Tier-1\\骨架 $\Delta$};
+  \node[softbox=Gen4Color, right=0.7cm of t1] (t2) {Tier-2\\有环？};
+  \node[softbox=CutRed, right=0.7cm of t2] (c) {切};
+  \draw[-{Stealth}, thick] (t0)--(t1)--(t2)--(c);
+  \node[font=\footnotesize, below=0.3cm of t1] {同构于 Hom 珠串};
+  \node[font=\footnotesize, below=0.3cm of t2] {默认开启};
+\end{tikzpicture}
+\caption{三道闸串起来，缺一不可（beta1 可关，但新仓默认开）。}
+\label{fig:chain-three-gates}
+\end{figure}
+
+\section{``有环''到底长什么样}
+
+把窗里出现的颜色当点，异色相邻当边。若边多到出现回路，欧拉亏量 $E-V+C>0$，就说有 $\hat\beta_1$。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  % tree-like
+  \node[circle,draw,fill=red!30] (a) at (0,0) {A};
+  \node[circle,draw,fill=blue!30] (b) at (1.4,0) {B};
+  \node[circle,draw,fill=green!30] (c) at (2.8,0) {C};
+  \draw (a)--(b)--(c);
+  \node[below=0.6cm of b, font=\footnotesize] {无环：像一条线};
+
+  \node[circle,draw,fill=red!30] (d) at (6,0.6) {A};
+  \node[circle,draw,fill=blue!30] (e) at (7.4,0.6) {B};
+  \node[circle,draw,fill=green!30] (f) at (7.4,-0.6) {C};
+  \draw (d)--(e)--(f)--(d);
+  \node[below=1.0cm of e, font=\footnotesize] {有环：三条边围起来 $\Rightarrow$ beta1OK};
+\end{tikzpicture}
+\caption{Tier-2 直觉：要``打结''才过闸（示意，真实在键空间上计）。}
+\label{fig:chain-cycle}
+\end{figure}
+
+\section{玩具例子}
+
+\begin{toybox}[假装 $L=3$，即每约 8 次对齐一次]
+字节流量化键：\texttt{1 1 2 3 2 1 1 2}……\\
+走到某步 $S\&7=0$（对齐）$\to$ 重建窗关键 $\to$ 边数变化 $\to$ 再查有环 $\to$ 切。\\
+对齐之间：\textbf{只更新 $S$}，不看珠串——这就是 Chain 快的秘密。
+\end{toybox}
+
+\section{并行扫描的形象说法}
+
+大文件切成 256KB 路段，各段自带``预热好的锁状态''同时找刀口，\\
+但最终只认\textbf{最左边}那一刀（右边听到左边已切就停）。语义仍是``串行最早刀口''。
+
+\section{对应到真名}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+形象说法 & 正式名 \\
+\midrule
+密码锁状态 & XOR-LFSR $S_t$ \\
+咔一声对齐 & \texttt{strideOK} \\
+骨架变了 & \texttt{ChainPrimaryDelta} \\
+有环 & \texttt{ChainBeta1Gf2} \\
+拧松紧 & \texttt{chain\_stride\_log} 标定 \\
+\bottomrule
+\end{tabular}
+\end{center}

@@ -1,0 +1,133 @@
+\chapter{Hom 细节全拆：指纹怎么滚、三边怎么改、如何调弦}
+\label{ch:hom-details}
+
+\section{Gear 表：房间专属骰子}
+
+\begin{metaphor}[赌场换骰]
+\texttt{table\_seed} 决定 256 面``骰子表'' $G[0..255]$。\\
+Hom 房间的骰子与 FastCDC / G-TCDC \textbf{不是同一盒} —— 隔离，免得铃声模式撞车。
+\end{metaphor}
+
+真名：\texttt{InitKeyedGearTable(topo\_table\_seed)}。
+
+\section{指纹滚动：传送带公式}
+
+窗宽 $w$。每进一步：左边字节贡献掉出，右边加进来：
+\begin{equation}
+h \leftarrow 2h + G[b_{\mathrm{in}}] - G[b_{\mathrm{out}}].
+\end{equation}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \foreach \i in {0,...,5} {
+    \node[bytecell] (b\i) at (\i*0.9,0) {$b$};
+  }
+  \draw[thick, Gen3Color] (-0.3,-0.5) rectangle (5.1,0.5);
+  \node[font=\footnotesize, CutRed, above] at (0,0.7) {out};
+  \node[font=\footnotesize, OkGreen, above] at (5.4,0.7) {in};
+  \draw[-{Stealth}, CutRed] (-0.8,0)--(-0.35,0);
+  \draw[-{Stealth}, OkGreen] (5.15,0)--(6.0,0);
+  \node[softbox=Gen3Color, below=0.9cm of b2] {$h$ 更新};
+\end{tikzpicture}
+\caption{滚筒只关心进出两颗珠对指纹的加减。}
+\label{fig:gear-roll-detail}
+\end{figure}
+
+\textbf{叮？} $(h \mathbin{\&} M)=0$。$M$ 是一串低位 1 的掩码（越松越好叮）。
+
+\section{颜色键}
+
+珠串颜色不是原始字节，而是 $k=G[b]\mathbin{\&}0xFF$（取骰子值低 8 位）。\\
+同字节在不同 seed 下可能不同色。
+
+\section{三边捷径（PrimaryTopoDelta）逐项}
+
+滑动：丢掉最左，右侧进入 $k_{\mathrm{in}}$。只有这几根边的``在/不在''可能变：
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\scriptsize]
+  \foreach \i/\lab in {0/k0, 1/k1, 2/mid, 3/kw-2, 4/kw-1} {
+    \node[circle,draw,fill=Gen3Color!20,minimum size=0.7cm] (p\i) at (\i*1.35,0) {\lab};
+  }
+  \node[circle,draw,fill=orange!40,minimum size=0.7cm] (kin) at (7.2,0) {kin};
+  \draw[dashed, CutRed, thick] (p0)--(p1);
+  \node[font=\tiny, CutRed, above] at (0.65,0.55) {可能消失};
+  \draw[dashed, CutRed, thick] (p3)--(p4);
+  \node[font=\tiny, CutRed, above] at (4.7,0.55) {可能消失};
+  \draw[dashed, OkGreen, thick] (p3)--(kin);
+  \draw[dashed, OkGreen, thick] (kin) to[bend left=25] (p0);
+  \node[font=\tiny, OkGreen, below] at (6.2,-0.7) {可能新生};
+\end{tikzpicture}
+\caption{O(1) 只改最多三/四次``异色边计数''，不必重扫全窗。}
+\label{fig:three-edges}
+\end{figure}
+
+\begin{toybox}[数字]
+旧边数 $\mathrm{ed}=4$。运算后 $\mathrm{ed}=5$。$\Delta=+1\neq0$ $\Rightarrow$ topoOK。\\
+连通分量口语：$C=1+\mathrm{ed}$（整条路径图）。
+\end{toybox}
+
+\section{lazy：没叮就不数珠}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=gray] (a) {1000 步};
+  \node[softbox=Gen3Color, right=0.8cm of a] (b) {约 avg 分之一叮};
+  \node[softbox=Gen3Color, right=0.8cm of b] (c) {才 $O(w)$ 数珠};
+  \draw[-{Stealth}, thick] (a)--(b)--(c);
+\end{tikzpicture}
+\caption{这就是 Hom 能接近 Stream 的原因。}
+\label{fig:lazy-amortize}
+\end{figure}
+
+对照测验：\texttt{SlideViaRebuild} 全量 UF $=$ 黄金答案；生产用三边捷径，单测要求一致。
+
+\section{调弦两步曲}
+
+\begin{enumerate}
+  \item 临时用粗 mask 扫标定样本，统计``叮的时候珠串也变''的比例 $P$；
+  \item 令有效平均 $\approx \mathrm{avg}\cdot P$，再 \texttt{BuildMask} 得生产 $M$；
+  \item 把 $1000P$ 写成 \texttt{calib\_permille} 存进超块。
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=Gen3Color] (1) {弹 1MB 样音};
+  \node[softbox=Gen3Color, right=0.5cm of 1] (2) {读 $P$};
+  \node[softbox=Gen3Color, right=0.5cm of 2] (3) {拧 mask};
+  \node[softbox=OkGreen, right=0.5cm of 3] (4) {平均块长合格};
+  \draw[-{Stealth}, thick] (1)--(2)--(3)--(4);
+\end{tikzpicture}
+\caption{旧仓 \texttt{calib=0}：退回 \texttt{avg >> topo\_shift} 老旋钮。}
+\label{fig:hom-calib-pipe}
+\end{figure}
+
+\section{流式小条：UF 不必装箱带走}
+
+Resume 主要带走：指纹 $h$、扫到哪里。珠串 UF \textbf{可不装箱}——下次叮了再现场重串珠。\\
+整文件切点 $=$ 多个 512KB 盒子拼起来的切点（parity）。
+
+\section{AVX2：一次问 8 格}
+
+像八车道同时探头，但刀口规则不变 —— 加速外壳，不改判决。
+
+\section{细节对照表}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{7.5cm}@{}}
+\toprule
+技术点 & 形象说法 \\
+\midrule
+\texttt{InitWindowHash} & 开窗时先灌满滚筒 \\
+\texttt{BuildTopoMasks} & 按 $P$ 或 shift 选铃灵敏度 \\
+\texttt{ScanHomCut} & 在 min..max 里找第一刀 \\
+\texttt{ProcessHomChunk} & 一块香肠内的扫描状态机 \\
+\texttt{TopoGearParityTest} & 整条 vs 分段必须同刀 \\
+\bottomrule
+\end{tabular}
+\end{center}

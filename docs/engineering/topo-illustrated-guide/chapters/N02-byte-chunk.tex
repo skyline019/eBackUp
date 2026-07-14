@@ -1,0 +1,58 @@
+\chapter{字节、文件、块：先认识积木}
+\label{ch:N-byte}
+
+\section{文件其实是一长串数字}
+
+文件在磁盘上不是``一篇文章''，而是一串数字：\\
+每个位置叫一个\textbf{字节}（byte），取值 0--255。\\
+像一排小格子，格子里写着数字。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\scriptsize\ttfamily]
+  \foreach \i/\v in {0/65,1/65,2/66,3/67,4/67,5/68,6/65,7/66} {
+    \node[bytecell] (b\i) at (\i*1.0,0) {\v};
+    \node[font=\tiny, below] at (\i*1.0,-0.55) {位置\i};
+  }
+  \node[font=\small, above] at (3.5,0.7) {一串字节 $=$ 文件内容};
+\end{tikzpicture}
+\caption{后面算法都是``沿格子从左走到右，决定在哪里切开''。}
+\label{fig:N-bytes}
+\end{figure}
+
+\section{块（chunk）是什么}
+
+\textbf{块}＝连续的一段字节（从某个起刀点到下一个刀口）。\\
+切得太碎：管理费变高；切得太大：改一点点也要重传一大段。\\
+所以有三个尺码感：太短不许切（min）、别太长（max）、平均差不多（avg）。
+
+\begin{metaphor}[切蛋糕]
+min＝太薄的一块不许切；max＝再厚也必须切开；avg＝希望大多数块差不多这么厚。
+\end{metaphor}
+
+\section{``指纹贴纸''（Content ID）}
+
+每一块算一个长长的校验码（常叫 SHA256），像快递单号。\\
+两块单号相同 $\Rightarrow$ 内容当成一样，第二份就不用再存。\\
+\textbf{注意}：单号算法不变；变的是``蛋糕怎么切''，所以单号集合会变。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \draw[thick] (0,0) rectangle (3.5,0.7);
+  \node at (1.75,0.35) {块内容};
+  \draw[-{Stealth}, thick] (3.7,0.35)--(5.0,0.35);
+  \node[softbox=OkGreen, minimum width=2.4cm] at (6.5,0.35) {贴纸 HASH};
+\end{tikzpicture}
+\caption{先有块，才贴指纹；刀口规则间接决定贴纸集合。}
+\label{fig:N-hash-sticker}
+\end{figure}
+
+\section{CDC 三个字母}
+
+\begin{itemize}[nosep]
+  \item \textbf{C}ontent：内容；
+  \item \textbf{D}efined：由内容定义；
+  \item \textbf{C}hunking：分块。
+\end{itemize}
+合起来：\textbf{根据内容本身找刀口}，不是按固定长度死板切。

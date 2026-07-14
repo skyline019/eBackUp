@@ -1,0 +1,61 @@
+\chapter{备份在干什么？为什么要``切成块''}
+\label{ch:N-backup}
+
+\section{用大白话说备份}
+
+电脑里有很多文件。备份＝把它们再存一份到别处。\\
+若明天改了一个 Word，再备份时，你希望：
+\begin{itemize}[nosep]
+  \item \textbf{没改的部分不用再传一遍}（省时间、省磁盘）；
+  \item 改过的部分才重新存。
+\end{itemize}
+这就叫\textbf{增量} / \textbf{去重}：同样内容只留一份。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=gray, minimum width=3.2cm, minimum height=1.4cm] (a)
+    {第一次备份\\整份都存};
+  \node[softbox=OkGreen, minimum width=3.2cm, minimum height=1.4cm, right=1.0cm of a]
+    (b) {第二次\\只存改过的碎片};
+  \draw[-{Stealth}, thick] (a)--(b);
+  \node[font=\footnotesize, gray, below=0.4cm of a]
+    {秘密：要先把文件切成可比较的小块};
+\end{tikzpicture}
+\caption{去重的前提：有``小块''可对齐比较。}
+\label{fig:N-why-chunk}
+\end{figure}
+
+\section{为什么不能整文件当一块}
+
+若整文件一个指纹：改 1 个字，整文件指纹全变，增量失效。\\
+切成很多小块后：只坏/只更新碰到改动的那几块。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \draw[thick] (0,1.5) rectangle (10,2.1);
+  \node[above] at (5,2.1) {整文件一块：改头部 $\Rightarrow$ 整块作废};
+  \draw[CutRed, very thick] (1.2,1.45)--(1.2,2.15);
+  \node[font=\footnotesize, CutRed] at (1.2,1.15) {改动};
+
+  \draw[thick] (0,0) rectangle (10,0.6);
+  \foreach \x in {2,4,6,8} {\draw (\x,0)--(\x,0.6);}
+  \draw[CutRed, very thick] (1.2,-0.05)--(1.2,0.65);
+  \node[above] at (5,0.6) {切成多块：只灰掉碰到的块};
+  \fill[red!25] (0,0) rectangle (2,0.6);
+\end{tikzpicture}
+\caption{切块越合理，增量越省。}
+\label{fig:N-whole-vs-chunks}
+\end{figure}
+
+\section{本故事的主角：``在哪里下刀''}
+
+备份软件里，\textbf{算法}常常是在争论：沿着字节流，到底在哪几个位置切开？\\
+后三代 Topo 算法＝四套不同的``找刀口规则''。\\
+规则不同 $\Rightarrow$ 切开的块不同 $\Rightarrow$ 省空间效果不同。
+
+\begin{keyidea}[你只要先记住这一点]
+后面所有可怕名词，最终都服务于一句话：\\
+\textbf{``当前位置，切不切？''} —— 答案只有是或否。
+\end{keyidea}

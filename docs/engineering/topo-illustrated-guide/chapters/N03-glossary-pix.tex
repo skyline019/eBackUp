@@ -1,0 +1,122 @@
+\chapter{图画词典：把怪词变成生活用品}
+\label{ch:N-glossary}
+
+遇到怪词，先来这章找``生活同款''。
+
+\section{窗口（window）}
+
+\begin{metaphor}[火车上看风景]
+算法不看整个文件，只看眼前固定宽度的一段（比如 64 字节）。\\
+往前走一格：最左一格滑出视线，右边进来一格新风景。
+\end{metaphor}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \foreach \i in {0,...,9} {\node[bytecell] at (\i*0.75,0) {};}
+  \draw[thick, Gen3Color] (1.9,-0.45) rectangle (6.85,0.45);
+  \node[Gen3Color, above] at (4.4,0.5) {窗口};
+  \draw[-{Stealth}, thick] (8.2,0)--(9.2,0);
+  \node[right, font=\footnotesize] at (9.3,0) {滑一步};
+\end{tikzpicture}
+\caption{窗口＝近视眼看到的那一段。}
+\label{fig:N-window}
+\end{figure}
+
+\section{滑动 / 滚动}
+
+窗口一步一步往右移，叫滑动。\\
+边滑边更新一个``摘要数字''，叫滚动更新（不用每次从头加总）。
+
+\section{哈希 / 指纹 / Gear}
+
+\begin{metaphor}[搅拌机摘要]
+把窗里的字节丢进搅拌机，得到一个数字摘要。\\
+\textbf{Gear}：一种特别的搅拌机配方（查表加速）。\\
+摘要偶尔满足神秘条件，就``叮''一声——可能是刀口候选。
+\end{metaphor}
+
+\section{掩码（mask）与``按位与''}
+
+\begin{metaphor}[只看电话号码后几位]
+完整指纹很长。掩码说：我只关心最后几位是不是全 0。\\
+电脑操作用``按位与''（像用梳子只留下某些齿）。\\
+\texttt{(h \& M) == 0} $=$ 铃响。
+\end{metaphor}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\ttfamily\footnotesize]
+  \node[align=left] at (0,1.2) {h = ...10110101};
+  \node[align=left] at (0,0.5) {M = ...00001111  (只留低4位)};
+  \node[align=left, OkGreen] at (0,-0.2) {h\&M = 0101  （若是0000就叮）};
+\end{tikzpicture}
+\caption{掩码越``松''越好叮；越``紧''越难叮。}
+\label{fig:N-mask}
+\end{figure}
+
+\section{种子（seed）}
+
+\begin{metaphor}[随机菜谱编号]
+同一套规则，换一个种子，查表内容不同，刀口位置也不同。\\
+仓库必须记住自己的种子，否则还原对不齐。
+\end{metaphor}
+
+\section{标定（calibrate）}
+
+\begin{metaphor}[试切调整]
+先拿一段样例数据试切，看块太大还是太小，\\
+再拧松紧旋钮（mask / stride），让平均块大小贴近目标。
+\end{metaphor}
+
+\section{闸门 / 条件 / 与（AND）}
+
+算法常有多道关卡。\textbf{全部}通过才切＝逻辑与。\\
+一道不过就往下走，不切。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=gray] (a) {关卡1};
+  \node[softbox=gray, right=0.5cm of a] (b) {关卡2};
+  \node[softbox=CutRed, right=0.5cm of b] (c) {切};
+  \draw[-{Stealth}, thick] (a)--(b)--(c);
+  \node[font=\footnotesize, below=0.35cm of b] {两关都绿才剪};
+\end{tikzpicture}
+\caption{Hom / Chain / Native 都是``多关卡''思维。}
+\label{fig:N-gates}
+\end{figure}
+
+\section{连通 / 边 / 环（为拓扑小故事铺垫）}
+
+\begin{itemize}[nosep]
+  \item 把颜色球当点；相邻不同色就连一根线（边）；
+  \item 线变多/变少＝``连通状况变了''；
+  \item 线多到围成圈＝有环。
+\end{itemize}
+后面 Hom/Chain 用的就是这类小学生图画，不是大学拓扑课全文。
+
+\section{landmark / 星点}
+
+\begin{metaphor}[采样点]
+不是每个字节都做复杂几何，只在某些``值得看的位置''钉一颗星，\\
+再只对星星做翻转/连通检查。省事。
+\end{metaphor}
+
+\section{stride（步幅 / 网格间距）}
+
+大概每隔多少期望出现一次采样或对齐。\\
+数字越大：星越稀、块越大；越小则相反。
+
+\section{仓库 / flag / 环境变量}
+
+\begin{itemize}[nosep]
+  \item \textbf{仓库}：备份数据住的文件夹套装；
+  \item \textbf{flag}：门上挂的房型牌子（Hom 房 / Chain 房…）；
+  \item \textbf{环境变量}：你启动软件时喊的口令（今天进哪间房）。
+\end{itemize}
+
+\section{流式 / feed / resume}
+
+文件太大一次嚼不下，就切成 512KB 盒子喂。\\
+喂完一盒要记住进度（resume），下盒接着切，刀口必须和无分盒时一样。

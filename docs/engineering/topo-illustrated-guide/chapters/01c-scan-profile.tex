@@ -1,0 +1,72 @@
+\chapter{共用外皮：min / avg / max、硬切、三档身材}
+\label{ch:scan-profile}
+
+\section{公交车三规矩（所有代共用）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.85cm, font=\small]
+  \draw[thick] (0,0)--(13,0);
+  \foreach \x/\t in {0/上一刀, 2.5/min, 7/avg 附近, 11/max, 13/EOF} {
+    \draw (\x,0.12)--(\x,-0.12);
+    \node[above,font=\footnotesize] at (\x,0.15) {\t};
+  }
+  \fill[blue!12] (2.5,-0.4) rectangle (11,0.4);
+  \node[font=\footnotesize] at (6.75,-0.85) {蓝色：允许找刀；绿色自然刀；红色强制刀};
+  \draw[OkGreen, very thick] (6.2,-0.35)--(6.2,0.35);
+  \draw[CutRed, very thick] (11,-0.35)--(11,0.35);
+\end{tikzpicture}
+\caption{\texttt{scan\_start=pos+min}；找不到就在 \texttt{pos+max} 硬切。}
+\label{fig:bus-rules}
+\end{figure}
+
+\begin{toybox}[硬切]
+假如总线特别``无聊''，一路到 max 都没有任何算法信号 —— 也必须切，否则一块无限长，索引爆炸。
+\end{toybox}
+
+\section{avg 不是刀口}
+
+avg 从不直接说``在这里切''。它通过标定影响：
+Hom/PH 的 mask 松紧、Chain 的 $L$、Native 的 stride 网格 —— 让\textbf{平均}块长靠近 avg。
+
+\section{三档身材 ChunkProfile}
+
+\begin{metaphor}[S / M / L 校服]
+小文件穿 S：块也小，避免``一张发票切成西瓜''。\\
+大文件穿 L：块更大，避免索引条目爆炸。
+\end{metaphor}
+
+\begin{center}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+档 & 文件尺度 & min & avg & max \\
+\midrule
+Small & $\le$256KB & 4K & 16K & 64K \\
+Default & 中间 & 64K & 256K & 1M \\
+Large & $\ge$64MB & 256K & 1M & 4M \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=gray, minimum width=2.4cm] (s) {小文件\\细块};
+  \node[softbox=gray, minimum width=2.4cm, right=0.7cm of s] (m) {普通\\标准块};
+  \node[softbox=gray, minimum width=2.4cm, right=0.7cm of m] (l) {巨大文件\\粗块};
+  \draw[-{Stealth}, thick, gray] (s)--(m)--(l);
+\end{tikzpicture}
+\caption{同一算法，身材档不同，旋钮数值不同。}
+\label{fig:profile-sizes}
+\end{figure}
+
+\section{nofallback：不许半路换刀}
+
+\begin{pitfall}[Hybrid 回退]
+Topo 口令生效时，禁止 Hybrid / FastSlice / FastStream 偷用 FastCDC。\\
+否则同一文件前半 Topo、后半 Fast —— 贴纸混乱。
+\end{pitfall}
+
+\section{真名对照}
+
+\texttt{ChunkProfileMode}；\texttt{*ConfigForFileSize}；硬切 \texttt{pos+max\_size}；digest 算法不影响刀口。

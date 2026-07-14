@@ -1,0 +1,142 @@
+\chapter{Gen5.1 Native：``扔掉指纹铃，星图自己说了算''}
+\label{ch:native-stars}
+
+\section{为什么还要 Native}
+
+用户直觉是：``拓扑切点''应该由拓扑事件决定发车，而不是指纹先发车、拓扑只拦人。\\
+Native 关掉 Gear / 密码锁，改为：
+
+\begin{metaphor}[夜空采样]
+\begin{enumerate}[nosep]
+  \item 每个位置用邻近 4 个字节``炼''出一个星号 $Y$（内容定相，与文件开头无关）；
+  \item 只有 $Y$ 落在网格点上（每隔大约 $S$ 字节一颗）才钉星；
+  \item 在星上算翻面 / 连通；事件触发才切；
+  \item 切完把星图拍掉，下一块重新看天 —— 这样挪 1 字节内容仍能对上刀口。
+\end{enumerate}
+\end{metaphor}
+
+\begin{keyidea}[Native]
+landmark $=$ 内容网格上的采样点；\\
+cut $=$ 采样点上的几何事件（Flip 或 Flip$\land H_0$）。\\
+\textbf{没有} $(h\&M)=0$。
+\end{keyidea}
+
+\section{图解：内容定相（为什么 reuse 好）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \foreach \i/\lab in {0/b0,1/b1,2/b2,3/b3,4/b4,5/b5,6/b6,7/b7} {
+    \node[bytecell] (x\i) at (\i*0.85,1.2) {\lab};
+  }
+  \draw[thick, Gen51Color] (2.2,0.7) rectangle (5.0,1.7);
+  \node[font=\footnotesize, Gen51Color] at (3.6,1.95) {用这 4 字节炼 $Y$};
+  \node[softbox=Gen51Color, below=0.9cm of x3] (y) {$Y=\mathrm{Embed}(\mathrm{seed},4\text{字节})$};
+  \draw[-{Stealth}, thick] (x3)--(y);
+  \node[font=\footnotesize, gray, below=0.35cm of y]
+    {同样 4 字节 $\Rightarrow$ 同样 $Y$，与``从文件第几字节开始数''无关};
+\end{tikzpicture}
+\caption{内容定相：星号粘在内容图案上，不粘在绝对偏移上。}
+\label{fig:native-embed}
+\end{figure}
+
+\section{\texorpdfstring{图解：网格采样不等于切点}{图解：网格采样不等于切点}}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.75cm, font=\small]
+  \draw[thick] (0,0)--(16,0);
+  \foreach \x in {0,...,16} {\draw (\x,0.08)--(\x,-0.08);}
+  \foreach \x in {2,5,8,11,14} {
+    \fill[Gen51Color] (\x,0) circle (0.1);
+    \node[above, font=\tiny, Gen51Color] at (\x,0.15) {星};
+  }
+  \draw[cutmark] (8,0.35)--(8,-0.35);
+  \node[below, font=\footnotesize, CutRed] at (8,-0.45) {只有这里事件触发};
+  \node[font=\footnotesize, gray] at (8,-1.1)
+    {大多数``星''只是观察点；真正下剪需要 Flip / $H_0$ 条件};
+\end{tikzpicture}
+\caption{landmark 密、cut 稀 —— 靠事件控率，靠 stride 调网格。}
+\label{fig:lm-vs-cut}
+\end{figure}
+
+\section{Tri-Native vs PH-Native}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=Gen51Color, minimum width=5.2cm, minimum height=2.2cm, align=left]
+    (tri) {\textbf{Tri-Native}\\[0.3em]
+      只看翻面数量跳变\\
+      $|\Delta\mathrm{Flip}|\ge\tau$ 就切\\
+      默认更轻、控率靠 stride};
+  \node[softbox=Gen51Color, minimum width=5.2cm, minimum height=2.2cm, align=left,
+    right=0.7cm of tri]
+    (ph) {\textbf{PH-Native}\\[0.3em]
+      翻面 \textbf{并且} 连通数变\\
+      （可选：寿命跨度够大）\\
+      更严，切点集合必须不同于 Tri};
+\end{tikzpicture}
+\caption{两个子核：同一星图，不同判决；门禁要求切点集不能撞车。}
+\label{fig:tri-vs-phn}
+\end{figure}
+
+\section{玩具例子：逐步拍戏}
+
+\begin{toybox}[stride=4 的迷你宇宙]
+位置 0..15 的 $Y\&3$：假设在 3,7,11,15 钉星。\\
+星1..4 的翻面计数：0, 0, 1, 1。\\
+在第 3 颗星：$|\Delta\mathrm{Flip}|=|1-0|=1\ge\tau$ $\Rightarrow$ \textbf{切}。\\
+然后清空星图；从切点后方重新采样。
+\end{toybox}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  box/.style={softbox=Gen51Color, minimum width=2.1cm},
+  arr/.style={-{Stealth}, thick}]
+  \node[box] (a) {炼 $Y$};
+  \node[box, right=0.45cm of a] (b) {落网格?};
+  \node[box, right=0.45cm of b] (c) {钉星};
+  \node[box, right=0.45cm of c] (d) {算事件};
+  \node[softbox=CutRed, right=0.45cm of d] (e) {切+清空};
+  \draw[arr] (a)--(b)--(c)--(d)--(e);
+  \draw[arr, dashed] (b.south)--++(0,-0.5)-|
+    node[pos=0.2,below,font=\tiny]{否} (a.south);
+\end{tikzpicture}
+\caption{Native 热路径：多数字节只炼 $Y$ 并按位与。}
+\label{fig:native-pipe}
+\end{figure}
+
+\section{调参像调望远镜}
+
+\begin{itemize}[nosep]
+  \item \textbf{stride $S$}：星稀一点还是密一点（控率主旋钮）；
+  \item $\tau$：翻面要跳多大才算事；
+  \item $k$：天空里最多记几颗星；
+  \item persist：连通变化还要``跨几档半径还算数''。
+\end{itemize}
+仓里主要存 $S$（及 $k$/persist 开关）；$\tau$ 运行时按种子确定性重算。
+
+\section{对应到真名}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+形象说法 & 正式名 \\
+\midrule
+炼星号 & \texttt{LandmarkEmbedY4} \\
+落网格 & $Y\&(S-1)=0$（$S$ 为 2 的幂） \\
+翻面切 & Tri-Native \\
+翻面$\land$连通切 & PH-H0-Native \\
+切完拍掉星空 & \texttt{ResetLandmarkWindow} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{进阶细拆}
+
+\begin{itemize}[nosep]
+  \item \cref{ch:native-details}：四味药、环缓冲、AND 闸、剪枝；
+  \item \cref{ch:native-calib}：densify、三槽冰箱、SIMD 座位。
+\end{itemize}

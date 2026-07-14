@@ -1,0 +1,85 @@
+\chapter{代际对照矩阵与迁移}
+\label{ch:matrix}
+
+\section{全维度对照}
+
+\begin{table}[htbp]
+\centering
+\caption{后三代算法对照}
+\label{tab:matrix-full}
+\footnotesize
+\begin{tabular}{@{}lp{2.2cm}p{2.4cm}p{2.4cm}p{2.5cm}@{}}
+\toprule
+维度 & Hom & Chain & TopoPH & Native \\
+\midrule
+flag & 0x20000 & 0x40000 & 0x80000 & 0x100000 \\
+Primary & Gear \&M & LFSR \&M & Gear \&M & Embed \&(S-1) \\
+第二条件 & $\Delta C$ & $\Delta\hat\beta_0$+$\hat\beta_1$ & Flip/PH 滤 & Flip/PH 真切 \\
+Gear & 是 & 否 & 是 & 否 \\
+algo\_id & 2 & 2 & 3 & 4 \\
+variant & 0 & 2 & 3/4 & 5/6 \\
+L5 vs\_stream & $\ge0.97$ & $\ge0.97$ & $\ge0.95$ & $\ge0.80$ \\
+scan/probe & $\le1.25$ & $\le1.30$ & $\le2.0$ & $\le5.0$ \\
+冻结 & 生产 & 切点冻 & 混合冻 & 演进域 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  gen/.style={rectangle, rounded corners=3pt, draw=#1!70!black, fill=#1!12,
+    align=center, minimum width=2.9cm, minimum height=1.7cm, font=\small},
+  arr/.style={-{Stealth}, thick, gray!60}]
+  \node[gen=Gen3Color] (h) {\textbf{Hom}\\Gear$\wedge\Delta C$};
+  \node[gen=Gen4Color, right=1.2cm of h] (c) {\textbf{Chain}\\LFSR$\wedge\hat\beta_0$};
+  \node[gen=Gen5Color, below=1.0cm of h] (p) {\textbf{TopoPH}\\Gear$\wedge$事件};
+  \node[gen=Gen51Color, right=1.2cm of p] (n) {\textbf{Native}\\事件真切};
+  \draw[arr] (h)--node[above,font=\tiny]{换 primary}(c);
+  \draw[arr] (h)--node[left,font=\tiny]{事件}(p);
+  \draw[arr] (p)--node[above,font=\tiny]{去 Gear}(n);
+\end{tikzpicture}
+\caption{思想谱系：两条去 Gear 路线（Chain / Native）与混合态桥梁。}
+\label{fig:lineage}
+\end{figure}
+
+\section{期望切点间距（量级）}
+
+\begin{align}
+\mathbb{E}[\mathrm{Hom}] &\approx \mathrm{BuildMask}^{-1}(M)/P_{\mathrm{topo}}\\
+\mathbb{E}[\mathrm{Chain}] &\approx 2^{L}\ /\ \Pr[\mathrm{topoOK}\land\mathrm{beta1OK}\mid\mathrm{stride}]\\
+\mathbb{E}[\mathrm{Native}] &\approx S/\Pr[\mathrm{event}\mid\mathrm{landmark}]
+\end{align}
+标定把上述期望拉回 $\mathrm{avg}$ 带。
+
+\section{迁移表}
+
+\begin{table}[htbp]
+\centering
+\caption{就地迁移一律禁止}
+\label{tab:migrate}
+\begin{tabular}{@{}lll@{}}
+\toprule
+源 $\to$ 目标 & 就地 & 正确操作 \\
+\midrule
+任意跨族 & 否 & 新 InitRepo + 全量重备 \\
+同族同 variant 增量 & 是 & 继续 RunBackup \\
+Native Tri$\leftrightarrow$PH & 否 & 新仓 \\
+Chain MVP$\to$beta1 & 否 & 新 InitRepo \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{dedup 隔离引理}
+
+\begin{structbox}[零跨族复用]
+哈希函数相同（SHA256），切点集合不同 $\Rightarrow$ 明文分段 $(\mathrm{off},\mathrm{len})$ 分布分离 $\Rightarrow$ Content ID 碰撞仅在内容真相同分段时发生。跨 flag 仓设计复用率 0\%。\\
+Bench 键前缀必须分族：\texttt{topo\_*} / \texttt{topochain\_*} / \texttt{topoph\_*} / \texttt{topophn\_*}。
+\end{structbox}
+
+\section{运行时互斥}
+
+\begin{center}
+\texttt{gtcdc} $\;|\;$ \texttt{topocdc} $\;|\;$ \texttt{topochain} $\;|\;$ \texttt{topoph} $\;|\;$ \texttt{topophn}
+\end{center}
+同进程并存 $\Rightarrow$ InitRepo/RunBackup 早期 Fail。

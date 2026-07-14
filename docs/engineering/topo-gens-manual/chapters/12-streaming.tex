@@ -1,0 +1,92 @@
+\chapter{流式 Resume 状态机（跨代对照）}
+\label{ch:streaming}
+
+\section{共同契约}
+
+所有后三代流式路径（512\,KiB feed）必须满足：
+\begin{equation}
+\mathrm{Cuts}^{\mathrm{whole}}(F)=\mathrm{Cuts}^{\mathrm{stream}}(F).
+\end{equation}
+外层仍由 \texttt{Process*Chunk}：维护当前 chunk 起点、扫描窗、是否允许尾切。
+
+\section{Hom Resume}
+
+\begin{lstlisting}[caption={TopoHomResume},label={lst:hom-resume-full}]
+struct TopoHomResume {
+  uint32_t h{0};
+  size_t scan_rel{0};
+  bool in_scan{false};
+  bool uf_ready{false};   // production often rebuilds on primary
+  SlotUfWindow uf{};
+  uint32_t window_w{64};
+};
+\end{lstlisting}
+
+跨 feed：恢复 $h$ 与相对扫描点；UF 可重建。数学保证：下一字节的 $h$ 递推仅依赖窗尾 $w$ 字节 + 当前 $h$。
+
+\section{Chain Resume}
+
+\begin{lstlisting}[caption={TopoChainResume（含 $S$）},label={lst:chain-resume-full}]
+struct TopoChainResume {
+  uint32_t S{0};
+  size_t scan_rel{0};
+  bool in_scan{false};
+  bool window_ready{false};
+  uint32_t window_w{64};
+  uint32_t edge_diff{0};
+  uint8_t keys[kChainMaxWindow]{};
+};
+\end{lstlisting}
+
+与 Hom 差异：可信任并恢复 LFSR $S$（及 keys），并行分段亦依赖串行预热同一递推。跨 feed 若有 carry：\texttt{force\_serial}。
+
+\section{Gen5 TopoPH Resume}
+
+\begin{lstlisting}[caption={TopoPhResume},label={lst:ph-resume}]
+struct TopoPhResume {
+  uint32_t h{0};
+  size_t scan_rel{0};
+  bool in_scan{false};
+  uint32_t window_w{64};
+  uint32_t recent_h[24], recent_t[24];
+  uint32_t recent_count{0};
+  uint32_t prev_flip{0};
+  uint32_t prev_beta0[5]{};
+  bool has_prev{false};
+};
+\end{lstlisting}
+
+Landmark 在 primary 时推入；事件差分依赖 \texttt{has\_prev}。流式须完整搬运 recent 环。
+
+\section{Native Resume 与切后复位}
+
+\begin{align}
+&\textbf{跨 feed：} \text{搬运 recent 环、prev\_flip / prev\_beta0、last\_cut}\\
+&\textbf{切后：} \texttt{ResetLandmarkWindow}\Rightarrow\text{环清空}
+\end{align}
+
+\begin{designbox}[为何切后必须复位]
+若不复位，下一 chunk 继承「插入前」的 landmark 几何，1-byte 移位后无法重新锁边，$\mathrm{reuse\_1byte}$ 崩溃。代码注释明确此约束（\filepath{topo\_phn\_scan.cc}）。
+\end{designbox}
+
+\section{状态机简图}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  st/.style={rectangle, rounded corners=2pt, draw=blue!50!black, fill=blue!6,
+    align=center, font=\small, minimum width=2.4cm, minimum height=0.75cm},
+  arr/.style={-{Stealth}, thick}]
+  \node[st] (idle) {idle};
+  \node[st, right=1.2cm of idle] (scan) {in\_scan};
+  \node[st, right=1.2cm of scan] (cut) {emit cut};
+  \node[st, below=1.0cm of scan] (feed) {feed boundary};
+  \draw[arr] (idle)--node[above,font=\tiny]{enter window}(scan);
+  \draw[arr] (scan)--node[above,font=\tiny]{hit}(cut);
+  \draw[arr] (cut)--node[right,font=\tiny]{reset?/new pos}(idle);
+  \draw[arr] (scan)--(feed);
+  \draw[arr] (feed)--node[below,font=\tiny]{restore resume}(scan);
+\end{tikzpicture}
+\caption{跨代共用的扫描状态机骨架。}
+\label{fig:stream-sm}
+\end{figure}

@@ -1,0 +1,105 @@
+\chapter{动画片三至四：TopoPH 滤网与 Native 星图}
+\label{ch:N-phn-cartoon}
+
+\section{TopoPH：铃还在，多加滤网}
+
+\begin{metaphor}[安检加一道]
+仍要指纹铃叮，叮了才钉一颗星到小天空上。\\
+然后再问：翻转变了吗？或抱团数变了吗？\\
+滤网说不行 —— 即使铃响也不切。
+\end{metaphor}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=Gen5Color] (a) {滚铃};
+  \node[softbox=WarnAmber, right=0.5cm of a] (b) {叮?};
+  \node[softbox=Gen5Color, right=0.5cm of b] (c) {钉星};
+  \node[softbox=WarnAmber, right=0.5cm of c] (d) {滤网OK?};
+  \node[softbox=CutRed, right=0.5cm of d] (e) {剪};
+  \draw[-{Stealth}, thick] (a)--(b)--(c)--(d)--(e);
+  \draw[-{Stealth}, thick, dashed] (b.south)--++(0,-0.45)-|
+    node[pos=0.2,below,font=\tiny]{否} (a.south);
+\end{tikzpicture}
+\caption{混合态：左边箱子仍是 Gear。}
+\label{fig:N-ph-flow}
+\end{figure}
+
+\begin{pitfall}[它不是终点]
+TopoPH 方便对照实验，但``拓扑说了算''的真正版本是 Native。
+\end{pitfall}
+
+\section{Native：扔掉铃，星图自己发车}
+
+\begin{enumerate}
+  \item 每个位置用旁边 4 个字节炼一个星号 $Y$（粘在内容上）；
+  \item $Y$ 落在网格上才钉星（大概每隔 stride 期望一颗）；
+  \item 在星上算翻转 /（并）连通；
+  \item 事件触发就剪，然后\textbf{把星星全部擦掉}再重新看天。
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=Gen51Color] (a) {炼 $Y$};
+  \node[softbox=WarnAmber, right=0.45cm of a] (b) {落格?};
+  \node[softbox=Gen51Color, right=0.45cm of b] (c) {钉星};
+  \node[softbox=WarnAmber, right=0.45cm of c] (d) {事件?};
+  \node[softbox=CutRed, right=0.45cm of d] (e) {剪+擦星};
+  \draw[-{Stealth}, thick] (a)--(b)--(c)--(d)--(e);
+  \draw[-{Stealth}, thick, dashed] (b.south)--++(0,-0.45)-|
+    node[pos=0.2,below,font=\tiny]{否} (a.south);
+\end{tikzpicture}
+\caption{Native：没有指纹铃。}
+\label{fig:N-native-flow}
+\end{figure}
+
+\section{为什么要擦星}
+
+\begin{metaphor}[下一盘棋重新摆子]
+若不擦，下一刀会继承上一刀的半截天空，\\
+文件挪 1 字节时就很难重新对齐裂缝（reuse 变差）。
+\end{metaphor}
+
+\section{Tri 与 PH 两个按钮}
+
+\begin{itemize}[nosep]
+  \item \textbf{Tri}：只看翻转跳变 —— 轻；
+  \item \textbf{PH}：翻转并且抱团数变（还可要求寿命跨度）—— 严。
+\end{itemize}
+同一房间不能昨天 Tri 今天 PH（刀口不同）。
+
+\section{四种刀法总排演}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\footnotesize]
+  \node[softbox=Gen3Color, minimum width=11cm, align=left] (h)
+    {Hom：叮? + 珠变? 然后剪};
+  \node[softbox=Gen4Color, minimum width=11cm, align=left, below=0.3cm of h] (c)
+    {Chain：对齐? + 珠变? + 环? 然后剪};
+  \node[softbox=Gen5Color, minimum width=11cm, align=left, below=0.3cm of c] (p)
+    {TopoPH：叮? + 钉星 + 滤网? 然后剪};
+  \node[softbox=Gen51Color, minimum width=11cm, align=left, below=0.3cm of p] (n)
+    {Native：落格钉星 + 事件? 然后剪并擦星};
+\end{tikzpicture}
+\caption{读完动画片，应能指着这四行讲给人听。}
+\label{fig:N-four-lines}
+\end{figure}
+
+\section{零基础对照}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+术语 & 动画片里 \\
+\midrule
+landmark & 钉在天上的星 \\
+Embed / Y & 用 4 字节炼的星号 \\
+event stride & 星网格间距 \\
+Flip / tau & 翻转与门坎 \\
+ph0OK & 抱团数变了 \\
+ResetLandmark & 擦掉星空 \\
+\bottomrule
+\end{tabular}
+\end{center}

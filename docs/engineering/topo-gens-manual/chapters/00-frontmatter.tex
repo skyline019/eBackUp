@@ -1,0 +1,30 @@
+\chapter*{摘要}
+\addcontentsline{toc}{chapter}{摘要}
+
+本手册独立描述 ebbackup \textbf{Topo 叙事后三代}内容定义分块（CDC）内核：
+
+\begin{enumerate}[nosep]
+  \item \textbf{Gen3 TopoCDC Hom-0}（\featureflag{0x20000} / \envvar{topocdc}）：Gear primary $\wedge$ 滑动 UF $\Delta C$；
+  \item \textbf{Gen4 TopoChain}（\featureflag{0x40000} / \envvar{topochain}）：XOR-LFSR stride $\wedge$ 同构 $\hat\beta_0$ $\wedge$ 可选 $\hat\beta_1$，\textbf{Gear-free}；
+  \item \textbf{Gen5 TopoPH}（\featureflag{0x80000} / \envvar{topoph}）：Gear primary $\wedge$ Tri-v2 / PH-H0 事件过滤（\textbf{混合态}）；
+  \item \textbf{Gen5.1 TopoPH-Native}（\featureflag{0x100000} / \envvar{topophn}）：内容定相 landmark 上的 Tri / PH-H0 \textbf{真切点}，禁止 Gear。
+\end{enumerate}
+
+各代 \textbf{独立 dedup 域}，禁止就地互转。Content ID 恒为 \texttt{SHA256(明文 chunk)}，与 CDC 路径无关；但\textbf{切点集合}决定 reuse 与增量带宽。
+
+\vspace{1em}
+\noindent\textbf{读者}：CDC / 拓扑切点实现者、bench 门禁维护者、需对照 SPEC 做仓兼容评审的工程师。
+
+\vspace{1em}
+\noindent\textbf{约定}：路径相对仓库根；吞吐默认 SI MB/s；TikZ 图例 + \texttt{listings} 摘录实现；公式以 \filepath{docs/technical/TOPO\_*.md} 为准。
+
+\chapter*{修订历史}
+\addcontentsline{toc}{chapter}{修订历史}
+\begin{longtable}{@{}llp{9cm}@{}}
+\toprule
+日期 & 版本 & 说明 \\
+\midrule
+2026-07-14 & v1.0 & 首版：Gen3--Gen5.1 独立手册 \\
+2026-07-14 & v1.1 & 完整扩写：形式化切点、标定/Embed 数学、源码印证、流式 Resume 专章 \\
+\bottomrule
+\end{longtable}

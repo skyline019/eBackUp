@@ -1,0 +1,149 @@
+\chapter{Gen5.1 TopoPH-Native：规格与数学}
+\label{ch:gen51}
+
+\section{问题陈述}
+
+Gen5.0 仍由 Gear 主导切点频率；拓扑事件只是过滤器。产品叙事「拓扑切点」要求：
+\begin{equation}
+\mathrm{cut} = f_{\mathrm{topo}}(\mathrm{landmarks}(\mathrm{content}))
+\quad\text{\textbf{不含} }(h\mathbin{\&}M)=0.
+\end{equation}
+Native 关闭 Gear / Rabin / Chain-LFSR，用内容定相 landmark + Flip / PH-H0 事件作真切点。
+
+\begin{invariantbox}[冻结边界]
+FastCDC、Hom、全部 \texttt{topo\_chain*}、Gen5.0 切点\textbf{不得}因 Native 工作改写。
+\end{invariantbox}
+
+\begin{table}[htbp]
+\centering
+\caption{Native 标识}
+\label{tab:phn-id}
+\begin{tabular}{@{}ll@{}}
+\toprule
+项 & 值 \\
+\midrule
+feature & \texttt{kBackupFeatureTopoPhNative = 0x100000} \\
+\texttt{kTopoPhnAlgoId} & 4 \\
+运行时 & \envvar{EBBACKUP\_CDC\_ALGO=topophn} \\
+子核 & \envvar{EBBACKUP\_TOPOPHN\_KERNEL=tri|ph} \\
+variant & 5=Tri-N，6=PH-N \\
+SPEC & \filepath{TOPO\_PH\_NATIVE\_SPEC.md} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{定理剪枝}
+
+\begin{table}[htbp]
+\centering
+\caption{可工程子集}
+\label{tab:phn-prune}
+\begin{tabular}{@{}llp{5.8cm}@{}}
+\toprule
+保留 & 剪掉 & 理由 \\
+\midrule
+$H_0$/VR $\Delta\beta_0$ & 在线 $H_{\ge 1}$ & 成本与标定 \\
+寿命阈值 $\delta$ & 热路径 $W_\infty$ & bottleneck 仅评测 \\
+定点 Flip/$\tau$ & Künneth / 神经 / 对偶 & 不产可控切点 \\
+内容定相 Embed & 跨文件累积 mix & 1-byte reuse \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{内容定相 Embed}
+
+设 LCG 参数 $m=1664525$，$c=1013904223$（Numerical Recipes）。迭代 4 步后 XOR 混叠：
+\begin{align}
+y_0&=\mathrm{seed}\\
+y_{i+1}&= m\,y_i + c + b_{p-3+i},\quad i=0..3\\
+Y &= y_4 \oplus (b_{p-1}\!\ll\!8)\oplus(b_{p-2}\!\ll\!16)\oplus(b_{p-3}\!\ll\!24).
+\end{align}
+闭合形式（uint32 wrap）与迭代 \textbf{bit-identical}：
+\begin{align}
+Y &= \mathrm{seed}\cdot m^4 + c(1+m+m^2+m^3)
+ + b_{p-3}m^3 + b_{p-2}m^2 + b_{p-1}m + b_p \nonumber\\
+&\quad\oplus\text{（同上字节移位）}.
+\end{align}
+\textbf{无}跨文件累积：同一 $(seed,b_{p-3..p})$ $\Rightarrow$ 同一 $Y$（内容局部）。
+
+\section{\texorpdfstring{Landmark 与切点分离}{Landmark 与切点分离}}
+
+\texttt{event\_stride} 标定后收成最近二的幂 $S=2^\ell$（平局偏小）：
+\begin{equation}
+\mathrm{landmarkOK}\iff \bigl(Y \mathbin{\&}(S-1)\bigr)=0.
+\end{equation}
+仅 landmark 处更新环缓冲并评估事件。切点公式：
+
+\subsection{Tri-Native}
+\begin{equation}
+\mathrm{cut}
+=\bigl(|\mathrm{Flip}_t-\mathrm{Flip}_{t-1}|\ge\tau\bigr)
+\land(pos\ge\min)\land(\mathrm{gap}\ge\min).
+\end{equation}
+$\Delta\mathrm{Flip}$ 常近 $\{0,1\}$：\textbf{控率主旋钮}是 $S$（$\tau\approx1$）。
+
+\subsection{\texorpdfstring{PH-H0-Native}{PH-H0-Native}}
+嵌套 $\varepsilon^2\in\{1,4,16\}$（一次边排序 + 分层 UF）：
+\begin{align}
+\beta0_j(t)&=\#\pi_0(\mathrm{VR}_{R_j^2}(L_t))\\
+\mathrm{ph0OK}&=\exists j:\Delta\beta0_j\neq 0\\
+\mathrm{flipOK}&=|\Delta\mathrm{Flip}|\ge\tau\\
+\mathrm{PersistSpan}&=\max_j\beta0_j-\min_j\beta0_j\\
+\mathrm{cut}&=\mathrm{flipOK}\land\mathrm{ph0OK}\land[\mathrm{Persist}\ge\delta]\land\mathrm{gap}.
+\end{align}
+\textbf{必须}与 Tri 切点分化（门禁 Tri$\neq$PH）。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.85cm,y=0.65cm,font=\small]
+  \draw[thick] (0,0)--(14,0);
+  \foreach \x in {0,...,14} {\draw (\x,0.1)--(\x,-0.1);}
+  \foreach \x in {2,5,8,11} {
+    \fill[Gen51Color] (\x,0) circle (0.11);
+    \node[above,font=\tiny,Gen51Color] at (\x,0.2) {LM};
+  }
+  \draw[very thick, orange!80!black] (8,-0.3)--(8,0.3);
+  \node[below,font=\footnotesize,orange!80!black] at (8,-0.4) {event cut};
+  \node[font=\footnotesize,gray] at (7,-1.05)
+    {LM 网格由内容定相；cut $\subset$ LM 且事件门控};
+\end{tikzpicture}
+\caption{Landmark $\supset$ cut 关系。}
+\label{fig:phn-landmarks}
+\end{figure}
+
+\section{Flip 几何}
+
+令 $\tilde T_i=T_i\bmod Q$，$\tilde Y_i=Y_i\bmod Q$（Native 默认 $Q=1024$）。环缓冲满时按 \texttt{ring\_start} 取最旧到最新序。
+\begin{equation}
+\mathrm{Flip}=\#\{\text{锚点扇形}:\mathrm{Cross}\le0\}
++\#\{\text{相邻三元组}:\mathrm{Cross}\le0\}.
+\end{equation}
+
+\section{VR-H0 分层算法}
+
+对 $K$ 点两两 $d^2=(\Delta\tilde T)^2+(\Delta\tilde Y)^2$，按 $d^2$ 升序扫边，UF 合并；在 $d^2$ 越过各 $R_j^2$ 时快照分量数 $\beta0_j$。复杂度 $O(K^2\log K)$／landmark（$K\le16$）。
+
+\section{标定与 densify}
+
+4\,MiB 样本。目标 mean $\in[0.85,1.15]\times\mathrm{avg}$。\\
+mean 过大 densify 顺序：$\tau\!\downarrow \to k\!\downarrow \to S\!\downarrow$；\\
+$S$ 软下界 $\max(32,\mathrm{avg}/1024)$（\texttt{PhnProductiveStrideFloor}），避免 stride$=$8 死螺旋。
+
+超块只存 $S$（及 $k$/persist bit）；$\tau$ 由
+\texttt{CalibratePhnRuntimeParams} 确定性重导。\\
+Pipeline 按 Small/Default/Large 缓存 runtime knobs。
+
+Default 标定 $S_{\mathrm{SB}}$ 映射到其它档：
+\begin{equation}
+S'=\mathrm{RoundPow2}\!\left(\mathrm{round}\frac{S_{\mathrm{SB}}\cdot\mathrm{avg}}{256\,\mathrm{KiB}}\right).
+\end{equation}
+
+\section{复用稳定性}
+
+切后 \texttt{ResetLandmarkWindow}：清空环与 prev，避免跨 chunk 继承 landmark 阻断 1-byte re-lock。\\
+评测：\texttt{reuse\_1byte\_pct}$\ge80$（Tri 实测可达 100）。
+
+\section{验收}
+
+\texttt{L5\_topophn\_ab}：\texttt{vs}$\ge0.80$，\texttt{scan\_ns/probe}$\le5.0$；\\
+PH \texttt{scan\_ms}$\le300$；\filepath{run\_topophn\_proof.ps1}。

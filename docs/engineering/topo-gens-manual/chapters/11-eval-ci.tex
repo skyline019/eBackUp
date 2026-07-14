@@ -1,0 +1,93 @@
+\chapter{评估、CI 与生产 smoke}
+\label{ch:eval}
+
+\section{验收 SSOT（C++ only）}
+
+Python \filepath{tools/topo\_cdc\_eval/} \textbf{已废弃}。
+
+\begin{table}[htbp]
+\centering
+\caption{工具链分层}
+\label{tab:ssot}
+\begin{tabular}{@{}llp{6.2cm}@{}}
+\toprule
+层 & 工具 & 覆盖 \\
+\midrule
+正确性 & ebbackup\_tests & Hom/Chain/Ph/Phn \\
+切分微基准 & ebbackup\_topo\_cdc\_eval & chunks/mean/scan；Native reuse \\
+性能门禁 & ebbackup\_bench\_check & L5\_topo*\_ab \\
+一键 & run\_topo*\_proof.ps1 & 单测$\to$eval$\to$L5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{门禁数值}
+
+\begin{table}[htbp]
+\centering
+\caption{L5 与 eval 阈值}
+\label{tab:gates}
+\begin{tabular}{@{}llll@{}}
+\toprule
+族 & vs\_stream & scan\_ns/probe & 额外 \\
+\midrule
+Hom & $\ge0.97$ & $\le1.25$ & — \\
+Chain & $\ge0.97$ & $\le1.30$ & — \\
+TopoPH & $\ge0.95$ & $\le2.0$ & — \\
+Native & $\ge0.80$ & $\le5.0$ & reuse$\ge80$；Tri$\neq$PH；PH$\le300$ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{一键脚本}
+
+\begin{lstlisting}[language=bash,caption={PowerShell 一键证明},label={lst:proof-scripts}]
+engine_cpp/bench/scripts/run_topo_proof.ps1
+engine_cpp/bench/scripts/run_topochain_proof.ps1
+engine_cpp/bench/scripts/run_topoph_proof.ps1
+engine_cpp/bench/scripts/run_topophn_proof.ps1
+engine_cpp/bench/scripts/run_topophn_cuda_prod.ps1  # optional corpus
+\end{lstlisting}
+
+\section{reuse\_1byte 数学}
+
+语料 $B$，右移 1 字节得 $B'$。切点集合 $C(B)$、$C(B')$：
+\begin{equation}
+\mathrm{reuse}
+=\frac{\bigl|\{c\in C(B):\ \exists\,c'\in C(B'),\ \text{content-aligned}\}\bigr|}{|C(B)|}.
+\end{equation}
+Native：内容定相 Embed + 切后 \texttt{ResetLandmarkWindow} 使边界相对内容锁定；热路径不算 $W_\infty$。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \draw[thick] (0,0)--(10,0) node[right]{原流};
+  \draw[thick] (0,-1.1)--(10,-1.1) node[right]{$+1$B};
+  \foreach \x in {2.0,4.5,7.2} {
+    \draw[Gen51Color,very thick] (\x,-0.12)--(\x,0.12);
+    \draw[Gen51Color,very thick] (\x+0.12,-1.22)--(\x+0.12,-0.98);
+  }
+\end{tikzpicture}
+\caption{1-byte reuse 示意：内容对齐的边界重合。}
+\label{fig:reuse}
+\end{figure}
+
+\section{Parity 契约}
+
+对任意算法 $A$、文件 $F$、feed 大小 $W=512\,\mathrm{KiB}$：
+\begin{equation}
+\mathrm{Cuts}_A(F)=\mathrm{Cuts}^{\mathrm{stream}}_A(F;W).
+\end{equation}
+实现上：整文件 \texttt{*Slice::ChunkCuts} 与 \texttt{ChunkFileStreaming*} 对照；单测强制。
+
+\section{吞吐量级（非正式）}
+
+公平 warm 下 Native 受 per-byte Embed 约束，通常低于 Chain 廉价 LFSR；属数学冻结下的结构差距。数字以本机 proof 日志为准，\textbf{不}写入 SSOT 门禁。
+
+\section{CI 勾子建议}
+
+\begin{enumerate}[nosep]
+  \item 触及 \texttt{topo\_cdc}/\texttt{topo\_ph}/\texttt{topo\_phn} $\Rightarrow$ 对应测试 + eval；
+  \item 触及 Chain 切点语义 $\Rightarrow$ 默认拒绝 PR；
+  \item 发布：四套 \texttt{run\_*\_proof.ps1}。
+\end{enumerate}

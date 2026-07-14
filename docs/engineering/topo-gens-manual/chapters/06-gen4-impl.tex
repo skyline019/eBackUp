@@ -1,0 +1,137 @@
+\chapter{Gen4 TopoChain：实现解剖与代码印证}
+\label{ch:gen4-impl}
+
+\section{代码布局}
+
+\begin{itemize}[nosep]
+  \item \filepath{topo\_chain\_internal.h} — LFSR、$\Delta$、$\hat\beta_1$、resume、并行分发；
+  \item \filepath{topo\_chain\_scan.cc} — 热路径 + 标定 + 并行 join；
+  \item \filepath{topo\_chain\_streaming.cc} — feed / resume（持久化 $S$）；
+  \item 整文件仍经 \texttt{TopoCdcSlice}（\texttt{variant=kChain}），\textbf{不}调用 \texttt{InitGearTable}。
+\end{itemize}
+
+\section{LFSR 与量化：规格一字不差}
+
+\begin{lstlisting}[caption={XOR-LFSR（\filepath{topo\_chain\_scan.cc}）},label={lst:chain-lfsr}]
+uint32_t Rotl32(uint32_t v, uint32_t bits) {
+  bits &= 31u;
+  if (bits == 0) return v;
+  return (v << bits) | (v >> (32u - bits));
+}
+uint8_t ChainQuantKey(uint8_t byte, uint8_t quant_q) {
+  if (quant_q >= 8) return 0;
+  return static_cast<uint8_t>(byte >> quant_q);
+}
+uint32_t UpdateChainSignature(uint32_t s, uint8_t byte, uint8_t quant_q) {
+  return Rotl32(s, 1) ^ static_cast<uint32_t>(ChainQuantKey(byte, quant_q));
+}
+uint32_t ChainStrideMask(uint8_t stride_log) {
+  if (stride_log == 0) return 0u;
+  if (stride_log >= 31) return 0x7FFFFFFFu;
+  return (1u << stride_log) - 1u;
+}
+\end{lstlisting}
+
+即 $S\leftarrow\mathrm{rotl}_1(S)\oplus Q(b)$，$M=2^L-1$。
+
+\section{ProbeChainAt}
+
+\begin{lstlisting}[caption={stride 命中才做拓扑},label={lst:probe-chain}]
+inline bool ProbeChainAt(uint32_t* s, uint32_t stride_mask, uint32_t w,
+    uint8_t quant_q, bool enable_beta1, const uint8_t* data,
+    size_t pos, size_t* out_cut) {
+  if ((*s & stride_mask) == 0) {
+    // rebuild keys[0..w), ed; ChainPrimaryDelta
+    if (ChainPrimaryDelta(keys, w, key_in, ed) != 0) {
+      // slide keys into `slide`
+      if (!enable_beta1 || ChainBeta1Gf2(slide, w) > 0) {
+        *out_cut = pos;
+        return true;
+      }
+    }
+  }
+  *s = UpdateChainSignature(*s, data[pos], quant_q);
+  return false;
+}
+\end{lstlisting}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \draw[thick, Gen4Color] (0,0) rectangle (12.2,2.6);
+  \node[anchor=north west, font=\bfseries] at (0.15,2.5) {每字节摊销};
+  \node[align=left] at (3.3,1.25) {\textbf{非 stride}\\LFSR $O(1)$\\不维护每字节窗};
+  \draw[thick] (6.1,0.15)--(6.1,2.45);
+  \node[align=left] at (9.3,1.25) {\textbf{stride 命中}\\键重建 $O(w)$\\$\Delta\hat\beta_0$ + $\hat\beta_1$};
+\end{tikzpicture}
+\caption{Limit Push：窗口成本摊到稀有 stride。}
+\label{fig:chain-amortize}
+\end{figure}
+
+\section{ChainPrimaryDelta $=$ Hom 公式}
+
+\begin{lstlisting}[caption={与 PrimaryTopoDelta 同构},label={lst:chain-delta}]
+int32_t ChainPrimaryDelta(const uint8_t* keys, uint32_t w,
+                          uint8_t key_in, uint32_t ed_old) {
+  uint32_t ed_new = ed_old;
+  if (keys[0] != keys[1]) --ed_new;
+  if (w == 2) {
+    if (keys[1] != key_in) ++ed_new;
+  } else {
+    const uint8_t old_tail = keys[w - 1];
+    if (keys[w - 2] != old_tail) --ed_new;
+    if (keys[w - 2] != key_in) ++ed_new;
+    if (key_in != keys[0]) ++ed_new;
+  }
+  return int32_t(ed_new) - int32_t(ed_old);
+}
+\end{lstlisting}
+
+\section{$\hat\beta_1$ 参考实现印证}
+
+Euler 亏量 $\hat\beta_1=\max(0,E-V+C)$：无向去重边、键空间顶点、UF 求 $C$。
+
+\begin{lstlisting}[caption={ChainBeta1Gf2Reference（测试黄金）},label={lst:beta1-ref}]
+// Unique undirected edges on consecutive unequal keys;
+// V = |{keys present}|, C = UF components among present keys.
+// return max(0, E + C - V);
+uint32_t ChainBeta1Gf2Reference(const uint8_t* keys, uint32_t w);
+// Fast path: bitset edge_bits[] + touched list — bit-identical.
+uint32_t ChainBeta1Gf2(const uint8_t* keys, uint32_t w);
+\end{lstlisting}
+
+\section{并行分发}
+
+\begin{lstlisting}[caption={并行语义草图},label={lst:chain-par}]
+// Serial warm: s_at_seg[i] = LFSR state at segment i start
+parallel_for i:
+  if (cancel) return;
+  RunChainScanLoop(..., s = s_at_seg[i], cancel);
+// Join left-to-right: earliest cut wins; cancel right
+\end{lstlisting}
+
+\texttt{ChainParallelScanEnabled()} 读 \envvar{EBBACKUP\_TOPOCHAIN\_PARALLEL\_SCAN}。
+
+\section{Resume}
+
+\begin{lstlisting}[caption={TopoChainResume},label={lst:chain-resume}]
+struct TopoChainResume {
+  uint32_t S{0};
+  size_t scan_rel{0};
+  bool in_scan{false};
+  bool window_ready{false};
+  uint32_t window_w{64};
+  uint32_t edge_diff{0};
+  uint8_t keys[kChainMaxWindow]{};
+};
+\end{lstlisting}
+
+与 Hom 不同：Chain 可在 streaming 中信任并恢复 $S$（及 keys 窗），避免跨 feed 重放。
+
+\section{冻结与测试}
+
+\begin{warnbox}[切点冻结]
+改 $Q$、stride 语义、beta1 判定、切点先后序 $=$ 破坏既有仓。仅允许 bit-identical 微优化。
+\end{warnbox}
+
+测试：\texttt{TopoCdcChainTest.*}（adversarial / beta1 parity / 并行一致性）。

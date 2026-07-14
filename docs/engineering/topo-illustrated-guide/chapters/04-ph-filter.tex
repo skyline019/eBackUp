@@ -1,0 +1,100 @@
+\chapter{Gen5 TopoPH：``仍听指纹铃，加一层滤网''}
+\label{ch:ph-filter}
+
+\section{定位：过渡物种}
+
+\begin{pitfall}[它不是终极形态]
+Gen5 TopoPH 仍然先靠 Gear 叮铃，\textbf{叮了以后}才把最近若干叮点丢进``几何滤网''。\\
+滤网说 OK，才切。所以它是\textbf{混合态}：指纹主导频率，拓扑只过滤。\\
+真正``拓扑说了算''的是下一章 Native。
+\end{pitfall}
+
+\begin{keyidea}[TopoPH]
+切点 = 指纹叮 $\land$ （三角形翻转变了 \textbf{或} 小星图连通数变了）。
+\end{keyidea}
+
+\section{叮点变成天上的星星}
+
+每次指纹叮，记录一颗星：坐标大致是``时间 $\times$ 指纹值''的取模格子。\\
+只保留最近 $K$ 颗（$K$ 大约十几颗）。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.85]
+  \draw[gray!40, thin] (0,0) grid (6,4);
+  \foreach \x/\y/\n in {0.8/1.2/1, 1.6/2.8/2, 2.9/1.0/3, 3.7/3.2/4, 5.0/2.0/5} {
+    \fill[Gen5Color] (\x,\y) circle (3pt);
+    \node[font=\tiny, above right] at (\x,\y) {$L_{\n}$};
+  }
+  \node[font=\small, above] at (3,4.2) {landmark 星图（仅 primary 点）};
+  \draw[thick, orange!70!black] (1.6,2.8)--(2.9,1.0)--(3.7,3.2);
+  \node[font=\footnotesize, orange!70!black] at (5.5,0.4) {看翻转 / 连通};
+\end{tikzpicture}
+\caption{叮铃 $\to$ 钉钉子；滤网盯钉子几何，不盯每一个字节。}
+\label{fig:ph-stars}
+\end{figure}
+
+\section{滤网 A：三角形``翻面''（Tri-v2）}
+
+想象用图钉拉橡皮筋。新增一颗钉，某些三角形的``朝向''可能从顺时针变成逆时针（叉积符号）。\\
+统计翻面次数；与上一拍不同 $\Rightarrow$ \texttt{triOK}。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \coordinate (A) at (0,0);
+  \coordinate (B) at (2.2,1.4);
+  \coordinate (C) at (1.8,-0.2);
+  \fill (A) circle (2pt); \fill (B) circle (2pt); \fill (C) circle (2pt);
+  \draw[thick] (A)--(B)--(C)--cycle;
+  \node[left] at (A) {$A$}; \node[above] at (B) {$B$}; \node[right] at (C) {$C$};
+  \node[font=\footnotesize, below=0.8cm of A]
+    {$\mathrm{Cross}(B\!-\!A,\,C\!-\!A)\le 0$ 计一次``翻''};
+\end{tikzpicture}
+\caption{定点交叉积：不用浮点几何库，也能讲``朝向''。}
+\label{fig:ph-flip}
+\end{figure}
+
+\section{滤网 B：连连看连通数（PH-H0）}
+
+规定：两颗星距离平方 $\le R^2$ 就连线。半径从小到大涨几档，看连通块数量变没变。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \foreach \x/\y/\i in {0/0/1, 1.2/0.3/2, 2.5/1.0/3, 0.3/1.5/4} {
+    \fill[Gen5Color] (\x,\y) circle (2.5pt);
+    \node[font=\tiny, above] at (\x,\y+0.05) {\i};
+  }
+  \draw[dashed, gray] (0,0) circle (0.55);
+  \draw[dashed, gray] (0,0) circle (1.2);
+  \node[font=\footnotesize, right] at (3.2,0.8) {半径涨：碎片合并，$\beta_0$ 下降};
+  \node[font=\footnotesize, right] at (3.2,0.2) {某档发生变化 $\Rightarrow$ ph0OK};
+\end{tikzpicture}
+\caption{不是全球持久同调：只在最近 $K$ 颗星上做便宜 $H_0$。}
+\label{fig:ph-h0-illust}
+\end{figure}
+
+\section{玩具对比}
+
+\begin{toybox}[同一次叮铃，两种滤网]
+指纹叮了，新星入场。\\
+Tri：翻面计数 5$\to$7 $\Rightarrow$ 过闸切。\\
+PH：某一半径连通数 4$\to$3 $\Rightarrow$ 过闸切。\\
+若翻面与连通都没变：\textbf{叮了也不切}——这就是``过滤''。
+\end{toybox}
+
+\section{对应到真名}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+形象说法 & 正式名 \\
+\midrule
+叮铃才钉钉子 & primary 时 push landmark \\
+翻面滤网 & Tri-v2 \texttt{FlipCountFixed} \\
+连连看滤网 & PH-H0 \texttt{PhH0BettiVec} \\
+仓库 & \texttt{0x80000} / \texttt{topoph} \\
+\bottomrule
+\end{tabular}
+\end{center}

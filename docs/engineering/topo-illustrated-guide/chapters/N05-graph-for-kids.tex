@@ -1,0 +1,115 @@
+\chapter{图画里的``拓扑''：珠子、线、圈}
+\label{ch:N-graph}
+
+\section{你需要的几何知识：小学二年级就够}
+
+大学里的``代数拓扑''很深。这里用到的只有：
+\begin{enumerate}[nosep]
+  \item 给珠子上色；
+  \item 相邻异色就拉一根线；
+  \item 数一数线变没变；有时再看有没有围成圈。
+\end{enumerate}
+
+\begin{keyidea}[为什么备份要管珠子]
+第二道关卡想回答：``内容局部结构有没有发生值得记录的变化？''\\
+珠串变线＝一种便宜的结构变化信号。
+\end{keyidea}
+
+\section{边数变了＝接通方式变了}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[circle,draw,fill=red!40] (a1) at (0,1.2) {A};
+  \node[circle,draw,fill=red!40] (a2) at (1.2,1.2) {A};
+  \node[circle,draw,fill=blue!40] (b) at (2.4,1.2) {B};
+  \draw[thick] (a1)--(a2);
+  \draw[very thick, CutRed] (a2)--(b);
+  \node[right] at (3.2,1.2) {异色边 1 条};
+
+  \node[circle,draw,fill=red!40] (c1) at (0,-0.3) {A};
+  \node[circle,draw,fill=blue!40] (c2) at (1.2,-0.3) {B};
+  \node[circle,draw,fill=green!40] (c3) at (2.4,-0.3) {C};
+  \draw[very thick, CutRed] (c1)--(c2)--(c3);
+  \node[right] at (3.2,-0.3) {异色边 2 条 $\Rightarrow$ 变了！};
+\end{tikzpicture}
+\caption{Hom 第二关：边数变化就绿灯。}
+\label{fig:N-edges-change}
+\end{figure}
+
+\section{什么叫环}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[circle,draw,fill=red!35] (a) at (0,0) {A};
+  \node[circle,draw,fill=blue!35] (b) at (1.5,0) {B};
+  \node[circle,draw,fill=green!35] (c) at (3.0,0) {C};
+  \draw (a)--(b)--(c);
+  \node[below=0.5cm of b] {无环：像一条绳};
+
+  \node[circle,draw,fill=red!35] (d) at (6,0.7) {A};
+  \node[circle,draw,fill=blue!35] (e) at (7.5,0.7) {B};
+  \node[circle,draw,fill=green!35] (f) at (7.5,-0.5) {C};
+  \draw (d)--(e)--(f)--(d);
+  \node[below=0.9cm of e] {有环：绕一圈回来};
+\end{tikzpicture}
+\caption{Chain 第三关可要求``有环才切''。}
+\label{fig:N-cycle}
+\end{figure}
+
+\section{翻转（Flip）是什么感觉}
+
+把天上几颗钉好的星连成折线/三角形，看``左右手方向''有没有突然翻面。\\
+用叉积符号判断：不必真的旋转纸片，数一下有多少次朝向可疑即可。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \coordinate (A) at (0,0);
+  \coordinate (B) at (2,1.2);
+  \coordinate (C) at (1.5,-0.3);
+  \fill (A) circle (2pt); \fill (B) circle (2pt); \fill (C) circle (2pt);
+  \draw[thick] (A)--(B)--(C)--cycle;
+  \node[left] at (A) {A}; \node[above] at (B) {B}; \node[right] at (C) {C};
+  \node[font=\footnotesize, gray, below=0.7cm of A]
+    {新增一颗星后，这种``弯折方向''的统计量可能跳变};
+\end{tikzpicture}
+\caption{Flip：几何朝向的廉价计数器。}
+\label{fig:N-flip}
+\end{figure}
+
+\section{连通块数量（$\beta_0$ 人话）}
+
+规定：两颗星够近就握手。\\
+半径从小放大：单独的星逐渐抱成团。\\
+\textbf{团的个数}在某一档突然变了，就记一笔``连通事件''。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \foreach \a in {10,80,150,220} {
+    \fill[Gen51Color] ({1.4*cos(\a)},{1.4*sin(\a)}) circle (2.5pt);
+  }
+  \draw[dashed, gray] (0,0) circle (0.7);
+  \draw[dashed, gray] (0,0) circle (1.6);
+  \node[right, font=\footnotesize] at (2.2,0) {小圈：4 团；大圈：可能并成 2 团};
+\end{tikzpicture}
+\caption{Native/PH 的连通关：团数变化才算事。}
+\label{fig:N-beta0}
+\end{figure}
+
+\section{本节小结}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+图画 & 谁在用 \\
+\midrule
+异色边变化 & Hom、Chain 第二关 \\
+有没有环 & Chain 第三关 \\
+朝向翻转 & TopoPH / Native \\
+近邻抱团数变化 & TopoPH / Native 的 PH \\
+\bottomrule
+\end{tabular}
+\end{center}

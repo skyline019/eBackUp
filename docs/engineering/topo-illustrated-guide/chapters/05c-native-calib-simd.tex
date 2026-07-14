@@ -1,0 +1,103 @@
+\chapter{Native 调参、三槽缓存、SIMD：把旋钮全画出来}
+\label{ch:native-calib}
+
+\section{densify 顺序：太大了怎么拧}
+
+平均块长太大 $=$ 天空太安静。拧的顺序固定：
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=Gen51Color] (1) {先降 $\tau$};
+  \node[softbox=Gen51Color, right=0.55cm of 1] (2) {再降 $k$};
+  \node[softbox=Gen51Color, right=0.55cm of 2] (3) {最后密化 stride};
+  \draw[-{Stealth}, thick] (1)--(2)--(3);
+\end{tikzpicture}
+\caption{stride 有软地板：约 $\max(32,\mathrm{avg}/1024)$，防掉进 stride$=$8 死螺旋。}
+\label{fig:densify}
+\end{figure}
+
+真名：\texttt{PhnProductiveStrideFloor}；\texttt{CalibratePhnCutParams}。
+
+\section{\texorpdfstring{tau 不进超块}{tau 不进超块}}
+
+\begin{metaphor}[墙上只贴网格纸]
+仓里主要保存 stride（和 $k$/persist 位）。\\
+$\tau$ 像``今天心情''：用同一把种子 + 墙上数字，每次开房都能精确重算出来。
+\end{metaphor}
+
+真名：\texttt{CalibratePhnRuntimeParams}；backup 进程里还可缓存结果。
+
+\section{Default 标定，其它档按比例换衣服}
+
+InitRepo 常在 Default（avg=256KiB）下标定出 $S_{\mathrm{SB}}$。\\
+小/大文件：
+\begin{equation}
+S'=\mathrm{RoundPow2}\big(S_{\mathrm{SB}}\cdot\mathrm{avg}/256\mathrm{KiB}\big).
+\end{equation}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=gray] (d) {Default 标定 $S$};
+  \node[softbox=Gen51Color, right=0.7cm of d] (s) {Small\\$S$ 变小};
+  \node[softbox=Gen51Color, right=0.7cm of s] (l) {Large\\$S$ 变大};
+  \draw[-{Stealth}, thick] (d)--(s);
+  \draw[-{Stealth}, thick] (d)--(l);
+\end{tikzpicture}
+\caption{\texttt{ScaleEventStrideForAvg}：校服尺码按 avg 缩放。}
+\label{fig:scale-stride}
+\end{figure}
+
+\section{Pipeline 三槽冰箱}
+
+\begin{metaphor}[早餐预烤]
+Small / Default / Large 各烤一份 runtime 旋钮放进冰箱。\\
+同档文件不用每次重新标定 —— \textbf{切点公式不变}，只省火。
+\end{metaphor}
+
+\section{4MiB 样音}
+
+Native 标定样本更大（4MiB），因为事件更稀、更噪。\\
+目标平均块长仍在 $[0.85,1.15]\times\mathrm{avg}$。
+
+\section{SIMD：一次看两排座位}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\footnotesize]
+  \foreach \i in {0,...,15} {
+    \node[bytecell] at (\i*0.55,0) {};
+  }
+  \draw[thick, Gen51Color] (-0.15,-0.45) rectangle (4.2,0.45);
+  \draw[thick, Gen51Color] (4.4,-0.45) rectangle (8.7,0.45);
+  \node[above, Gen51Color] at (2,0.55) {8 座};
+  \node[above, Gen51Color] at (6.5,0.55) {又 8 座};
+  \node[font=\footnotesize, gray, below] at (4.3,-0.75) {无命中可跳过写回；Embed 用 load+扩展，不 gather};
+\end{tikzpicture}
+\caption{向量化是外壳；落格规则仍是 $Y\&(S-1)$。}
+\label{fig:simd-seats}
+\end{figure}
+
+\section{吞吐直觉}
+
+几乎每字节炼 $Y$（比 Chain 拧锁贵）—— 所以 vs Stream 门禁更松（$\ge0.80$），允许更高的 ns/probe。\\
+这不是``没调好''，是去掉指纹铃后的结构税。
+
+\section{细节对照表}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{6.8cm}@{}}
+\toprule
+技术点 & 形象说法 \\
+\midrule
+\texttt{RoundEventStridePow2} & 网格取整，平局偏小 \\
+\texttt{FillPhnCalibSample} & 4MiB 样音 \\
+\texttt{enable\_persist\_delta} & 寿命闸开关（超块 bit） \\
+\texttt{L5\_topophn\_ab} & 速度及格线 \\
+\texttt{reuse\_1byte} & 良心重合率 \\
+CUDA smoke & 可选真实树备份抽检 \\
+\bottomrule
+\end{tabular}
+\end{center}

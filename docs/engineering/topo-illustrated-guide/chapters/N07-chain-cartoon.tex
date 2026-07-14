@@ -1,0 +1,60 @@
+\chapter{动画片二：Chain 怎样决定切一刀}
+\label{ch:N-chain-cartoon}
+
+\section{Hom 还留着``神秘铃''，Chain 换成自行车锁}
+
+\begin{metaphor}[为什么换锁]
+查表铃声有点贵、有点魔法。Chain 改成：每来一字节就拧一下密码锁。\\
+拧到对齐（低几位全 0）——才打开第二、第三关。
+\end{metaphor}
+
+\section{三道关剧本}
+
+\begin{enumerate}
+  \item 拧锁（每个字节都要拧，很便宜）；
+  \item 对齐了吗？没对齐 $\to$ 继续拧；对齐了才往后；
+  \item 珠串边变了吗？（和 Hom 同款图画）；
+  \item （默认）有没有环？有环才剪。
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=Gen4Color] (a) {拧锁};
+  \node[softbox=WarnAmber, right=0.5cm of a] (b) {对齐?};
+  \node[softbox=WarnAmber, right=0.5cm of b] (c) {珠变?};
+  \node[softbox=WarnAmber, right=0.5cm of c] (d) {有环?};
+  \node[softbox=CutRed, right=0.5cm of d] (e) {剪};
+  \draw[-{Stealth}, thick] (a)--(b)--(c)--(d)--(e);
+  \draw[-{Stealth}, thick, dashed] (b.south)--++(0,-0.5)-|
+    node[pos=0.2,below,font=\tiny]{否：继续拧} (a.south);
+\end{tikzpicture}
+\caption{时间花在拧锁上；对齐很少见，贵检查才发生。}
+\label{fig:N-chain-flow}
+\end{figure}
+
+\section{量化：把颜色弄粗糙}
+
+字节可以先右移几位再当颜色，叫量化。\\
+粗糙后颜色种类变少，珠串图案更钝 —— 也是一种旋钮。
+
+\section{并行找刀（可选）}
+
+大文件切成路段同时找，但最终只认\textbf{最左边}那一刀。\\
+像多人搜宝藏，谁先在更左的位置喊到，右边就停手。
+
+\section{零基础对照}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+术语 & 动画片里 \\
+\midrule
+LFSR / $S$ & 密码锁当前刻度 \\
+strideOK & 锁对齐了 \\
+ChainPrimaryDelta & 珠边变了 \\
+beta1 & 有环 \\
+stride log & 对齐稀密度旋钮 \\
+\bottomrule
+\end{tabular}
+\end{center}

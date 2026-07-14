@@ -1,0 +1,66 @@
+\chapter{并排对照：同一根香肠的四种刀法}
+\label{ch:side}
+
+\section{总图}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\footnotesize,
+  row/.style={softbox=#1, minimum width=11.5cm, minimum height=1.05cm, align=left}]
+  \node[row=Gen3Color] (h) at (0,3.6)
+    {\textbf{Hom}：铃叮？ -- 珠串边变了？ -- 切};
+  \node[row=Gen4Color] (c) at (0,2.3)
+    {\textbf{Chain}：锁对齐？ -- 骨架变了？ -- 有环？ -- 切};
+  \node[row=Gen5Color] (p) at (0,1.0)
+    {\textbf{TopoPH}：铃叮？ -- 钉星 -- 翻面/连通滤网？ -- 切};
+  \node[row=Gen51Color] (n) at (0,-0.3)
+    {\textbf{Native}：炼 $Y$ -- 落网格钉星 -- 事件？ -- 切（无铃）};
+\end{tikzpicture}
+\caption{四种``发车信号''链路，一眼分清。}
+\label{fig:four-pipelines}
+\end{figure}
+
+\section{谁在听指纹铃}
+
+\begin{center}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+ & Hom & Chain & TopoPH & Native \\
+\midrule
+Gear 指纹铃 & 是 & 否 & 是 & \textbf{否} \\
+密码锁 & 否 & 是 & 否 & 否 \\
+事件作真切点 & 否（第二闸） & 否（第二/三闸） & 否（滤网） & \textbf{是} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{仓库隔离（再强调一遍）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \foreach \i/\name/\col in {0/Hom仓/Gen3Color, 1/Chain仓/Gen4Color,
+    2/PH仓/Gen5Color, 3/Native仓/Gen51Color} {
+    \node[softbox=\col, minimum width=2.4cm] (r\i) at (\i*2.9,0) {\name};
+  }
+  \draw[<->, thick, dashed, gray] (r0)--(r1);
+  \draw[<->, thick, dashed, gray] (r1)--(r2);
+  \draw[<->, thick, dashed, gray] (r2)--(r3);
+  \node[font=\footnotesize, gray, below=0.55cm of r1]
+    {虚线 = 不能就地搬家；要换刀法就新开仓重切};
+\end{tikzpicture}
+\caption{四个房间，四套积木，别混着玩。}
+\label{fig:repo-rooms}
+\end{figure}
+
+\section{速度直觉（非正式）}
+
+\begin{metaphor}[厨房计时]
+\begin{itemize}[nosep]
+  \item \textbf{Chain}：多数字节只拧锁 —— 通常最快；
+  \item \textbf{Hom}：多数字节只滚指纹 —— 接近 FastCDC；
+  \item \textbf{TopoPH}：叮的时候还要算几何 —— 更贵；
+  \item \textbf{Native}：几乎每字节炼 $Y$ —— 有结构性成本，靠 SIMD / 缓存标定打平体验。
+\end{itemize}
+具体数字看 bench，不看这本图画书。
+\end{metaphor}

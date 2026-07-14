@@ -1,0 +1,51 @@
+\chapter{拒迁与门禁：什么时候直接说不}
+\label{ch:deny}
+
+\section{搬家规则}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=OkGreen] (ok) {同房同床型\\继续增量};
+  \node[softbox=CutRed, right=1.2cm of ok] (no)
+    {跨房 / 换床型\\必须新开房重切};
+\end{tikzpicture}
+\caption{就地迁移 $=$ 禁止。}
+\label{fig:move}
+\end{figure}
+
+典型 Fail 剧情：
+\begin{itemize}[nosep]
+  \item Hom 仓却没喊 \texttt{topocdc}；
+  \item Fast 仓已有库存，却突然喊 Topo 口令；
+  \item Chain $L$ 不在 8..22；MVP 仓想就地开环检；
+  \item Native Tri 仓改跑 PH；
+  \item 同进程多口令并存。
+\end{itemize}
+
+\section{门禁像考试及格线}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+房间 & 相对 Stream 速度 & 每探针耗时倍数 \\
+\midrule
+Hom & $\ge0.97$ & $\le1.25$ \\
+Chain & $\ge0.97$ & $\le1.30$ \\
+TopoPH & $\ge0.95$ & $\le2.0$ \\
+Native & $\ge0.80$ & $\le5.0$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Native 额外：reuse$\ge80$；Tri$\neq$PH；PH 扫描别超过约 300ms（eval）。
+
+\section{一键剧本}
+
+各房有 \texttt{run\_topo*\_proof.ps1}：单测 $\to$ eval $\to$ L5 归档。\\
+形象：毕业汇演，不是日常作业。
+
+\section{Python eval 废票}
+
+旧 Python 工具不得进 CI —— 只认 C++ 金丝雀。

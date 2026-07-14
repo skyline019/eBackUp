@@ -1,0 +1,117 @@
+\chapter{Gen4 TopoChain：规格与数学}
+\label{ch:gen4}
+
+\section{定位}
+
+TopoChain 是\textbf{Gear-free} 第四代 CDC：XOR-LFSR stride $\wedge$ 同构 $\hat\beta_0$ $\wedge$ 可选 $\hat\beta_1$。  
+与 Hom（\texttt{0x20000}）\textbf{独立 dedup 域}；切点公式\textbf{冻结}——Limit Push 只允许 bit-identical 加速。
+
+\begin{table}[htbp]
+\centering
+\caption{Chain 标识}
+\label{tab:chain-id}
+\begin{tabular}{@{}ll@{}}
+\toprule
+项 & 值 \\
+\midrule
+运行时 & \envvar{EBBACKUP\_CDC\_ALGO=topochain} \\
+feature & \texttt{kBackupFeatureTopoChain = 0x40000} \\
+\texttt{topo\_variant} & 2 \\
+\texttt{chunk\_algo\_id} & 2（与 Hom 同族 ID，由 variant 区分） \\
+并行 & \envvar{EBBACKUP\_TOPOCHAIN\_PARALLEL\_SCAN=1} \\
+SPEC & \filepath{TOPO\_CHAIN\_GEN4\_SPEC.md} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{三层切点公式}
+
+量化与 LFSR：
+\begin{align}
+Q(b) &= b \gg q,\qquad q\in\{0,\ldots,7\}\quad\text{（默认 }0\text{）}\\
+S_t &= \mathrm{rotl}_1(S_{t-1})\oplus Q(b_t)\\
+M &= 2^{L}-1,\qquad L=\texttt{chain\_stride\_log}\in[8,22]\\
+\mathrm{strideOK}_t &= (S_t \mathbin{\&} M)=0.
+\end{align}
+
+拓扑层（与 Hom 同构）：
+\begin{align}
+k_i &= Q(b_i)\\
+\mathrm{topoOK}_t &= \bigl(\Delta\hat\beta_0\bigr)_t \neq 0
+\equiv \texttt{ChainPrimaryDelta}\neq 0.
+\end{align}
+
+环检测（Tier-2，InitRepo 默认开）：
+\begin{align}
+\hat\beta_{1,\mathrm{GF2}}
+&= \max\bigl(0,\, E - V + C\bigr)
+\quad\text{（无向 1-骨架，顶点=出现过的键）}\\
+\mathrm{beta1OK} &= (\hat\beta_1>0)\lor(\neg\texttt{enable\_beta1})\\
+\mathrm{cut}_t &= \mathrm{strideOK}_t\land\mathrm{topoOK}_t\land\mathrm{beta1OK}\land(t\ge\mathrm{pos}+\min).
+\end{align}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  box/.style={rectangle, rounded corners=2pt, draw=Gen4Color, fill=Gen4Color!10,
+    align=center, font=\footnotesize, minimum height=0.8cm, minimum width=1.65cm},
+  arr/.style={-{Stealth}, thick}]
+  \node[box] (b) {byte};
+  \node[box, right=0.4cm of b] (q) {$Q$};
+  \node[box, right=0.4cm of q] (s) {$S_t$};
+  \node[box, right=0.4cm of s] (st) {stride};
+  \node[box, right=0.4cm of st] (b0) {$\Delta\hat\beta_0$};
+  \node[box, right=0.4cm of b0] (b1) {$\hat\beta_1$};
+  \node[box, right=0.4cm of b1] (c) {cut};
+  \draw[arr] (b)--(q)--(s)--(st)--(b0)--(b1)--(c);
+\end{tikzpicture}
+\caption{Tier-0 / 1 / 2 串行门控。}
+\label{fig:chain-tiers}
+\end{figure}
+
+\section{与 Hom 的同构定理（草图）}
+
+\begin{designbox}[同构草图]
+Hom 键 $=G[b]\mathbin{\&}0xFF$；Chain 键 $=Q(b)$。固定窗 $w$ 上两者都构造路径 1-骨架边集，且
+\texttt{ChainPrimaryDelta} 与 \texttt{PrimaryTopoDelta} \textbf{字面同一更新公式}。\\
+故 $\Delta\hat\beta_0$ 事件逻辑同构；差异仅 Tier-0：Gear mask $\leftrightarrow$ XOR-LFSR stride。
+\end{designbox}
+
+期望 stride 间距 $\approx M+1=2^L$。标定选择 $L$ 使 mean chunk $\in[0.85,1.15]\times\mathrm{avg}$（含 beta1 过滤效应）。
+
+\section{超块}
+
+\begin{table}[htbp]
+\centering
+\caption{Chain 超块语义}
+\label{tab:chain-sb}
+\begin{tabular}{@{}llp{6.8cm}@{}}
+\toprule
+字段 & 域 & 用途 \\
+\midrule
+\texttt{topo\_table\_seed} & 随机 u32 & LFSR 初态（\textbf{非} Gear） \\
+\texttt{topo\_reserved[0:1]} & $L\in[8,22]$ & stride\_log \\
+\texttt{topo\_reserved[2]} & $q\le7$ & quant\_q \\
+\texttt{topo\_reserved[3]} & bit0 & \texttt{kChainFeatureBeta1} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+MVP 仓无 beta1 bit：\textbf{禁止}就地升级，须新 InitRepo。
+
+\section{并行 scan 语义}
+
+段长 256\,KiB。串行预热 $S$ 至各段起点 $s_i$，多线程探测，自左向右 join：左段命中则 cancel 右段。\\
+跨 feed carry 时 \texttt{force\_serial}。语义仍取\textbf{全局最早} cut —— 与串行 bit-identical。
+
+\section{复杂度}
+
+非 stride：$O(1)$ LFSR；stride：$O(w)$ 键重建 $+\,O(w)$ $\hat\beta_1$。\\
+设 stride 概率 $p\approx 2^{-L}$，摊销
+\begin{equation}
+T/\mathrm{byte}\approx T_{\mathrm{LFSR}} + p\cdot O(w).
+\end{equation}
+
+\section{门禁}
+
+\texttt{L5\_topochain\_ab}：\texttt{vs\_stream}$\ge0.97$，\texttt{scan\_ns/probe}$\le1.30$。

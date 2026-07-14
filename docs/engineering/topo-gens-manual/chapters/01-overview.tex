@@ -1,0 +1,101 @@
+\chapter{后三代总览与产品定位}
+\label{ch:overview}
+
+\section{叙事代际}
+
+ebbackup CDC 以「代」描述算法族，\textbf{代际 $\neq$ 可就地升级}。后三代统一落在 \filepath{engine\_cpp/src/chunk/topo\_*}，各自独立 feature bit 与 cut 分布。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=0.5cm and 0.65cm,
+  box/.style={rectangle, rounded corners=3pt, draw=#1!70!black, fill=#1!10,
+    align=center, minimum width=2.45cm, minimum height=1.3cm, font=\small},
+  arrow/.style={-{Stealth}, thick, gray!70}]
+  \node[box=gray] (g1) {\textbf{Gen1}\\FastCDC};
+  \node[box=gray, right=of g1] (g2) {\textbf{Gen2}\\G-TCDC};
+  \node[box=Gen3Color, right=of g2] (g3) {\textbf{Gen3}\\Hom-0};
+  \node[box=Gen4Color, right=of g3] (g4) {\textbf{Gen4}\\Chain};
+  \node[box=Gen5Color, below=1.2cm of g3] (g5) {\textbf{Gen5}\\TopoPH};
+  \node[box=Gen51Color, right=of g5] (g51) {\textbf{Gen5.1}\\Native};
+  \draw[arrow] (g1)--(g2)--(g3)--(g4);
+  \draw[arrow, dashed] (g3)--(g5);
+  \draw[arrow] (g5)--(g51);
+\end{tikzpicture}
+\caption{实线为本手册焦点；虚线表示从 Hom/Tri 研究轨分叉，非 Chain 线性后继。}
+\label{fig:gen-lane}
+\end{figure}
+
+\section{设计动机矩阵}
+
+\begin{longtable}{@{}p{2.2cm}p{5.5cm}p{5.5cm}@{}}
+\toprule
+代 & 要解决的问题 & 核心手段 \\
+\midrule
+\endhead
+Hom & 双 Gear 相关噪声；第二条件缺拓扑意义 & Gear $\wedge$ UF $\Delta C$ \\
+Chain & Gear 成为吞吐与依赖瓶颈 & LFSR stride $\wedge$ 同构 $\hat\beta_0$/$\hat\beta_1$ \\
+TopoPH & 探索 Flip / $H_0$ 事件工程化 & Gear primary $\wedge$ 事件过滤 \\
+Native & 「拓扑切点」产品叙事落地 & 内容定相 LM $\wedge$ 事件真切点 \\
+\bottomrule
+\end{longtable}
+
+\section{标识一览}
+
+\begin{table}[htbp]
+\centering
+\caption{后三代标识（SSOT：\filepath{CDC\_ALGO\_MATRIX.md}）}
+\label{tab:id-overview}
+\begin{tabular}{@{}lllrll@{}}
+\toprule
+代 & 产品 & env & flag & id & var \\
+\midrule
+3 & Hom-0 & topocdc & 0x20000 & 2 & 0 \\
+3 & Tri* & topocdc+tri & 0x20000 & 2 & 1 \\
+4 & Chain & topochain & 0x40000 & 2 & 2 \\
+5 & Tri-v2 & topoph & 0x80000 & 3 & 3 \\
+5 & PH-H0 & topoph+ph & 0x80000 & 3 & 4 \\
+5.1 & Tri-N & topophn & 0x100000 & 4 & 5 \\
+5.1 & PH-N & topophn+ph & 0x100000 & 4 & 6 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{跨代硬约束}
+
+\begin{invariantbox}[五条不可变]
+\begin{enumerate}[nosep]
+  \item Content ID $=\texttt{SHA256}$（明文）；CDC 只改边界；
+  \item 整文件 $\equiv$ 512KB 多 feed cut（parity）；
+  \item 各族 dedup 域隔离（跨 flag 复用率 0\%）；
+  \item 运行时互斥：gtcdc / topocdc / topochain / topoph / topophn；
+  \item 冻结：Chain 切点、Gen5.0 混合切点、FastCDC 默认；Native 仅自树演进。
+\end{enumerate}
+\end{invariantbox}
+
+\section{Primary 机制谱系}
+
+\begin{equation}
+\begin{array}{c|l}
+\hline
+\text{族} & \text{Primary / 候选触发} \\
+\hline
+\text{Hom / Gen5} & (h\& M)=0\quad\text{Gear} \\
+\text{Chain} & (S\& M)=0\quad\text{XOR-LFSR} \\
+\text{Native} & (Y\&(S-1))=0\quad\text{Embed landmark} \\
+\hline
+\end{array}
+\end{equation}
+
+后续「第二条件」分别是 $\Delta C$、$\Delta\hat\beta_0\!+\!\hat\beta_1$、Flip/PH 过滤或真切。
+
+\section{本手册地图}
+
+\begin{itemize}[nosep]
+  \item \cref{ch:shared}：Profile、超块、Pipeline、拒迁；
+  \item \cref{ch:gen3}--\cref{ch:gen3-impl}：Hom 数学 + 代码；
+  \item \cref{ch:gen4}--\cref{ch:gen4-impl}：Chain 数学 + 代码；
+  \item \cref{ch:gen5}：Gen5.0 冻结混合态；
+  \item \cref{ch:gen51}--\cref{ch:native-impl}：Native 数学 + 代码；
+  \item \cref{ch:matrix}--\cref{ch:eval}：对照、门禁；附录符号与 SSOT。
+\end{itemize}

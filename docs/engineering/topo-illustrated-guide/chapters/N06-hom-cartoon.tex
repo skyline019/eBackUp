@@ -1,0 +1,84 @@
+\chapter{动画片一：Hom 怎样决定切一刀}
+\label{ch:N-hom-cartoon}
+
+\section{角色介绍}
+
+\begin{itemize}[nosep]
+  \item \textbf{滚筒铃}：窗摘要，偶尔叮；
+  \item \textbf{彩色珠}：窗里每个字节一种颜色；
+  \item \textbf{红剪}：两关都过才出场。
+\end{itemize}
+
+\section{四句完整剧本}
+
+\begin{enumerate}
+  \item 站在合法区间（已经比 min 长，还没到 max）；
+  \item 滑一格，更新滚筒数字 $h$；
+  \item 铃叮了吗？没叮就回到第 2 句；叮了才看珠串；
+  \item 珠串异色边数变了吗？变了就剪；没变就继续走。
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=gray] (s1) {走一步};
+  \node[softbox=gray, right=0.45cm of s1] (s2) {滚 $h$};
+  \node[softbox=WarnAmber, right=0.45cm of s2] (s3) {叮？};
+  \node[softbox=WarnAmber, right=0.45cm of s3] (s4) {珠变？};
+  \node[softbox=CutRed, right=0.45cm of s4] (s5) {剪};
+  \draw[-{Stealth}, thick] (s1)--(s2)--(s3)--(s4)--(s5);
+  \draw[-{Stealth}, thick, dashed] (s3.south)--++(0,-0.45)-|
+    node[pos=0.2,below,font=\tiny]{否} (s1.south);
+  \draw[-{Stealth}, thick, dashed] (s4.north)--++(0,0.45)-|
+    node[pos=0.2,above,font=\tiny]{否} (s2.north);
+\end{tikzpicture}
+\caption{Hom 流程图：否的分支最常见。}
+\label{fig:N-hom-flow}
+\end{figure}
+
+\section{珠串怎么变：再画一次}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \foreach \i/\lab/\col in {0/A/red!35,1/A/red!35,2/B/blue!35,3/C/green!35} {
+    \node[circle,draw,fill=\col,minimum size=0.55cm] (p\i) at (\i*1.2,0.8) {\lab};
+  }
+  \draw[very thick, CutRed] (p1)--(p2)--(p3);
+  \node[right,font=\footnotesize] at (5,0.8) {边=2};
+
+  \foreach \i/\lab/\col in {0/A/red!35,1/B/blue!35,2/C/green!35,3/D/yellow!40} {
+    \node[circle,draw,fill=\col,minimum size=0.55cm] (q\i) at (\i*1.2,-0.6) {\lab};
+  }
+  \draw[very thick, CutRed] (q0)--(q1)--(q2)--(q3);
+  \node[right,font=\footnotesize] at (5,-0.6) {边=3 $\Rightarrow$ 过关};
+\end{tikzpicture}
+\caption{滑入新颜色后边数增加，第二关绿灯。}
+\label{fig:N-hom-bead2}
+\end{figure}
+
+\section{为什么叫 lazy（懒）}
+
+大部分时间铃不响，算法\textbf{懒得}数珠。\\
+只有叮了才认真看一眼。所以它能接近很老的 FastCDC 速度。
+
+\section{调弦}
+
+备份前拿样例试切，统计``叮而且珠变''的比例，拧铃的灵敏度，\\
+让块的平均厚度接近你想要的。结果写进仓库。
+
+\section{零基础对照}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+术语 & 动画片里 \\
+\midrule
+primaryOK & 铃叮了 \\
+topoOK & 珠边变了 \\
+mask & 铃灵敏度 \\
+window & 滚筒宽度 \\
+calib & 调弦记录 \\
+\bottomrule
+\end{tabular}
+\end{center}

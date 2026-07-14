@@ -1,0 +1,103 @@
+\chapter{Chain 细节全拆：量化、欧拉环、并行抢第一刀}
+\label{ch:chain-details}
+
+\section{量化 $Q(b)$：把字节磨粗糙}
+
+$Q(b)=b\gg q$。$q=0$ 精细；$q$ 变大则许多字节挤进同一颜色桶。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[bytecell] (b) {0x97};
+  \node[softbox=Gen4Color, right=1.0cm of b] (q0) {$q=0$\\键 0x97};
+  \node[softbox=Gen4Color, right=0.6cm of q0] (q2) {$q=2$\\键 0x25};
+  \draw[-{Stealth}, thick] (b)--(q0);
+  \draw[-{Stealth}, thick] (b)--(q2);
+\end{tikzpicture}
+\caption{quant\_q 合法 0..7；存超块。}
+\label{fig:quant}
+\end{figure}
+
+\section{LFSR 拧锁逐步}
+
+\begin{toybox}[4 位示意]
+$S=0101$，来键 3：左旋 $\to$ 1010，异或 0011 $\to$ 1001。\\
+若 $L=2$（低 2 位），要对齐需 $**00$。继续拧直到对齐。
+\end{toybox}
+
+真名：\texttt{UpdateChainSignature} $=\mathrm{rotl}_1\oplus Q$；\texttt{ChainStrideMask}$=2^L-1$，$L\in[8,22]$。
+
+\section{Limit Push：对齐之间不看珠}
+
+\begin{metaphor}[高速公路服务区]
+非对齐：油门 LFSR（每字节 $O(1)$）。\\
+对齐：才进服务区检查骨架（$O(w)$）和环。\\
+若每字节都检查，Chain 就失去相对 Gear 的优势。
+\end{metaphor}
+
+\section{$\hat\beta_1$：边太多出现环}
+
+\begin{equation}
+\hat\beta_1=\max(0,\,E-V+C)
+\end{equation}
+$V=$出现过的颜色数，$E=$去重无向异色边，$C=$连通块数。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[align=left, softbox=Gen4Color, minimum width=5.5cm]
+    {线状：边少，$E-V+C\le 0$\\环状：边多，$E-V+C>0$ 过闸};
+\end{tikzpicture}
+\caption{参考实现 vs bitset 快路径：答案必须 bit-identical。}
+\label{fig:euler}
+\end{figure}
+
+\section{beta1 开关与 MVP 升级禁令}
+
+新仓默认开环检。老 MVP 仓没有这 bit —— \textbf{禁止就地拧开}，必须新开房重切。\\
+形象：旧门锁芯不同，不能只换钥匙齿。
+
+\section{并行 256KB：预热锁芯，抢最左刀}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\footnotesize]
+  \foreach \i in {0,1,2,3} {
+    \node[softbox=Gen4Color, minimum width=2.3cm] (s\i) at (\i*2.7,0) {段\i};
+  }
+  \node[font=\small, above] at (4,1.0) {先串行预热各段起点的 $S$};
+  \draw[-{Stealth}, thick, gray] (s0)--(s1)--(s2)--(s3);
+  \node[softbox=CutRed, below=1.1cm of s1] (cut) {段1 先找到};
+  \draw[-{Stealth}, CutRed, thick] (s1)--(cut);
+  \node[font=\footnotesize, gray, below=0.35cm of cut] {喊停右侧；不认更右的刀};
+\end{tikzpicture}
+\caption{\texttt{PARALLEL\_SCAN=1}；有跨 feed carry 时强制串行。}
+\label{fig:chain-par}
+\end{figure}
+
+\section{Resume 带走什么}
+
+Hom 可不带珠串；Chain 常带走锁状态 $S$ 和 keys 窗 —— 不然跨盒子要重拧很长一段。
+
+\section{标定 \texttt{CalibrateChainStrideLog}}
+
+在 1MB 样本上试 $L$（含 beta1），使平均块长落入 $[0.85,1.15]\times\mathrm{avg}$。\\
+$L$ 写入超块 \texttt{reserved[0:1]}。
+
+\section{细节对照表}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{7.2cm}@{}}
+\toprule
+技术点 & 形象说法 \\
+\midrule
+\texttt{ChainQuantKey} & 磨粗糙 \\
+\texttt{ChainPrimaryDelta} & 与 Hom 同款三边 \\
+\texttt{ChainBeta1Gf2} & 有没有打结 \\
+\texttt{InitChainSignature} & 开窗灌满锁芯 \\
+\texttt{force\_serial} & 过盒子边界别抢跑 \\
+切点冻结 & 优化只能换发动机外壳，不能改交规 \\
+\bottomrule
+\end{tabular}
+\end{center}

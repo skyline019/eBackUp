@@ -1,0 +1,155 @@
+\chapter{共用框架：Profile、超块与 Pipeline}
+\label{ch:shared}
+
+\section{ChunkProfile 三档}
+
+后三代复用 FastCDC 档位，避免小文件过度分块：
+
+\begin{table}[htbp]
+\centering
+\caption{ChunkProfile 阈值}
+\label{tab:profile-shared}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Profile & 条件 & min & avg & max \\
+\midrule
+kSmall & $\le$256\,KB & 4\,KB & 16\,KB & 64\,KB \\
+kDefault & 256\,KB--64\,MB & 64\,KB & 256\,KB & 1\,MB \\
+kLarge & $\ge$64\,MB & 256\,KB & 1\,MB & 4\,MB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+各代 \texttt{*ConfigForFileSize} / \texttt{*ConfigForRepo} 将 profile 映射到 mask / stride\_log / event\_stride 等。\\
+Native：InitRepo 在 Default avg 下标定，运行期按 avg 比例缩放 stride（\texttt{ScaleEventStrideForAvg}）。
+
+\section{共用外层扫描窗}
+
+\begin{lstlisting}[caption={共用 cut 窗外层伪码},label={lst:shared-window}]
+pos = 0
+while pos < len:
+  remaining = len - pos
+  if remaining <= min_size:
+    emit_tail(pos, remaining); break
+  scan_start = pos + min_size
+  cut_limit  = min(pos + max_size, len)
+  if FindCut(data, scan_start, cut_limit, ...):
+    emit(pos, cut - pos); pos = cut
+  else if remaining > max_size:
+    emit(pos, max_size); pos += max_size  // hard cut
+  else:
+    emit_tail(pos, remaining); break
+\end{lstlisting}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.95cm,y=0.5cm,font=\small]
+  \draw[thick] (0,0)--(14,0);
+  \foreach \x/\lab in {0/pos, 2.5/min, 8/hit?, 11/max, 14/EOF} {
+    \draw (\x,0.12)--(\x,-0.12);
+    \node[above] at (\x,0.15) {\lab};
+  }
+  \fill[blue!12] (2.5,-0.35) rectangle (11,0.35);
+  \draw[Gen51Color, very thick] (7.2,-0.3)--(7.2,0.3);
+  \node[font=\footnotesize, below] at (6.75,-0.55)
+    {合法扫描 $[pos+\min,\,pos+\max]$；avg 经标定进入 mask/stride};
+\end{tikzpicture}
+\caption{共用扫描窗。}
+\label{fig:shared-scan-window}
+\end{figure}
+
+\section{超块 carve 与字段复用}
+
+自 \texttt{BackupSuperBlockExtension.ext\_padding} 挖出（总大小不变）：
+
+\begin{table}[htbp]
+\centering
+\caption{Topo 公共字段（语义随 flag/variant 分化）}
+\label{tab:superblock-carve}
+\begin{tabular}{@{}llp{7.2cm}@{}}
+\toprule
+字段 & 类型 & 复用语义 \\
+\midrule
+topo\_table\_seed & u32 & Hom/Gen5: Gear；Chain: LFSR $S_0$；Native: Embed \\
+topo\_variant & u8 & 0..6 \\
+topo\_reserved[0:1] & u16 & Hom/Gen5: calib；Chain: $L$；Native: stride \\
+topo\_reserved[2..] & bytes & $k$ / quant / beta1 / persist \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{warnbox}[盲读陷阱]
+同一 offset 在不同代含义完全不同。必须以 \texttt{backup\_features}$+$\texttt{topo\_variant} 解释。
+\end{warnbox}
+
+\section{Pipeline 路由（代码顺序）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=0.42cm,
+  dec/.style={diamond, aspect=2.3, draw=orange!70!black, fill=orange!8,
+    align=center, font=\scriptsize, inner sep=0.4pt},
+  leaf/.style={rectangle, rounded corners=2pt, draw=#1!70!black, fill=#1!12,
+    align=center, font=\scriptsize\bfseries, minimum width=2.7cm, minimum height=0.7cm},
+  arr/.style={-{Stealth}, thick, gray!65}]
+  \node[dec] (n) {Phn?};
+  \node[leaf=Gen51Color, right=2.8cm of n] (phn) {TopoPhn};
+  \node[dec, below=of n] (p) {Ph?};
+  \node[leaf=Gen5Color, right=2.8cm of p] (ph) {TopoPh};
+  \node[dec, below=of p] (c) {Chain?};
+  \node[leaf=Gen4Color, right=2.8cm of c] (ch) {TopoChain};
+  \node[dec, below=of c] (t) {Topo?};
+  \node[leaf=Gen3Color, right=2.8cm of t] (hom) {TopoCdc};
+  \node[leaf=gray, below=of t] (rest) {Gt / Fast / Hybrid};
+  \draw[arr] (n)--node[above,font=\tiny]{Y}(phn);
+  \draw[arr] (n)--(p);
+  \draw[arr] (p)--node[above,font=\tiny]{Y}(ph);
+  \draw[arr] (p)--(c);
+  \draw[arr] (c)--node[above,font=\tiny]{Y}(ch);
+  \draw[arr] (c)--(t);
+  \draw[arr] (t)--node[above,font=\tiny]{Y}(hom);
+  \draw[arr] (t)--(rest);
+\end{tikzpicture}
+\caption{\filepath{backup\_pipeline.cc} 优先级（Native 最高）。}
+\label{fig:pipeline-route}
+\end{figure}
+
+\section{InitRepo / RunBackup 拒迁原则}
+
+\begin{structbox}[绝对禁止就地跨族]
+有 manifest 的仓禁止改 CDC 族。正确路径：新目录 InitRepoEx + 目标 \envvar{EBBACKUP\_CDC\_ALGO} + 全量重备。\\
+RunBackup 必须完整恢复 flags、seed、variant、calib/stride 字段。
+\end{structbox}
+
+典型 Fail（节选）：
+\begin{itemize}[nosep]
+  \item Hom 仓无 \texttt{topocdc}；Fast 仓 + \texttt{topocdc}+已有 manifest；
+  \item Chain / Ph / Phn 与其它族交叉；同 Native 仓 Tri$\leftrightarrow$PH 切换 kernel；
+  \item Chain $L\notin[8,22]$、MVP 就地开 beta1。
+\end{itemize}
+
+\section{nofallback 与 digest}
+
+任一 Topo env 生效 $\Rightarrow$ 禁用 Hybrid / FastSlice / FastStream。\\
+\texttt{digest\_base} 强制；ContentHash 算法可选，\textbf{不影响} cut。
+
+\section{配置组装印证（Hom/Chain）}
+
+\begin{lstlisting}[caption={TopoCdcConfigForRepo 摘要},label={lst:cfg-for-repo}]
+TopoCdcConfig TopoCdcConfigForRepo(const BackupSuperBlock& sb, ...) {
+  TopoCdcConfig cfg = TopoCdcConfigForFileSize(...);
+  if (RepoUsesTopoChain(sb)) {
+    cfg.variant = TopoCdcVariant::kChain;
+    cfg.chain_lfsr_seed = sb.ext.topo_table_seed;
+    cfg.chain_stride_log = RepoTopoChainStrideLog(sb);
+    cfg.chain_quant_q = RepoTopoChainQuantQ(sb);
+    cfg.chain_enable_beta1 = RepoTopoChainBeta1(sb);
+    return cfg;
+  }
+  cfg.table_seed = sb.ext.topo_table_seed;
+  cfg.topo_calib_permille = RepoTopoCalibPermille(sb);
+  // variant Tri if topo_variant==1
+  return cfg;
+}
+\end{lstlisting}

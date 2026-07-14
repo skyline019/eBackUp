@@ -1,0 +1,86 @@
+\chapter{附录}
+\label{ch:appendix}
+
+\section{符号表}
+
+\begin{longtable}{@{}lp{10.2cm}@{}}
+\toprule
+符号 & 含义 \\
+\midrule
+\endhead
+$h,\,G$ & Gear 指纹与 256 表 \\
+$M,\,L$ & mask；$L=\mathrm{stride\_log}$，$M=2^L-1$ \\
+$S_t,\,Q$ & Chain LFSR 与量化键 \\
+$C,\,\mathrm{ed}$ & 连通分量 / 边差分 \\
+$\hat\beta_0,\,\hat\beta_1$ & Chain 1-骨架同调估计 \\
+$L_t,\,K$ & landmark 与容量 \\
+$Y,\,m,\,c$ & Native Embed 与 LCG 参数 \\
+$\tau,\,\delta$ & Flip 阈值；persist 寿命 \\
+$R_j^2$ & Native $\{1,4,16\}$；Gen5 另有 5 档 \\
+$P_{\mathrm{topo}}$ & Hom/Gen5 事件条件概率 \\
+\bottomrule
+\end{longtable}
+
+\section{环境变量速查}
+
+\begin{longtable}{@{}lp{9.2cm}@{}}
+\toprule
+变量 & 作用 \\
+\midrule
+\endhead
+\envvar{EBBACKUP\_CDC\_ALGO} & topocdc|topochain|topoph|topophn|gtcdc \\
+\envvar{EBBACKUP\_TOPO\_VARIANT} & Gen3 Tri deprecated \\
+\envvar{EBBACKUP\_TOPOPH\_KERNEL} & tri|ph（Gen5） \\
+\envvar{EBBACKUP\_TOPOPHN\_KERNEL} & tri|ph（Native） \\
+\envvar{EBBACKUP\_TOPOCHAIN\_PARALLEL\_SCAN} & 1=Chain 并行 \\
+\envvar{EBBACKUP\_PIPELINE\_PROFILE} & 1=sub-timing \\
+\bottomrule
+\end{longtable}
+
+\section{关键复杂度一览}
+
+\begin{table}[htbp]
+\centering
+\caption{热路径每字节摊销}
+\label{tab:complexity-all}
+\begin{tabular}{@{}lll@{}}
+\toprule
+族 & 常见字节 & 稀有事件 \\
+\midrule
+Hom & $O(1)$ Gear & primary: $O(w)$ \\
+Chain & $O(1)$ LFSR & stride: $O(w)$+$\hat\beta_1$ \\
+Gen5 & $O(1)$ Gear & primary: Flip/PH $O(K^2)$ \\
+Native & $O(1)$ Embed+\& & LM: Flip $O(K)$ / PH $O(K^2\log K)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{规格与源码 SSOT}
+
+\begin{itemize}[nosep]
+  \item Hom：\filepath{TOPO\_CDC\_SPEC.md} $\leftrightarrow$ \filepath{topo\_hom\_scan.cc}
+  \item Chain：\filepath{TOPO\_CHAIN\_GEN4\_SPEC.md} $\leftrightarrow$ \filepath{topo\_chain\_scan.cc}
+  \item Gen5：\filepath{TOPO\_PH\_GEN5\_SPEC.md} $\leftrightarrow$ \filepath{topo\_ph/}
+  \item Native：\filepath{TOPO\_PH\_NATIVE\_SPEC.md} $\leftrightarrow$ \filepath{topo\_phn/}
+  \item 矩阵：\filepath{CDC\_ALGO\_MATRIX.md}
+\end{itemize}
+
+\begin{lstlisting}[language=bash,caption={源码树},label={lst:src-tree}]
+engine_cpp/src/chunk/topo_cdc/
+engine_cpp/src/chunk/topo_ph/
+engine_cpp/src/chunk/topo_phn/
+engine_cpp/include/ebbackup/chunk/topo_*.h
+engine_cpp/tests/chunk/topo_*_test.cc
+engine_cpp/bench/scripts/run_topo*_proof.ps1
+\end{lstlisting}
+
+\section{手册构建}
+
+\begin{lstlisting}[language=bash,caption={WSL XeLaTeX},label={lst:build-manual}]
+cd /mnt/e/recoveryProjects/docs/engineering/topo-gens-manual
+make pdf   # => build/main.pdf
+\end{lstlisting}
+
+\section{与 kernel-manual}
+
+版式对齐 \filepath{docs/engineering/kernel-manual}。全仓系统手册仍以其为准；后三代 CDC 细节以本册 + SPEC 为准。

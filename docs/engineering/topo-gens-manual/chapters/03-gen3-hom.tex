@@ -1,0 +1,157 @@
+\chapter{Gen3 TopoCDC Hom-0：规格与数学}
+\label{ch:gen3}
+
+\section{定位与边界}
+
+TopoCDC Hom-0 是第三代 opt-in CDC：\textbf{单路 Gear primary} $\wedge$ \textbf{滑动窗口 1-骨架连通变化} $\Delta C$。  
+它与 G-TCDC v6 \textbf{并列}，代码树独立（\filepath{engine\_cpp/src/chunk/topo\_cdc/}），仓库 flag 独立（\texttt{0x20000}），dedup 域独立。
+
+\begin{table}[htbp]
+\centering
+\caption{Hom-0 启用标识}
+\label{tab:hom-id}
+\begin{tabular}{@{}ll@{}}
+\toprule
+项 & 值 \\
+\midrule
+运行时 & \envvar{EBBACKUP\_CDC\_ALGO=topocdc} \\
+feature & \texttt{kBackupFeatureTopoCdc = 0x20000} \\
+\texttt{chunk\_algo\_id} & 2 \\
+\texttt{topo\_variant} & 0（默认生产；1=旧 Tri deprecated） \\
+Gear 表 & \texttt{InitKeyedGearTable(topo\_table\_seed)} \\
+SPEC & \filepath{docs/technical/TOPO\_CDC\_SPEC.md} v1.2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{invariantbox}[与 FastCDC / G-TCDC 的隔离]
+Content ID 仍为 \texttt{SHA256(明文)}，但切点分布不同 $\Rightarrow$ 跨族 chunk 边界不对齐 $\Rightarrow$ 复用率设计为 0\%。\\
+nofallback：\texttt{topocdc} 生效时禁止 Hybrid / FastSlice / FastStream。
+\end{invariantbox}
+
+\section{形式化切点}
+
+固定窗口宽 $w$（默认 64），位置 $t$ 处字节为 $b_t$，Gear 表 $G[0..255]$：
+\begin{align}
+h_t &= 2\,h_{t-1} + G[b_t] - G[b_{t-w}]
+\qquad\text{（等价于窗内右移累加）}\\
+\mathrm{primaryOK}_t &= (h_t \mathbin{\&} M)=0\\
+k_i &= G[b_i]\mathbin{\&} 0xFF\\
+E_t &= \bigl\{\{i,i+1\}:\ k_i\neq k_{i+1},\ i\in[t-w,t)\bigr\}\\
+C_t &= 1 + |E_t|\qquad\text{（路径图连通分量：边差分语义）}\\
+\mathrm{topoOK}_t &= (C_t \neq C_{t-1})\\
+\mathrm{cut}_t &= \mathrm{primaryOK}_t \land \mathrm{topoOK}_t \land (t\ge \mathrm{pos}+\min)
+\end{align}
+
+工程实现不维护完整 UF 父指针于热路径，而用边差分 $\mathrm{ed}=|E|$ 与三边增量（见下文），因对路径图有 $C=1+\mathrm{ed}$。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  box/.style={rectangle, rounded corners=2pt, draw=Gen3Color, fill=Gen3Color!8,
+    align=center, font=\small, minimum height=0.9cm},
+  arr/.style={-{Stealth}, thick}]
+  \node[box] (b) {byte $b_t$};
+  \node[box, right=0.9cm of b] (g) {滚 $h_t$};
+  \node[box, right=0.9cm of g] (p) {primaryOK?};
+  \node[box, right=0.9cm of p] (u) {键化 + $\Delta\mathrm{ed}$};
+  \node[box, right=0.9cm of u] (c) {cut};
+  \draw[arr] (b) -- (g);
+  \draw[arr] (g) -- (p);
+  \draw[arr] (p) -- node[above,font=\tiny]{Y} (u);
+  \draw[arr] (u) -- node[above,font=\tiny]{$\Delta\neq0$} (c);
+  \draw[arr, dashed] (p.south) -- ++(0,-0.65) -|
+    node[pos=0.25,below,font=\tiny]{N: $O(1)$ 只滚 $h$} (b.south);
+\end{tikzpicture}
+\caption{Hom-0 lazy 路径：非 primary 探测与 FastCDC Stream 同阶。}
+\label{fig:hom-flow}
+\end{figure}
+
+\section{路径图同调与边差分}
+
+对滑动键序列 $k_0,\ldots,k_{w-1}$，相邻异键成边。Slide 进入新键 $k_{\mathrm{in}}$、丢弃旧首键：
+\begin{align}
+\mathrm{ed}_{\mathrm{new}}
+&= \mathrm{ed}_{\mathrm{old}}
+ - \mathbf{1}[k_0\neq k_1]
+ - \mathbf{1}[k_{w-2}\neq k_{w-1}]
+ + \mathbf{1}[k_{w-2}\neq k_{\mathrm{in}}]
+ + \mathbf{1}[k_{\mathrm{in}}\neq k_0]
+\end{align}
+（$w=2$ 时退化为两边特例）。$\Delta\mathrm{ed}=\mathrm{ed}_{\mathrm{new}}-\mathrm{ed}_{\mathrm{old}}\neq 0$ 当且仅当连通分量数变化（birth/death/merge 在路径图上的离散代理）。
+
+\begin{designbox}[为何叫 Hom-0]
+名称来自「零阶同调」叙事：关注连通分量 $H_0$，而非高阶洞。生产实现是 $O(1)$ 边差分 + lazy primary，不是持久同调算法包。
+\end{designbox}
+
+\section{mask 标定 v2}
+
+设在「仅看 primary 探测点」上测得条件概率
+\begin{equation}
+P_{\mathrm{topo}}=\Pr[\mathrm{topoOK}\mid\mathrm{primaryOK}].
+\end{equation}
+期望切点间距近似
+\begin{equation}
+\mathbb{E}[\mathrm{chunk}]\approx \mathrm{avg}_{\mathrm{Gear}} / P_{\mathrm{topo}}
+\quad\Rightarrow\quad
+M=\mathrm{BuildMask}(\mathrm{avg}\cdot P_{\mathrm{topo}}).
+\end{equation}
+持久化 \texttt{topo\_calib\_permille}$\,\approx\,1000\,P_{\mathrm{topo}}$。\\
+若为 0（旧仓），回退 $\mathrm{avg}\gg\texttt{topo\_shift}$。
+
+标定样本：1\,MiB heap，与 \texttt{InitRepoEx} 一致（\texttt{FillTopoCalibSample}）。
+
+\section{扫描窗外层}
+
+与共用框架（\cref{ch:shared}）一致：
+\begin{itemize}[nosep]
+  \item $\mathrm{scan\_start}=\mathrm{pos}+\min$；
+  \item $\mathrm{cut\_limit}=\min(\mathrm{pos}+\max,\,|F|)$；
+  \item 未命中且 $|F|-\mathrm{pos}>\max$：硬切 $\mathrm{pos}+\max$。
+\end{itemize}
+
+\section{Streaming 与 Resume}
+
+512KB feed 多段扫描必须与整文件 \texttt{ChunkCuts} \textbf{bit-identical}。
+
+Resume 状态（规格）：
+\begin{equation}
+\texttt{TopoHomResume}=\{h,\,\mathrm{scan\_rel},\,w\}.
+\end{equation}
+UF \textbf{不}物化于 resume：跨 feed 在下次 primary 时 $O(w)$ 重建键。这保证：
+\begin{enumerate}[nosep]
+  \item resume 字节小、确定性；
+  \item 热路径复杂不随 feed 边界漂移。
+\end{enumerate}
+
+\section{与 G-TCDC v6 对照}
+
+\begin{table}[htbp]
+\centering
+\caption{第二条件：双 Gear vs Hom}
+\label{tab:hom-vs-gt}
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & G-TCDC v6 & Hom-0 \\
+\midrule
+第二条件 & $(h_{\mathrm{norm}}\gg s)\mathbin{\&}M_{hi}=0$ & $\Delta C$ / $\Delta\mathrm{ed}$ \\
+第二状态 & 第二 Gear & 环窗键 + 边差分 \\
+correlated noise & 两路 Gear 相关 & 拓扑事件与 Gear 正交更强 \\
+flag & \texttt{0x1000|0x10000} & \texttt{0x20000} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{性能目标}
+
+\begin{itemize}[nosep]
+  \item 主：\texttt{topo\_vs\_stream\_ratio} $\ge 0.97$（\texttt{L5\_topo\_ab}）
+  \item 次：\texttt{topo\_scan\_ns\_per\_probe\_ratio} $\le 1.25$
+\end{itemize}
+
+数学上：在 primary 概率 $\approx 1/\mathrm{avg}$ 时，lazy UF 的摊销成本
+\begin{equation}
+\frac{T_{\mathrm{Hom}}}{T_{\mathrm{Stream}}}
+\approx 1 + O\!\left(\frac{w}{\mathrm{avg}}\right),
+\end{equation}
+故大 avg 下逼近 Stream。

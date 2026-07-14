@@ -1,0 +1,77 @@
+\chapter{仓库像分房：flag、env、Content ID}
+\label{ch:rooms}
+
+\section{Content ID 与刀口是两件事}
+
+\begin{metaphor}[香肠切片 vs 称重贴纸]
+刀口决定``切成哪几段''；Content ID（SHA256）是给每段贴的\textbf{指纹贴纸}。\\
+换刀法 $\Rightarrow$ 段的起止变了 $\Rightarrow$ 贴纸集合几乎重来。\\
+哈希算法本身没换，但\textbf{被哈希的明文区间}变了。
+\end{metaphor}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \draw[thick] (0,1.2) rectangle (10,1.8);
+  \foreach \x in {2.5,5.5,8} {\draw[CutRed,very thick] (\x,1.15)--(\x,1.85);}
+  \node[above] at (5,1.85) {刀口（CDC）};
+  \foreach \x/\lab in {1.2/H1, 4/H2, 6.7/H3, 9/H4} {
+    \node[softbox=OkGreen, minimum width=1.3cm, minimum height=0.55cm] at (\x,0.3) {\scriptsize\lab};
+  }
+  \node[font=\footnotesize, gray] at (5,-0.35) {每段明文 $\to$ 一张 SHA256 贴纸};
+\end{tikzpicture}
+\caption{同一文件、不同刀法 $=$ 不同贴纸集合。}
+\label{fig:cid-vs-cut}
+\end{figure}
+
+\section{四个独立房间（feature flag）}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \foreach \i/\name/\flag/\col in {
+    0/Hom/0x20000/Gen3Color,
+    1/Chain/0x40000/Gen4Color,
+    2/TopoPH/0x80000/Gen5Color,
+    3/Native/0x100000/Gen51Color} {
+    \node[softbox=\col, minimum width=2.5cm, minimum height=1.5cm]
+      (r\i) at (\i*3.0,0)
+      {\textbf{\name}\\\texttt{\flag}\\独立钥匙};
+  }
+\end{tikzpicture}
+\caption{每个 flag 是一把房门钥匙；不能把家具抬去隔壁继续用。}
+\label{fig:four-flags}
+\end{figure}
+
+\section{进门口令（环境变量）}
+
+\begin{center}
+\begin{tabular}{@{}llp{5.5cm}@{}}
+\toprule
+口令 & 值 & 人话 \\
+\midrule
+\texttt{EBBACKUP\_CDC\_ALGO} & topocdc/... & 今天进哪间房 \\
+\texttt{TOPOPH\_KERNEL} & tri/ph & TopoPH 用翻面还是连通滤网 \\
+\texttt{TOPOPHN\_KERNEL} & tri/ph & Native 用 Tri 还是 PH \\
+\texttt{TOPOCHAIN\_PARALLEL\_SCAN} & 1 & Chain 允许多人同时找刀 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{pitfall}[互斥]
+同一进程不能``同时住四间房''。口令互相打架会在开仓/备份时直接 Fail。
+\end{pitfall}
+
+\section{variant：房间里的床型}
+
+同房可能有小差异（床型）：
+\begin{itemize}[nosep]
+  \item Hom 房：variant 0=标准珠串；1=旧 Tri（废弃展品）；
+  \item Chain 房：variant 2；
+  \item TopoPH：3=翻面滤网，4=连通滤网；
+  \item Native：5=Tri-N，6=PH-N。
+\end{itemize}
+
+\section{真名对照}
+
+\texttt{kBackupFeatureTopo*}；\texttt{topo\_variant}；\texttt{CdcTopo*Enabled()}；Pipeline 按 Native$\to$PH$\to$Chain$\to$Hom 优先问路。

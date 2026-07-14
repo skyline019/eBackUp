@@ -1,0 +1,49 @@
+\chapter{超块抽屉：同一格不同标签}
+\label{ch:superblock}
+
+\section{抽屉比喻}
+
+\begin{metaphor}[共享收纳盒]
+物理上多出来的 padding 被挖成几个小格。\\
+格子编号相同，但 Hom/Chain/Native 往里放的纸条\textbf{含义不同} —— 读之前必须先看房门 flag。
+\end{metaphor}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\footnotesize]
+  \draw[thick] (0,0) rectangle (11,3.2);
+  \node[anchor=west, font=\bfseries] at (0.2,2.9) {ext\_padding 挖出的 topo 区};
+  \node[softbox=gray, minimum width=2.4cm] at (1.5,1.6) {seed\\u32};
+  \node[softbox=gray, minimum width=1.6cm] at (4.2,1.6) {variant\\u8};
+  \node[softbox=gray, minimum width=2.6cm] at (7.0,1.6) {reserved\\u16+};
+  \node[font=\tiny, gray] at (5.5,0.4)
+    {seed=骰子/锁芯/炼金种子；u16=calib 或 L 或 stride…};
+\end{tikzpicture}
+\caption{盲读 reserved $=$ 把药说明书当菜谱。}
+\label{fig:drawer}
+\end{figure}
+
+\section{逐代纸条内容}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+格 & Hom/TopoPH & Chain & Native \\
+\midrule
+seed & Gear 骰子 & LFSR 初值 & Embed 种子 \\
+variant & 0/1 或 3/4 & 2 & 5/6 \\
+u16 & calib\_permille & stride\_log $L$ & event\_stride \\
+其后 & shift 等 & quant、beta1 位 & $k$、persist 位 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{开仓时写入 vs 备份时读回}
+
+InitRepo：掷种子、标定、写纸条。\\
+RunBackup：必须原样读回 —— 否则等于半夜换刀。
+
+\begin{pitfall}[误清 FastCDC]
+Topo 仓恢复时若把 flag 误清成 Fast，后果是灾难级贴纸错乱。正式代码有护栏。
+\end{pitfall}

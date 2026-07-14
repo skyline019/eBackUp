@@ -1,0 +1,88 @@
+% Topo 形象化解说手册 — 导言
+\usepackage[a4paper,margin=2.3cm]{geometry}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\setlength{\headheight}{15pt}
+\usepackage{listings}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable,skins}
+\usepackage{tikz}
+\usetikzlibrary{positioning,fit,arrows.meta,calc,shapes.geometric,decorations.pathmorphing,patterns,backgrounds}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!55!black,
+  urlcolor=teal!55!black,
+  pdftitle={Topo 后三代 CDC 形象化解说},
+  pdfauthor={ebbackup Project}
+}
+
+\definecolor{CodeBg}{RGB}{248,248,252}
+\definecolor{Ink}{RGB}{30,30,40}
+\definecolor{Gen3Color}{RGB}{40,100,160}
+\definecolor{Gen4Color}{RGB}{120,60,140}
+\definecolor{Gen5Color}{RGB}{160,80,40}
+\definecolor{Gen51Color}{RGB}{20,120,90}
+\definecolor{CutRed}{RGB}{190,40,40}
+\definecolor{OkGreen}{RGB}{30,130,70}
+\definecolor{WarnAmber}{RGB}{180,120,20}
+
+\lstdefinestyle{toy}{
+  language=C++,
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{CodeBg},
+  frame=single,
+  rulecolor=\color{gray!50},
+  breaklines=true,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  showstringspaces=false,
+  tabsize=2
+}
+\lstset{style=toy}
+
+\newtcolorbox{metaphor}[1][]{
+  colback=teal!4!white, colframe=teal!55!black,
+  fonttitle=\bfseries, title={形象说法：#1}, breakable, arc=3pt}
+\newtcolorbox{toybox}[1][]{
+  colback=orange!4!white, colframe=orange!60!black,
+  fonttitle=\bfseries, title={玩具例子：#1}, breakable, arc=3pt}
+\newtcolorbox{keyidea}[1][]{
+  colback=blue!3!white, colframe=blue!55!black,
+  fonttitle=\bfseries, title={一句话抓住：#1}, breakable, arc=3pt}
+\newtcolorbox{pitfall}[1][]{
+  colback=red!3!white, colframe=red!55!black,
+  fonttitle=\bfseries, title={别踩坑：#1}, breakable, arc=3pt}
+
+\newcommand{\filepath}[1]{\texttt{\small #1}}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE,RO]{\leftmark}
+\fancyhead[LO,RE]{Topo 形象化解说}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries}{\chaptertitlename\ \thechapter}{12pt}{\Huge}
+\titlespacing*{\chapter}{0pt}{-10pt}{18pt}
+
+\tikzset{
+  bytecell/.style={
+    rectangle, draw=gray!70, fill=gray!8, minimum width=0.72cm,
+    minimum height=0.72cm, font=\scriptsize\ttfamily, align=center, inner sep=1pt},
+  cutmark/.style={-{Stealth}, very thick, CutRed},
+  okarr/.style={-{Stealth}, thick, OkGreen},
+  softbox/.style={
+    rectangle, rounded corners=4pt, draw=#1!70!black, fill=#1!10,
+    align=center, font=\small, minimum height=0.95cm, inner sep=4pt}
+}

@@ -1,0 +1,49 @@
+\chapter{技术细节覆盖清单}
+\label{ch:coverage}
+
+下列每一项都应能在本册正文找到形象化讲解。正式公式仍以 \filepath{topo-gens-manual} / SPEC 为准。
+
+\section{共用}
+
+\begin{itemize}[nosep]
+  \item Content ID vs 刀口 — \cref{ch:rooms}（贴纸 vs 切片）
+  \item feature flags 四房 / env 互斥 / variant 床型 / Pipeline 优先序 — \cref{ch:rooms}
+  \item min/avg/max、hard cut、ChunkProfile、nofallback、digest — \cref{ch:scan-profile}
+  \item 512KB feed parity — \cref{ch:streaming-illust}
+  \item 超块 carve 复用 — \cref{ch:superblock}
+  \item 拒迁、L5 门禁、Python eval 废弃 — \cref{ch:deny}
+\end{itemize}
+
+\section{Hom}
+
+\begin{itemize}[nosep]
+  \item Gear 隔离 seed、滚动 h、primaryOK — \cref{ch:hom-beads} / \cref{ch:hom-details}
+  \item 珠色键、异色边、PrimaryTopoDelta 三边、lazy、黄金 UF — \cref{ch:hom-details}
+  \item CalibrateTopoPermille、calib/shift 回退、AVX2 八批 — \cref{ch:hom-details}
+  \item Resume 轻行李 — \cref{ch:streaming-illust}
+\end{itemize}
+
+\section{Chain}
+
+\begin{itemize}[nosep]
+  \item Q(b)、XOR-LFSR、stride log — \cref{ch:chain-lock} / \cref{ch:chain-details}
+  \item Limit Push、同构 Delta、beta1 欧拉、MVP 禁升 — \cref{ch:chain-details}
+  \item 并行预热 cancel、force serial、标定 L、切点冻结 — \cref{ch:chain-details}
+\end{itemize}
+
+\section{TopoPH Gen5}
+
+\begin{itemize}[nosep]
+  \item 混合态、仅 primary 钉星、K 坐标 — \cref{ch:ph-filter} / \cref{ch:ph-details}
+  \item Flip 扇形与三元组、五档半径、超块字段 — \cref{ch:ph-details}
+  \item 子核禁换、冻结声明 — \cref{ch:ph-details}
+\end{itemize}
+
+\section{Native}
+
+\begin{itemize}[nosep]
+  \item 禁 Gear、EmbedY4、闭合=迭代、RoundPow2、落格掩码 — \cref{ch:native-stars} / \cref{ch:native-details}
+  \item 块内 T、ring、Tri/PH 判决、MinGap、persist、1-4-16、Reset — \cref{ch:native-details}
+  \item 定理剪枝、densify、软地板、tau 重算、Scale stride、三槽缓存 — \cref{ch:native-calib}
+  \item 4MiB 标定、SIMD、reuse、Tri 与 PH 刀口分化 — \cref{ch:native-calib} / \cref{ch:deny}
+\end{itemize}

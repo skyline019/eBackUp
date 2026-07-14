@@ -1,0 +1,169 @@
+\chapter{Gen3 Hom-0：实现解剖与代码印证}
+\label{ch:gen3-impl}
+
+\section{代码布局}
+
+\begin{longtable}{@{}p{5.4cm}p{8.3cm}@{}}
+\toprule
+路径 & 职责 \\
+\midrule
+\endhead
+\filepath{include/.../topo\_cdc.h} & 公开 \texttt{TopoCdcConfig / TopoCdcSlice} \\
+\filepath{topo\_cdc\_internal.h} & UF、\texttt{ScanHomCut}、resume \\
+\filepath{topo\_hom\_scan.cc} & \texttt{PrimaryTopoDelta}、标定、AVX2 环 \\
+\filepath{topo\_cdc.cc} & 整文件 \texttt{ChunkCuts} 分发 Hom/Tri/Chain \\
+\filepath{topo\_cdc\_streaming.cc} & 512KB feed + resume \\
+\filepath{topo\_cdc\_config.cc} & profile / 超块回填 \\
+\bottomrule
+\end{longtable}
+
+\section{配置结构}
+
+\begin{lstlisting}[caption={TopoCdcConfig（\filepath{topo\_cdc.h}）},label={lst:topo-cdc-cfg}]
+struct TopoCdcConfig {
+  uint32_t min_size{64 * 1024};
+  uint32_t avg_size{256 * 1024};
+  uint32_t max_size{1024 * 1024};
+  uint32_t window_w{64};
+  uint32_t table_seed{0};
+  uint16_t topo_calib_permille{0};
+  uint8_t topo_shift{1};
+  TopoCdcVariant variant{TopoCdcVariant::kHom}; // 0 Hom / 1 Tri / 2 Chain
+  // Chain 字段同结构，variant=kChain 时使用
+  uint8_t chain_stride_log{12};
+  uint8_t chain_quant_q{0};
+  uint32_t chain_lfsr_seed{0};
+  bool chain_enable_beta1{false};
+};
+\end{lstlisting}
+
+\texttt{TopoCdcConfigForRepo} 从超块恢复 seed / calib / variant（Chain 另见 \cref{ch:gen4-impl}）。
+
+\section{PrimaryTopoDelta：数学 $=$ 代码}
+
+\begin{lstlisting}[caption={三边差分（\filepath{topo\_hom\_scan.cc}）},label={lst:primary-topo-delta}]
+inline int32_t PrimaryTopoDelta(const uint8_t* keys, uint32_t w,
+                                uint8_t key_in, uint32_t ed_old) {
+  uint32_t ed_new = ed_old;
+  if (keys[0] != keys[1]) --ed_new;
+  if (w == 2) {
+    if (keys[1] != key_in) ++ed_new;
+  } else {
+    const uint8_t old_tail = keys[w - 1];
+    if (keys[w - 2] != old_tail) --ed_new;
+    if (keys[w - 2] != key_in) ++ed_new;
+    if (key_in != keys[0]) ++ed_new;
+  }
+  return static_cast<int32_t>(ed_new) - static_cast<int32_t>(ed_old);
+}
+\end{lstlisting}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  slot/.style={circle, draw=Gen3Color, fill=Gen3Color!15, minimum size=0.62cm,
+    font=\scriptsize, inner sep=1pt}]
+  \foreach \i/\x in {0/0,1/1.15,2/2.3,3/3.45,4/4.6} {
+    \node[slot] (s\i) at (\x,0) {$k_{\i}$};
+  }
+  \node[slot, fill=orange!25, draw=orange!70!black] (kin) at (6.0,0) {$k_{in}$};
+  \draw[-{Stealth}, thick] (s0)--(s1)--(s2)--(s3)--(s4);
+  \draw[-{Stealth}, thick, dashed, orange!70!black] (s4)--(kin);
+  \draw[-{Stealth}, thick, dashed, orange!70!black] (kin) to[bend left=22] (s0);
+  \node[font=\footnotesize, below=0.4cm of s2]
+    {虚线边在 slide 时增减；$\Delta\mathrm{ed}\neq0\Leftrightarrow\mathrm{topoOK}$};
+\end{tikzpicture}
+\caption{路径 1-骨架边差分直觉。}
+\label{fig:hom-edges}
+\end{figure}
+
+黄金对照：\texttt{SlotUfWindow::SlideViaRebuild} / \texttt{RebuildComponents} 全量 UF，单测校验与 $O(1)$ 边差分一致。
+
+\section{ProbeHomAt 热路径}
+
+\begin{lstlisting}[caption={仅 primary 时 $O(w)$ 键化},label={lst:probe-hom}]
+inline bool ProbeHomAt(uint32_t* h, uint32_t mask, uint32_t w,
+                       const uint32_t gear[256], const uint8_t* data,
+                       size_t pos, size_t* out_cut) {
+  const uint32_t g = gear[data[pos]];
+  if ((*h & mask) == 0) {
+    uint8_t keys[kTopoMaxWindow]{};
+    uint32_t ed = 0;
+    uint8_t prev = TopoKey(gear, data[pos - w]);
+    keys[0] = prev;
+    for (uint32_t i = 1; i < w; ++i) {
+      const uint8_t k = TopoKey(gear, data[pos - w + i]);
+      keys[i] = k;
+      ed += prev != k;
+      prev = k;
+    }
+    if (PrimaryTopoDelta(keys, w, static_cast<uint8_t>(g & 0xFFu), ed) != 0) {
+      *out_cut = pos;
+      return true;
+    }
+  }
+  *h = (*h << 1) + g - gear[data[pos - w]];
+  return false;
+}
+\end{lstlisting}
+
+\texttt{RunHomScanLoop} 在 AVX2 下按 8 字节批调用 \texttt{ProbeHomAt}，切点集合与标量路径相同。
+
+\section{mask 构造印证}
+
+\begin{lstlisting}[caption={BuildTopoMasks（标定优先）},label={lst:build-topo-masks}]
+void BuildTopoMasks(uint32_t avg_size, uint16_t calib_permille,
+                    uint8_t topo_shift, uint32_t* mask_out) {
+  if (calib_permille > 0) {
+    const double p_topo = max(calib_permille / 1000.0, 0.001);
+    const uint32_t effective =
+        max<uint32_t>(uint32_t(double(avg_size) * p_topo), 1u);
+    *mask_out = gtcdc_internal::BuildMask(effective);
+    return;
+  }
+  const uint32_t shifted = max<uint32_t>(avg_size >> topo_shift, 1u);
+  *mask_out = gtcdc_internal::BuildMask(shifted);
+}
+\end{lstlisting}
+
+\texttt{CalibrateTopoPermille}：先用 \texttt{topo\_shift} 临时 mask 扫描半样本，统计
+\texttt{topo\_hits/probes}，$\mathrm{permille}=\mathrm{clamp}(1000\cdot\hat P,\,1,\,1000)$。
+
+\section{滚动 hash 初始化}
+
+\begin{lstlisting}[caption={InitWindowHash},label={lst:init-window-hash}]
+uint32_t InitWindowHash(const uint8_t* data, size_t end, uint32_t w,
+                        const uint32_t gear[256]) {
+  uint32_t h = 0;
+  for (size_t i = end - w; i < end; ++i)
+    h = (h << 1) + gear[data[i]];
+  return h;
+}
+\end{lstlisting}
+
+与 FastCDC / G-TCDC 同形，保证 Gear 表语义可对照；但 \texttt{table\_seed} 隔离，表内容不同。
+
+\section{内部 UF 结构（对照路径）}
+
+\begin{lstlisting}[caption={SlotUfWindow（\filepath{topo\_cdc\_internal.h}）},label={lst:slot-uf}]
+struct SlotUfWindow {
+  uint32_t w, wmask, head, filled, components, edge_diff;
+  uint8_t key[kTopoMaxWindow];
+  uint8_t parent[kTopoMaxWindow];
+  uint8_t rank[kTopoMaxWindow];
+  int32_t Slide(uint8_t key_in);          // O(1) 增量
+  int32_t SlideViaRebuild(uint8_t key_in); // 黄金对照
+  void RebuildComponents();
+};
+\end{lstlisting}
+
+生产 \texttt{ProbeHomAt} 不依赖每字节 \texttt{Slide}；对照路径保证数学定义不漂移。
+
+\section{测试印证}
+
+\begin{itemize}[nosep]
+  \item \texttt{TopoCdcHomTest.*}：切点、标定、hard cut、空/短文件；
+  \item \texttt{TopoGearParityTest.*}：整文件 $\equiv$ 多 feed；
+  \item eval：\texttt{ebbackup\_topo\_cdc\_eval} 输出 \texttt{topo.*} JSON；
+  \item 门禁：\texttt{L5\_topo\_ab}；一键 \filepath{run\_topo\_proof.ps1}。
+\end{itemize}

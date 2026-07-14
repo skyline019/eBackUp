@@ -1,0 +1,123 @@
+\chapter{全程短剧：从字节流到刀口}
+\label{ch:walk}
+
+本章用\textbf{同一段迷你字节流}分别演出 Hom / Chain / Native（TopoPH 类似 Hom+滤网）。\\
+数字是教具，不是生产 cut。
+
+\section{道具表}
+
+字节流（十六进制示意）：
+\begin{center}
+\texttt{41 41 42 43 43 44 41 42 42 45 46 41}
+\end{center}
+对应颜色键（玩具）：A A B C C D A B B E F A
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\scriptsize\ttfamily]
+  \foreach \i/\b/\c in {
+    0/41/red!25,1/41/red!25,2/42/blue!25,3/43/green!30,
+    4/43/green!30,5/44/yellow!35,6/41/red!25,7/42/blue!25,
+    8/42/blue!25,9/45/orange!35,10/46/cyan!30,11/41/red!25} {
+    \node[bytecell, fill=\c] at (\i*0.92,0) {\b};
+    \node[font=\tiny, below] at (\i*0.92,-0.55) {\i};
+  }
+\end{tikzpicture}
+\caption{教具字节流与颜色。}
+\label{fig:toy-stream}
+\end{figure}
+
+\section{第一幕：Hom}
+
+假设窗宽 5。走到位置 5 时窗为 \texttt{A A B C C}。\\
+\textbf{假装}指纹叮了；异色边=2。\\
+下一步到位置 6：新窗 \texttt{A B C C D}（若按进 D），边数变 $\Rightarrow$ 若叮了就切。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[softbox=Gen3Color] (1) {滚到 pos=6};
+  \node[softbox=OkGreen, right=0.5cm of 1] (2) {叮！};
+  \node[softbox=OkGreen, right=0.5cm of 2] (3) {边 2$\to$3};
+  \node[softbox=CutRed, right=0.5cm of 3] (4) {咔嚓};
+  \draw[-{Stealth}, thick] (1)--(2)--(3)--(4);
+\end{tikzpicture}
+\caption{Hom 短剧结局。}
+\label{fig:act-hom}
+\end{figure}
+
+\section{第二幕：Chain}
+
+同一流，密码锁状态在玩具里用 3 位表示。\\
+走到某步低 3 位全 0（对齐）——才打开珠串检查。\\
+对齐之间即使珠串大变也\textbf{不理}。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\footnotesize]
+  \foreach \i in {0,...,11} {
+    \node[bytecell] (b\i) at (\i*0.85,0) {};
+  }
+  \foreach \i in {0,1,2,4,5,6,7,8,10,11} {
+    \node[font=\tiny, gray, above] at (\i*0.85,0.55) {只拧};
+  }
+  \node[font=\tiny, OkGreen, above] at (3*0.85,0.55) {对齐};
+  \node[font=\tiny, OkGreen, above] at (9*0.85,0.55) {对齐};
+  \draw[cutmark] (9*0.85,-0.7)--(9*0.85,0.35);
+  \node[font=\footnotesize, CutRed, below] at (9*0.85,-0.85) {对齐且骨架/环通过};
+\end{tikzpicture}
+\caption{Chain：时间大部分花在``拧锁''上。}
+\label{fig:act-chain}
+\end{figure}
+
+\section{第三幕：Native}
+
+stride=4。只在位置 3,7,11 钉星（玩具假设 $Y$ 刚好落格）。\\
+星上的 Flip：0, 0, 1 —— 在第三颗星触发切，然后清空。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \draw[thick] (0,0)--(10,0);
+  \foreach \x/\lab in {2.5/星1, 5.5/星2, 8.5/星3} {
+    \fill[Gen51Color] (\x,0) circle (0.12);
+    \node[above, font=\tiny] at (\x,0.15) {\lab};
+  }
+  \node[below, font=\tiny] at (2.5,-0.35) {Flip=0};
+  \node[below, font=\tiny] at (5.5,-0.35) {0};
+  \node[below, font=\tiny, CutRed] at (8.5,-0.35) {1 $\Rightarrow$ 切};
+  \draw[cutmark] (8.5,0.4)--(8.5,-0.15);
+\end{tikzpicture}
+\caption{Native 短剧：事件在第三颗星响起。}
+\label{fig:act-native}
+\end{figure}
+
+\section{插曲：挪 1 字节会发生什么}
+
+把流整体右移 1 字节。尺子切会全盘错位。\\
+Native / CDC 希望：裂缝粘在相同内容图案上，刀口``集体挪一下''后仍大面积重合（reuse）。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \draw[thick] (0,1)--(9,1);
+  \draw[thick] (0,0)--(9,0);
+  \foreach \x in {2,5,7.5} {
+    \draw[OkGreen, very thick] (\x,0.85)--(\x,1.15);
+    \draw[OkGreen, very thick] (\x+0.15,-0.15)--(\x+0.15,0.15);
+  }
+  \node[right, font=\footnotesize] at (9.1,1) {原流刀口};
+  \node[right, font=\footnotesize] at (9.1,0) {$+1$B 后};
+  \node[font=\footnotesize, gray] at (4.5,-0.7) {绿线对齐 = reuse 直觉};
+\end{tikzpicture}
+\caption{1-byte reuse：好 CDC 的``良心指标''。}
+\label{fig:act-reuse}
+\end{figure}
+
+\section{导演备注}
+
+\begin{itemize}[nosep]
+  \item 真实系统有 min/max、hard cut、流式 feed、标定；
+  \item 玩具省略了这些，只突出\textbf{判决内核}；
+  \item 看懂短剧后再去正式手册翻公式，会轻松很多。
+\end{itemize}

@@ -1,0 +1,62 @@
+\chapter{流式盒子：512KB feed 与 Resume 行李清单}
+\label{ch:streaming-illust}
+
+\section{为什么要切成盒子喂}
+
+大文件一次吞不下。每次喂 512KB，但刀口必须像一次吞完一样 —— \textbf{parity}。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \draw[thick] (0,0) rectangle (11,0.7);
+  \foreach \x in {0,2.75,5.5,8.25,11} {\draw (\x,0)--(\x,0.7);}
+  \node[font=\footnotesize] at (5.5,1.1) {盒子 0..3};
+  \foreach \x in {1.5,4.2,7.0,9.5} {
+    \draw[CutRed, very thick] (\x,-0.15)--(\x,0.85);
+  }
+  \node[font=\footnotesize, gray, below] at (5.5,-0.45) {红刀口跨盒子拼起来 $=$ 整文件刀口};
+\end{tikzpicture}
+\caption{流式正确性：箱子接缝处不许偷偷丢刀或添刀。}
+\label{fig:feed-boxes}
+\end{figure}
+
+\section{行李对照}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{8cm}@{}}
+\toprule
+代 & Resume 行李（人话） \\
+\midrule
+Hom & 指纹 $h$、扫到哪；珠串可现场重串 \\
+Chain & 锁 $S$、keys 窗、边数；必要时强制别并行 \\
+TopoPH & 铃 $h$、星列表、上一拍 Flip/$\beta0$ \\
+Native & 星环、ring\_start、prev 票、上次刀绝对位置；\textbf{切后清空星} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{状态机草图}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  st/.style={softbox=blue, minimum width=2.3cm},
+  arr/.style={-{Stealth}, thick}]
+  \node[st] (i) {空闲};
+  \node[st, right=1.0cm of i] (s) {窗内扫描};
+  \node[st, right=1.0cm of s] (c) {输出刀};
+  \node[st, below=1.0cm of s] (f) {盒子边界};
+  \draw[arr] (i)--(s)--(c);
+  \draw[arr] (c.south) -- ++(0,-0.35) -| (i.south);
+  \draw[arr] (s)--(f);
+  \draw[arr] (f)--(s);
+\end{tikzpicture}
+\caption{所有代共用骨架；差别在箱子里装的状态。}
+\label{fig:sm-illust}
+\end{figure}
+
+\section{硬切与尾块}
+
+盒子末尾剩余不足 min：收成尾块。\\
+allow\_tail\_cut：允许在当前扫描上限收刀并清状态。

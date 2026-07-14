@@ -1,0 +1,59 @@
+% !TEX program = xelatex
+\documentclass[12pt,a4paper,openany]{ctexbook}
+
+\input{preamble.tex}
+
+\title{Topo 后三代 CDC\\[0.3em]
+  \Large 零基础形象化教程 · 把算法讲透\\[0.2em]
+  \normalsize v1.2 —— 专有名词先变成人话}
+\author{ebbackup Project\\[0.15em]
+  {\small 姊妹册：\filepath{topo-gens-manual}（公式）· 本册（直觉）}}
+\date{2026-07-14}
+
+\begin{document}
+\frontmatter
+\maketitle
+\input{chapters/00-how-to-read.tex}
+\tableofcontents
+\listoffigures
+
+\mainmatter
+% ---- 零基础入门 ----
+\part{零基础：备份世界里有什么}
+\input{chapters/N01-backup-101.tex}
+\input{chapters/N02-byte-chunk.tex}
+\input{chapters/N03-glossary-pix.tex}
+\input{chapters/N04-hash-window-mask.tex}
+\input{chapters/N05-graph-for-kids.tex}
+
+\part{四种刀法：像看动画片一样}
+\input{chapters/N06-hom-cartoon.tex}
+\input{chapters/N07-chain-cartoon.tex}
+\input{chapters/N08-ph-native-cartoon.tex}
+
+\part{对照、练习与仓库常识}
+\input{chapters/01-cdc-story.tex}
+\input{chapters/01b-rooms-flags.tex}
+\input{chapters/01c-scan-profile.tex}
+\input{chapters/06-side-by-side.tex}
+\input{chapters/07-walkthroughs.tex}
+\input{chapters/08-streaming.tex}
+\input{chapters/09-superblock.tex}
+\input{chapters/10-deny-gates.tex}
+
+\part{进阶细拆（学完动画再看）}
+\input{chapters/02-hom-beads.tex}
+\input{chapters/02b-hom-details.tex}
+\input{chapters/03-chain-lock.tex}
+\input{chapters/03b-chain-details.tex}
+\input{chapters/04-ph-filter.tex}
+\input{chapters/04b-ph-details.tex}
+\input{chapters/05-native-stars.tex}
+\input{chapters/05b-native-details.tex}
+\input{chapters/05c-native-calib-simd.tex}
+
+\appendix
+\input{chapters/98-coverage.tex}
+\input{chapters/99-cheat.tex}
+\input{chapters/N99-jargon-index.tex}
+\end{document}

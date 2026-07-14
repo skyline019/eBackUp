@@ -1,0 +1,134 @@
+\chapter{Gen3 Hom：``指纹铃 + 彩色珠串''}
+\label{ch:hom-beads}
+
+\section{形象说法}
+
+\begin{metaphor}[两道闸机]
+\begin{enumerate}[nosep]
+  \item \textbf{Gear 指纹铃}：滑动窗口像滚筒密码锁，偶尔``叮''一声（\texttt{primaryOK}）；
+  \item \textbf{彩色珠串}：窗里每个字节染成一种颜色（键）；相邻异色则挂一根线。\\
+        线根数变了 = 连通状况变了（\texttt{topoOK}）。
+\end{enumerate}
+只有两道闸\textbf{同时}开，才允许切一刀。
+\end{metaphor}
+
+\begin{keyidea}[Hom]
+切点 = 指纹命中 $\land$ 珠串``拓扑''发生变化。\\
+平时只摇铃滚动；铃没响就不看珠串（lazy），所以能接近 FastCDC 速度。
+\end{keyidea}
+
+\section{图解：滑窗滚指纹}
+
+想象窗口宽 $w=6$（真实默认 64，这里缩小方便画）。每走一格：左边一颗珠掉出，右边进来一颗，指纹 $h$ 更新。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \foreach \i/\b/\c in {0/A/red!30, 1/B/blue!25, 2/B/blue!25, 3/C/green!30, 4/A/red!30, 5/D/yellow!40} {
+    \node[bytecell, fill=\c] (b\i) at (\i*0.95,0) {\b};
+  }
+  \node[font=\footnotesize, left] at (-0.8,0) {键};
+  \draw[thick, Gen3Color] (-0.35,-0.55) rectangle (5.55,0.55);
+  \node[Gen3Color, font=\footnotesize\bfseries, above] at (2.5,0.55) {窗口 $w=6$};
+  \draw[okarr] (6.2,0)--(7.3,0);
+  \node[font=\footnotesize, right] at (7.35,0) {下一步：左掉 A，右进新字节};
+  \node[softbox=Gen3Color, below=1.1cm of b2] (h) {指纹 $h$\\叮？$(h\&M)=0$};
+  \draw[-{Stealth}, thick, gray] (b2)--(h);
+\end{tikzpicture}
+\caption{Hom 的第一道闸：窗口指纹偶尔叮一声。}
+\label{fig:hom-gear-bell}
+\end{figure}
+
+\section{图解：珠串什么叫``变了''}
+
+把相邻\textbf{不同色}连边。Hom 关心的不是漂亮顶点个数，而是``边的根数变没变''（工程里用 $\mathrm{ed}$，且 $C=1+\mathrm{ed}$）。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small]
+  \node[font=\bfseries] at (0,2.4) {滑动前};
+  \foreach \i/\lab/\col in {0/A/red!40,1/A/red!40,2/B/blue!35,3/C/green!40,4/C/green!40} {
+    \node[circle, draw, fill=\col, minimum size=0.55cm] (p\i) at (\i*1.1,1.5) {\scriptsize\lab};
+  }
+  \draw[thick] (p0)--(p1); % same color - no edge conceptually for "diff"
+  \draw[very thick, CutRed] (p1)--(p2);
+  \draw[very thick, CutRed] (p2)--(p3);
+  \draw[thick] (p3)--(p4);
+  \node[font=\footnotesize] at (2.2,0.85) {异色边：2 条};
+
+  \node[font=\bfseries] at (0,-0.2) {滑动后（新键 D 进入）};
+  \foreach \i/\lab/\col in {0/A/red!40,1/B/blue!35,2/C/green!40,3/C/green!40,4/D/yellow!45} {
+    \node[circle, draw, fill=\col, minimum size=0.55cm] (q\i) at (\i*1.1,-1.1) {\scriptsize\lab};
+  }
+  \draw[very thick, CutRed] (q0)--(q1);
+  \draw[very thick, CutRed] (q1)--(q2);
+  \draw[thick] (q2)--(q3);
+  \draw[very thick, CutRed] (q3)--(q4);
+  \node[font=\footnotesize] at (2.2,-1.75) {异色边：3 条 $\Rightarrow$ \textbf{变了！topoOK}};
+\end{tikzpicture}
+\caption{珠串边数从 2$\to$3：第二道闸打开。}
+\label{fig:hom-beads-delta}
+\end{figure}
+
+\section{玩具例子（手算）}
+
+\begin{toybox}[6 字节窗，假装指纹在第 4 步叮了]
+窗口键序列（字母=颜色）：\texttt{A A B C C}，异色边 2 条。\\
+进入新键 \texttt{D}，丢弃最左 \texttt{A}，新窗 \texttt{A B C C D}，异色边 3 条。\\
+$\Delta\mathrm{ed}=+1\neq0$ $\Rightarrow$ 若此刻指纹也叮了，\textbf{就在这里切}。
+\end{toybox}
+
+真实现里不每步重数全边，而用``只改三根可能变化的边''的捷径（\texttt{PrimaryTopoDelta}）——结果与重数一样。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  box/.style={softbox=Gen3Color, minimum width=2.3cm},
+  arr/.style={-{Stealth}, thick}]
+  \node[box] (b) {读字节};
+  \node[box, right=0.55cm of b] (g) {滚指纹};
+  \node[box, right=0.55cm of g] (p) {叮了？};
+  \node[box, right=0.55cm of p] (t) {珠串变了？};
+  \node[softbox=CutRed, right=0.55cm of t] (c) {剪刀！};
+  \draw[arr] (b)--(g)--(p)--(t)--(c);
+  \draw[arr, dashed] (p.south)--++(0,-0.55)-|
+    node[pos=0.2,below,font=\tiny]{没叮：走人} (b.south);
+\end{tikzpicture}
+\caption{Hom 决策流水线（lazy：没叮就不数珠）。}
+\label{fig:hom-pipeline-illust}
+\end{figure}
+
+\section{标定在干什么}
+
+指纹太容易叮 $\Rightarrow$ 切太碎；太难叮 $\Rightarrow$ 老撞 max 硬切。\\
+Hom 还多一个：叮的时候珠串不一定变。于是测一个比例 $P=$``叮的时候珠串也变的概率''，\\
+把平均间距调回目标 \texttt{avg}（写成仓里的 \texttt{calib\_permille}）。
+
+\begin{metaphor}[调音]
+像给吉他调弦：先弹一下看音高偏了多少（标定样本），再拧旋钮（mask），直到``平均发车间隔''听着顺耳。
+\end{metaphor}
+
+\section{对应到真名}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+形象说法 & 正式名 \\
+\midrule
+指纹铃叮 & \texttt{primaryOK = (h \& mask)==0} \\
+珠串边数变了 & \texttt{topoOK / PrimaryTopoDelta} \\
+只叮的时候数珠 & Hom v1.2 lazy UF \\
+调弦 & \texttt{CalibrateTopoPermille} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{进阶细拆（本册后续章）}
+
+珠串入门后，请继续：
+\begin{itemize}[nosep]
+  \item \cref{ch:hom-details}：滚指纹公式、三边捷径、调弦 $P$、lazy / AVX；
+  \item \cref{ch:streaming-illust}：512KB 盒子与行李；
+  \item \cref{ch:superblock}：超块抽屉。
+\end{itemize}
+
